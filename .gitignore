@@ -12,6 +12,7 @@ __pycache__/
 # Generated output
 invoices_output/
 invoices_report.csv
+logs/
 
 # Distribution / build
 dist/

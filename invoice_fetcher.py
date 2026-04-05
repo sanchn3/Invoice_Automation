@@ -14,6 +14,7 @@ import base64
 import logging
 import requests
 import msal
+from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -21,12 +22,24 @@ from supabase import create_client, Client
 # =====================================================
 # LOGGING
 # =====================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+
+_log_file = LOG_DIR / f"invoice_fetcher_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"
+_formatter = logging.Formatter(
+    fmt="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+_file_handler = logging.FileHandler(_log_file, encoding="utf-8")
+_file_handler.setFormatter(_formatter)
+
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
 logger = logging.getLogger(__name__)
+logger.info("Log file: %s", _log_file)
 
 # =====================================================
 # LOAD ENVIRONMENT VARIABLES
@@ -49,11 +62,14 @@ REQUIRED_ENV_VARS = [
 # CONFIGURATION
 # =====================================================
 
-# Outlook folder name where invoices are sent from
-SENT_FOLDER_NAME = "Elementos Enviados"
+# Well-known Graph API folder ID for Sent Items (language-independent)
+SENT_FOLDER_ID = "sentitems"
 
 # Subject keyword to filter invoice emails
 SUBJECT_KEYWORD = "Invoice and balance"
+
+# Only fetch emails sent on or after this date (ISO 8601 UTC)
+FETCH_FROM_DATE = "2026-01-01T00:00:00Z"
 
 # Client domains mapped to display names
 CLIENT_DOMAINS: dict[str, str] = {
@@ -109,6 +125,9 @@ def get_folder_id(token: str, folder_name: str) -> str:
     folders = response.json().get("value", [])
 
     # Search top-level folders first
+    top_level_names = [f["displayName"] for f in folders]
+    logger.info("Top-level folders found: %s", top_level_names)
+
     for folder in folders:
         if folder["displayName"].lower() == folder_name.lower():
             logger.info("Found folder '%s' (ID: %s)", folder_name, folder["id"])
@@ -122,12 +141,22 @@ def get_folder_id(token: str, folder_name: str) -> str:
         )
         child_response = requests.get(child_url, headers=headers)
         child_response.raise_for_status()
-        for child in child_response.json().get("value", []):
+        children = child_response.json().get("value", [])
+        if children:
+            logger.info(
+                "Child folders of '%s': %s",
+                folder["displayName"],
+                [c["displayName"] for c in children],
+            )
+        for child in children:
             if child["displayName"].lower() == folder_name.lower():
                 logger.info("Found folder '%s' (ID: %s)", folder_name, child["id"])
                 return child["id"]
 
-    raise RuntimeError(f"Folder '{folder_name}' not found in mailbox.")
+    raise RuntimeError(
+        f"Folder '{folder_name}' not found in mailbox. "
+        f"Check the logged folder names above and update SENT_FOLDER_NAME."
+    )
 
 
 # =====================================================
@@ -137,14 +166,21 @@ def fetch_invoice_emails(token: str, folder_id: str) -> list[dict]:
     """Fetch all emails whose subject contains the invoice keyword."""
     logger.info("Fetching emails with subject containing '%s'...", SUBJECT_KEYWORD)
 
-    headers = {"Authorization": f"Bearer {token}"}
+    # ConsistencyLevel + $count are required by Graph API when combining
+    # contains() in $filter with $orderby on message properties.
+    headers = {
+        "Authorization"   : f"Bearer {token}",
+        "ConsistencyLevel": "eventual",
+    }
+    # Note: $orderby cannot be combined with $filter on mail folder messages;
+    # results are sorted client-side after fetching.
     url = (
         f"https://graph.microsoft.com/v1.0/users/{USER_EMAIL}"
         f"/mailFolders/{folder_id}/messages"
-        f"?$filter=contains(subject,'{SUBJECT_KEYWORD}')"
+        f"?$filter=contains(subject,'{SUBJECT_KEYWORD}') and sentDateTime ge {FETCH_FROM_DATE}"
         f"&$select=id,subject,sentDateTime,toRecipients,hasAttachments"
         f"&$top=100"
-        f"&$orderby=sentDateTime desc"
+        f"&$count=true"
     )
 
     emails: list[dict] = []
@@ -155,6 +191,7 @@ def fetch_invoice_emails(token: str, folder_id: str) -> list[dict]:
         emails.extend(data.get("value", []))
         url = data.get("@odata.nextLink")  # Handle pagination
 
+    emails.sort(key=lambda e: e.get("sentDateTime", ""), reverse=True)
     logger.info("Found %d invoice email(s).", len(emails))
     return emails
 
@@ -322,11 +359,8 @@ def main() -> None:
     # Authenticate with Microsoft Graph
     token = get_access_token()
 
-    # Locate the sent-items folder
-    folder_id = get_folder_id(token, SENT_FOLDER_NAME)
-
-    # Retrieve invoice emails
-    emails = fetch_invoice_emails(token, folder_id)
+    # Retrieve invoice emails from the Sent Items folder
+    emails = fetch_invoice_emails(token, SENT_FOLDER_ID)
     if not emails:
         logger.warning("No invoice emails found. Check folder name and subject keyword.")
         return
