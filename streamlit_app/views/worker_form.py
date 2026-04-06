@@ -98,7 +98,7 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
     st.markdown("---")
 
     # ── Submit ────────────────────────────────────────────────────────────────
-    if st.button("✅ Submit Job", type="primary", use_container_width=True):
+    if st.button("✅ Submit Job", type="primary", width='stretch'):
         if pallet_count < 1:
             st.error("Pallet count must be at least 1.")
             return

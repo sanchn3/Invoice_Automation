@@ -34,6 +34,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# O365 library logs its own HTTP errors before our exception handlers catch them.
+# Raise its threshold so those internal Client Error logs don't pollute the console.
+logging.getLogger("O365").setLevel(logging.CRITICAL)
+logging.getLogger("O365.connection").setLevel(logging.CRITICAL)
+
 
 def main() -> None:
     logger.info("=" * 55)

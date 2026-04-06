@@ -53,6 +53,15 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_pipeline:
         st.subheader("Invoice Pipeline")
 
+        poll_col, _ = st.columns([1, 4])
+        with poll_col:
+            if st.button("🔄 Poll Inbox Now", width='stretch'):
+                from email_pipeline.outlook_listener import poll_inbox
+                with st.spinner("Polling inbox..."):
+                    new_count = poll_inbox(dm, alert_manager)
+                st.success(f"Poll complete — {new_count} new email(s) processed.")
+                st.rerun()
+
         email_logs       = dm.get_email_logs()
         provider_invs    = dm.get_provider_invoices()
         client_invs_list = dm.get_client_invoices()
@@ -112,16 +121,61 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 st.info("No parsed invoices yet.")
             else:
                 st.caption(f"{len(sorted_prov)} provider invoice(s)")
-                rows = [
-                    {
-                        "Invoice #": pi.get("invoice_number", "—"),
-                        "Date"     : pi.get("invoice_date", "—"),
-                        "Client"   : pi.get("client_name", "—"),
-                        "Total"    : f"${pi.get('total', 0):,.2f}",
-                    }
-                    for pi in sorted_prov
-                ]
-                st.dataframe(rows, use_container_width=True, hide_index=True)
+                for pi in sorted_prov:
+                    pid      = pi["id"]
+                    edit_key = f"edit_prov_{pid}"
+
+                    with st.container(border=True):
+                        if st.session_state.get(edit_key):
+                            # ── Edit mode ─────────────────────────────────
+                            e1, e2 = st.columns(2)
+                            new_num   = e1.text_input("Invoice #",   value=pi.get("invoice_number", ""), key=f"en_{pid}")
+                            new_date  = e2.text_input("Date",        value=pi.get("invoice_date",   ""), key=f"ed_{pid}")
+                            new_client = e1.text_input("Client",     value=pi.get("client_name",    ""), key=f"ec_{pid}")
+                            new_total  = e2.number_input(
+                                "Total ($)",
+                                value=float(pi.get("total", 0)),
+                                min_value=0.0,
+                                step=0.01,
+                                format="%.2f",
+                                key=f"et_{pid}",
+                            )
+                            s1, s2 = st.columns(2)
+                            if s1.button("💾 Save", key=f"esave_{pid}", type="primary", width='stretch'):
+                                dm.update_provider_invoice(pid, {
+                                    "invoice_number": new_num.strip(),
+                                    "invoice_date"  : new_date.strip(),
+                                    "client_name"   : new_client.strip(),
+                                    "total"         : new_total,
+                                    "subtotal"      : new_total,
+                                })
+                                st.session_state.pop(edit_key, None)
+                                st.rerun()
+                            if s2.button("✗ Cancel", key=f"ecancel_{pid}", width='stretch'):
+                                st.session_state.pop(edit_key, None)
+                                st.rerun()
+                        else:
+                            # ── Read mode ──────────────────────────────────
+                            c1, c2, c3, c4, c5, c6 = st.columns([1.2, 1, 2, 1, 0.6, 0.6])
+                            c1.markdown(f"**{pi.get('invoice_number', '—')}**")
+                            c2.write(pi.get("invoice_date", "—"))
+                            c3.write(pi.get("client_name", "—"))
+                            c4.write(f"${pi.get('total', 0):,.2f}")
+                            if c5.button("✏️ Edit", key=f"ebtn_{pid}", width='stretch'):
+                                st.session_state[edit_key] = True
+                                st.rerun()
+                            pdf_path = pi.get("pdf_local_path", "")
+                            if pdf_path and Path(pdf_path).exists():
+                                c6.download_button(
+                                    "📄 PDF",
+                                    data=Path(pdf_path).read_bytes(),
+                                    file_name=pi.get("invoice_number", pid) + ".pdf",
+                                    mime="application/pdf",
+                                    key=f"epdf_{pid}",
+                                    width='stretch',
+                                )
+                            else:
+                                c6.button("📄 PDF", key=f"epdf_na_{pid}", disabled=True, width='stretch')
 
         with sub_invoices:
             sorted_cli = sorted(client_invs_list, key=lambda x: x.get("created_at", ""), reverse=True)
@@ -216,7 +270,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
                     with r2b:
                         if editable:
-                            if st.button("💾 Save", key=f"save_{cid}", use_container_width=True):
+                            if st.button("💾 Save", key=f"save_{cid}", width='stretch'):
                                 dm.update_client_invoice(cid, {
                                     "service_type" : svc,
                                     "temp_recorder": temp,
@@ -242,27 +296,27 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "📄 PDF", pdf_bytes, pdf_name,
                                 mime="application/pdf",
                                 key=f"pdf_{cid}",
-                                use_container_width=True,
+                                width='stretch',
                             )
                         else:
-                            st.button("📄 PDF", key=f"pdf_na_{cid}", disabled=True, use_container_width=True)
+                            st.button("📄 PDF", key=f"pdf_na_{cid}", disabled=True, width='stretch')
 
                     with r2d:
                         if st.session_state.get(confirm_key):
                             st.caption("⚠️ Sure?")
                         else:
-                            if st.button("🗑 Delete", key=f"del_{cid}", use_container_width=True):
+                            if st.button("🗑 Delete", key=f"del_{cid}", width='stretch'):
                                 st.session_state[confirm_key] = True
                                 st.rerun()
 
                     # ── Delete confirmation row ───────────────────────────
                     if st.session_state.get(confirm_key):
                         dc_yes, dc_no = st.columns(2)
-                        if dc_yes.button("✅ Yes, delete", key=f"del_yes_{cid}", type="primary", use_container_width=True):
+                        if dc_yes.button("✅ Yes, delete", key=f"del_yes_{cid}", type="primary", width='stretch'):
                             dm.delete_client_invoice(cid)
                             st.session_state.pop(confirm_key, None)
                             st.rerun()
-                        if dc_no.button("✗ Cancel", key=f"del_no_{cid}", use_container_width=True):
+                        if dc_no.button("✗ Cancel", key=f"del_no_{cid}", width='stretch'):
                             st.session_state.pop(confirm_key, None)
                             st.rerun()
 
@@ -300,7 +354,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
                         with gen_col:
                             st.write("")  # vertical spacing
-                            if st.button("🟢 Generate Invoice", key=f"gen_{cid}", type="primary", use_container_width=True):
+                            if st.button("🟢 Generate Invoice", key=f"gen_{cid}", type="primary", width='stretch'):
                                 if not qb_num.strip():
                                     st.error("Enter the QuickBooks invoice number before generating.")
                                 else:
