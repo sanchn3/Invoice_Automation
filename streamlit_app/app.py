@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import streamlit as st
 
 from data_manager import DataManager
@@ -28,13 +32,13 @@ st.sidebar.title("📦 Invoice Automation")
 st.sidebar.markdown("---")
 view = st.sidebar.radio(
     "Navigate",
-    options=["Admin Dashboard", "Worker Form"],
+    options=["Worker Form", "Admin Dashboard"],
     label_visibility="collapsed",
 )
 st.sidebar.markdown("---")
 st.sidebar.caption("INCO Logistics • Invoice Automation v1.0")
 
-if view == "Admin Dashboard":
-    admin_dashboard.render(dm)
-else:
+if view == "Worker Form":
     worker_form.render(dm, alert_manager)
+else:
+    admin_dashboard.render(dm, alert_manager)

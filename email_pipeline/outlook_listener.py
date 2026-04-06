@@ -15,7 +15,7 @@ from config import (
     WORKER_EMAIL, OUTLOOK_INVOICE_FOLDER, BASE_DIR,
 )
 from data_manager import DataManager
-from email_pipeline.attachment_handler import handle_attachment
+from email_pipeline.attachment_handler import handle_attachment, save_pdf_attachment
 from email_pipeline.email_classifier import is_invoice_email
 from alerting.alert_manager import AlertManager
 
@@ -72,7 +72,7 @@ def poll_inbox(dm: DataManager, alert_manager: AlertManager) -> int:
             logger.error("Folder '%s' not found in mailbox.", OUTLOOK_INVOICE_FOLDER)
             return 0
 
-        messages = target_folder.get_messages(limit=50, query=target_folder.new_query().on_attribute("isRead").equals(False))
+        messages = target_folder.get_messages(limit=50)
 
         for message in messages:
             message_id = str(message.object_id)
@@ -110,11 +110,12 @@ def poll_inbox(dm: DataManager, alert_manager: AlertManager) -> int:
                 pass
 
             if not is_invoice_email(subject, sender, body_preview):
-                logger.info("Email classified as NOT an invoice — skipping.")
+                logger.info("Email classified as NOT an invoice — saving for admin review.")
                 dm.update_email_log(email_log_id, {
                     "status"    : "pending_review",
                     "error_text": "Classified as non-invoice by AI classifier.",
                 })
+                save_pdf_attachment(message, email_log_id, dm)
                 message.mark_as_read()
                 continue
 

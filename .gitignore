@@ -24,3 +24,6 @@ o365_token.txt
 
 # macOS
 .DS_Store
+
+# claude
+claude.md

@@ -24,6 +24,7 @@ def calculate_charges(
     extra_charges: list[str],
     damaged_pallets: int = 0,
     broken_pallets: int = 0,
+    client_name: str = "",
 ) -> dict:
     """
     Calculate all charges for a client invoice.
@@ -41,7 +42,7 @@ def calculate_charges(
     -------
     dict with keys: line_items (list), subtotal (float), total (float)
     """
-    rates = dm.get_rate_card()
+    rates = dm.get_rates_for_client(client_name) if client_name else dm.get_rate_card()
     line_items: list[dict] = []
 
     # ── Base service charge ──────────────────────────────────────────────────
@@ -53,6 +54,7 @@ def calculate_charges(
     line_items.append({
         "description": base_label,
         "quantity"   : pallet_count,
+        "unit"       : "pallets",
         "unit_price" : base_rate,
         "total"      : round(base_total, 2),
     })
@@ -63,6 +65,7 @@ def calculate_charges(
         line_items.append({
             "description": "Temperature Recorder",
             "quantity"   : 1,
+            "unit"       : "ea",
             "unit_price" : fee,
             "total"      : round(fee, 2),
         })
@@ -75,6 +78,7 @@ def calculate_charges(
                 line_items.append({
                     "description": "Broken Pallets",
                     "quantity"   : broken_pallets,
+                    "unit"       : "pallets",
                     "unit_price" : fee,
                     "total"      : round(fee * broken_pallets, 2),
                 })
@@ -84,6 +88,7 @@ def calculate_charges(
             line_items.append({
                 "description": label,
                 "quantity"   : 1,
+                "unit"       : "ea",
                 "unit_price" : fee,
                 "total"      : round(fee, 2),
             })

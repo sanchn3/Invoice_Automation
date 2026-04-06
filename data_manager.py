@@ -21,6 +21,7 @@ _PROVIDER_INVOICES_FILE = DATA_DIR / "provider_invoices.json"
 _CLIENT_INVOICES_FILE  = DATA_DIR / "client_invoices.json"
 _PROVIDERS_FILE        = DATA_DIR / "providers.json"
 _RATE_CARD_FILE        = DATA_DIR / "rate_card.json"
+_CLIENT_RATES_FILE     = DATA_DIR / "client_rates.json"
 
 _lock = threading.Lock()
 
@@ -186,3 +187,41 @@ class DataManager:
             card.update(updates)
             _write_json(_RATE_CARD_FILE, card)
             return card
+
+    # ─────────────────────────────────────────
+    # CLIENT RATES (per-client overrides)
+    # ─────────────────────────────────────────
+
+    def get_client_rates(self) -> dict:
+        """Returns dict mapping client_name -> {rate_key: value} overrides."""
+        with _lock:
+            data = _read_json(_CLIENT_RATES_FILE)
+            return data if isinstance(data, dict) else {}
+
+    def get_rates_for_client(self, client_name: str) -> dict:
+        """
+        Returns the effective rate card for a client:
+        default rate card merged with any client-specific overrides.
+        """
+        defaults  = self.get_rate_card()
+        overrides = self.get_client_rates().get(client_name, {})
+        return {**defaults, **overrides}
+
+    def set_client_rates(self, client_name: str, rates: dict) -> None:
+        """Save per-client rate overrides. Pass an empty dict to remove overrides."""
+        with _lock:
+            all_rates = _read_json(_CLIENT_RATES_FILE)
+            if not isinstance(all_rates, dict):
+                all_rates = {}
+            if rates:
+                all_rates[client_name] = rates
+            else:
+                all_rates.pop(client_name, None)
+            _write_json(_CLIENT_RATES_FILE, all_rates)
+
+    def delete_client_rates(self, client_name: str) -> None:
+        with _lock:
+            all_rates = _read_json(_CLIENT_RATES_FILE)
+            if isinstance(all_rates, dict):
+                all_rates.pop(client_name, None)
+                _write_json(_CLIENT_RATES_FILE, all_rates)
