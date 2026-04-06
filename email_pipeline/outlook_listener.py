@@ -40,6 +40,14 @@ def _get_account() -> Account:
     return account
 
 
+def _try_mark_read(message) -> None:
+    """Mark email as read. Logs a warning on failure (e.g. missing write permissions) instead of raising."""
+    try:
+        message.mark_as_read()
+    except Exception as exc:
+        logger.warning("Could not mark email as read (permission issue?): %s", exc)
+
+
 def poll_inbox(dm: DataManager, alert_manager: AlertManager) -> int:
     """
     Poll OUTLOOK_INVOICE_FOLDER for unread emails.
@@ -116,13 +124,13 @@ def poll_inbox(dm: DataManager, alert_manager: AlertManager) -> int:
                     "error_text": "Classified as non-invoice by AI classifier.",
                 })
                 save_pdf_attachment(message, email_log_id, dm)
-                message.mark_as_read()
+                _try_mark_read(message)
                 continue
 
             # ── Handle attachment ─────────────────────────────────────────────
             handle_attachment(message, email_log_id, dm, alert_manager)
 
-            message.mark_as_read()
+            _try_mark_read(message)
             count += 1
 
     except Exception as e:

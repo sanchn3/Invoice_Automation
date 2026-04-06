@@ -152,6 +152,12 @@ class DataManager:
                 return inv
         return None
 
+    def delete_client_invoice(self, id: str) -> None:
+        with _lock:
+            invoices = _read_json(_CLIENT_INVOICES_FILE)
+            invoices = [inv for inv in invoices if inv["id"] != id]
+            _write_json(_CLIENT_INVOICES_FILE, invoices)
+
     def get_client_invoice_by_provider_invoice_id(self, provider_invoice_id: str) -> dict | None:
         for inv in self.get_client_invoices():
             if inv.get("provider_invoice_id") == provider_invoice_id:

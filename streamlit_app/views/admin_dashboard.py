@@ -17,8 +17,6 @@ from invoice_logic.iif_exporter import generate_iif
 from invoice_logic.pdf_generator import generate_pdf
 from email_pipeline.attachment_handler import process_pdf_from_path
 from alerting.alert_manager import AlertManager
-from streamlit_app.components.status_badge import status_badge, STATUS_ORDER
-from streamlit_app.components.invoice_card import invoice_card
 
 _STUCK_HOURS = 24
 
@@ -56,9 +54,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         st.subheader("Invoice Pipeline")
 
         email_logs       = dm.get_email_logs()
-        provider_invs    = {pi["id"]: pi for pi in dm.get_provider_invoices()}
+        provider_invs    = dm.get_provider_invoices()
         client_invs_list = dm.get_client_invoices()
-        client_by_prov   = {ci["provider_invoice_id"]: ci for ci in client_invs_list if ci.get("provider_invoice_id")}
 
         # ── Pending Review section ─────────────────────────────────────────────
         pending_review = [log for log in email_logs if log.get("status") == "pending_review"]
@@ -106,211 +103,231 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
             st.markdown("---")
 
-        if not email_logs:
-            st.info("No emails received yet.")
-        else:
-            # Group by status
-            by_status: dict[str, list[dict]] = defaultdict(list)
-            for log in email_logs:
-                by_status[log.get("status", "received")].append(log)
+        # ── Sub-tabs ───────────────────────────────────────────────────────────
+        sub_parsed, sub_invoices = st.tabs(["📄 Parsed", "🧾 Invoices"])
 
-            # Sort statuses by pipeline order
-            ordered_statuses = [s for s in STATUS_ORDER if s in by_status]
-            for s in by_status:
-                if s not in ordered_statuses:
-                    ordered_statuses.append(s)
+        with sub_parsed:
+            sorted_prov = sorted(provider_invs, key=lambda x: x.get("created_at", ""), reverse=True)
+            if not sorted_prov:
+                st.info("No parsed invoices yet.")
+            else:
+                st.caption(f"{len(sorted_prov)} provider invoice(s)")
+                rows = [
+                    {
+                        "Invoice #": pi.get("invoice_number", "—"),
+                        "Date"     : pi.get("invoice_date", "—"),
+                        "Client"   : pi.get("client_name", "—"),
+                        "Total"    : f"${pi.get('total', 0):,.2f}",
+                    }
+                    for pi in sorted_prov
+                ]
+                st.dataframe(rows, use_container_width=True, hide_index=True)
 
-            cols = st.columns(max(len(ordered_statuses), 1))
-            for col, status in zip(cols, ordered_statuses):
-                with col:
-                    count = len(by_status[status])
-                    st.markdown(f"**{status.replace('_', ' ').title()}** ({count})")
-                    for log in by_status[status]:
-                        stuck = _is_stuck(log)
-                        prov_inv = None
-                        cli_inv  = None
-
-                        # Find linked invoices via email_intake_id
-                        for pi in provider_invs.values():
-                            if pi.get("email_intake_id") == log["id"]:
-                                prov_inv = pi
-                                cli_inv  = client_by_prov.get(pi["id"])
-                                break
-
-                        prefix = "⚠️ " if stuck else ""
-                        subject = log.get("subject", "No subject")
-                        short   = f"{prefix}{subject[:30]}{'...' if len(subject) > 30 else ''}"
-
-                        with st.expander(short):
-                            if stuck:
-                                st.warning(f"Stuck for {_STUCK_HOURS}+ hours!")
-                            status_badge(log.get("status", ""))
-                            st.caption(f"From: {log.get('sender', '')}  |  {log.get('received_at', '')[:16].replace('T', ' ')}")
-                            if log.get("error_text"):
-                                st.error(log["error_text"])
-                            if prov_inv:
-                                st.text(f"Invoice #: {prov_inv.get('invoice_number', '—')}")
-                                st.text(f"Client: {prov_inv.get('client_name', '—')}")
-                                st.text(f"Total: ${prov_inv.get('total', 0):,.2f}")
+        with sub_invoices:
+            sorted_cli = sorted(client_invs_list, key=lambda x: x.get("created_at", ""), reverse=True)
+            if not sorted_cli:
+                st.info("No client invoices yet.")
+            else:
+                st.caption(f"{len(sorted_cli)} client invoice(s)")
+                rows = [
+                    {
+                        "Invoice #": ci.get("quickbooks_invoice_number") or "—",
+                        "Date"     : ci.get("invoice_date", "—"),
+                        "Client"   : ci.get("client_name", "—"),
+                        "Total"    : f"${ci.get('total', 0):,.2f}",
+                    }
+                    for ci in sorted_cli
+                ]
+                st.dataframe(rows, use_container_width=True, hide_index=True)
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 2 — APPROVE & GENERATE INVOICE
     # ──────────────────────────────────────────────────────────────────────────
     with tab_approve:
-        st.subheader("Set Service Details / Approve Jobs")
+        st.subheader("Approve & Invoice")
 
-        client_invoices  = dm.get_client_invoices()
+        client_invoices   = dm.get_client_invoices()
         provider_invoices = dm.get_provider_invoices()
-        prov_by_id       = {pi["id"]: pi for pi in provider_invoices}
+        prov_by_id        = {pi["id"]: pi for pi in provider_invoices}
 
-        # ── Section A: set service type for pending_worker invoices ───────────
-        pending_worker = [ci for ci in client_invoices if ci.get("status") == "pending_worker"]
+        all_ci = sorted(client_invoices, key=lambda x: x.get("created_at", ""), reverse=True)
 
-        if pending_worker:
-            st.markdown("#### Set Service Type")
-            st.caption("These invoices have arrived but the admin has not yet set the service type.")
-
-            for ci in pending_worker:
-                prov = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
-                with st.expander(f"{ci.get('client_name', 'Unknown')} — {prov.get('invoice_number', '—')}"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Provider",   prov.get("provider_name", "—"))
-                        st.metric("Invoice #",  prov.get("invoice_number", "—"))
-                    with col2:
-                        st.metric("Client",     ci.get("client_name", "—"))
-                        st.metric("Prov Total", f"${prov.get('total', 0):,.2f}")
-
-                    service_key = f"svc_{ci['id']}"
-                    temp_key    = f"tmp_{ci['id']}"
-
-                    current_svc = ci.get("service_type") or "in_out"
-                    service_type = st.radio(
-                        "Service Type",
-                        options=["in_out", "transfer"],
-                        format_func=lambda x: "In-Out Storage" if x == "in_out" else "Transfer (Truck-to-Truck)",
-                        index=0 if current_svc == "in_out" else 1,
-                        key=service_key,
-                        horizontal=True,
-                    )
-                    temp_recorder = st.checkbox(
-                        "Temperature Recorder installed in outbound truck",
-                        value=ci.get("temp_recorder", False),
-                        key=temp_key,
-                    )
-
-                    if st.button("Save Service Details", key=f"save_{ci['id']}"):
-                        dm.update_client_invoice(ci["id"], {
-                            "service_type" : service_type,
-                            "temp_recorder": temp_recorder,
-                        })
-                        st.success("Service details saved.")
-                        st.rerun()
+        if not all_ci:
+            st.info("No invoices yet.")
         else:
-            st.info("No invoices pending service type assignment.")
+            st.caption(f"{len(all_ci)} invoice(s) — newest first")
 
-        st.markdown("---")
+            for ci in all_ci:
+                prov    = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
+                status  = ci.get("status", "")
+                cid     = ci["id"]
+                editable = status in ("pending_worker", "ready_to_invoice")
 
-        # ── Section B: approve ready_to_invoice jobs ──────────────────────────
-        ready = [ci for ci in client_invoices if ci.get("status") == "ready_to_invoice"]
+                # Pre-initialise so they're always in scope
+                current_svc = ci.get("service_type") or "in_out"
+                svc  = current_svc
+                temp = ci.get("temp_recorder", False)
 
-        if ready:
-            st.markdown("#### Approve & Generate Client Invoice")
-            st.caption("Worker has submitted job details. Enter the QuickBooks invoice number and generate.")
+                confirm_key = f"confirm_del_{cid}"
 
-            for ci in ready:
-                prov = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
-                with st.expander(f"✅ {ci.get('client_name', 'Unknown')} — Worker Submitted"):
-                    st.markdown("**Worker-submitted details:**")
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("Pallets",          ci.get("pallet_count", 0))
-                    c2.metric("Damaged Pallets",  ci.get("damaged_pallets", 0))
-                    c3.metric("Broken Pallets",   ci.get("broken_pallets", 0))
+                with st.container(border=True):
+                    # ── Row 1: table fields ───────────────────────────────
+                    r1a, r1b, r1c, r1d, r1e = st.columns([1.2, 0.9, 2, 1, 1.8])
 
-                    extras = ci.get("extra_charges", [])
-                    if extras:
-                        st.text("Extra charges: " + ", ".join(e.replace("_", " ").title() for e in extras))
-                    if ci.get("worker_notes"):
-                        st.text(f"Notes: {ci['worker_notes']}")
-
-                    photos = ci.get("photo_paths", [])
-                    if photos:
-                        st.markdown(f"**Photos ({len(photos)})**")
-                        photo_cols = st.columns(min(len(photos), 4))
-                        for ph_col, ph_path in zip(photo_cols, photos[:4]):
-                            try:
-                                ph_col.image(ph_path, use_container_width=True)
-                            except Exception:
-                                ph_col.caption(ph_path)
-
-                    st.markdown("---")
-
-                    # Allow setting service type here if it wasn't set earlier
-                    current_svc = ci.get("service_type") or "in_out"
-                    service_type_b = st.radio(
-                        "Service Type",
-                        options=["in_out", "transfer"],
-                        format_func=lambda x: "In-Out Storage" if x == "in_out" else "Transfer (Truck-to-Truck)",
-                        index=0 if current_svc == "in_out" else 1,
-                        key=f"svc_b_{ci['id']}",
-                        horizontal=True,
-                    )
-                    temp_recorder_b = st.checkbox(
-                        "Temperature Recorder installed in outbound truck",
-                        value=ci.get("temp_recorder", False),
-                        key=f"tmp_b_{ci['id']}",
-                    )
-
-                    qb_num = st.text_input(
-                        "QuickBooks Invoice Number (enter from QuickBooks Desktop)",
-                        key=f"qb_{ci['id']}",
-                        placeholder="e.g. 1042",
-                        help="NEVER auto-generated. Enter manually from QuickBooks.",
-                    )
-
-                    if st.button("Generate Client Invoice", key=f"gen_{ci['id']}", type="primary"):
-                        if not qb_num.strip():
-                            st.error("Enter the QuickBooks invoice number before generating.")
-                        else:
-                            charges = calculate_charges(
-                                dm=dm,
-                                service_type=service_type_b,
-                                pallet_count=int(ci.get("pallet_count", 1)),
-                                temp_recorder=temp_recorder_b,
-                                extra_charges=ci.get("extra_charges", []),
-                                damaged_pallets=int(ci.get("damaged_pallets", 0)),
-                                broken_pallets=int(ci.get("broken_pallets", 0)),
-                                client_name=ci.get("client_name", ""),
+                    with r1a:
+                        inv_num = (
+                            ci.get("quickbooks_invoice_number")
+                            or prov.get("invoice_number", "—")
+                        )
+                        st.markdown(f"**{inv_num}**")
+                    with r1b:
+                        st.write(ci.get("invoice_date", "—"))
+                    with r1c:
+                        st.write(ci.get("client_name", "—"))
+                    with r1d:
+                        st.write(f"${ci.get('total', 0):,.2f}")
+                    with r1e:
+                        if editable:
+                            svc = st.selectbox(
+                                label="Service Type",
+                                options=["in_out", "transfer"],
+                                format_func=lambda x: "In-Out Storage" if x == "in_out" else "Transfer",
+                                index=0 if current_svc == "in_out" else 1,
+                                key=f"svc_{cid}",
+                                label_visibility="collapsed",
                             )
-                            updated_inv = {
-                                "quickbooks_invoice_number": qb_num.strip(),
-                                "service_type" : service_type_b,
-                                "temp_recorder": temp_recorder_b,
-                                "line_items"   : charges["line_items"],
-                                "subtotal"     : charges["subtotal"],
-                                "total"        : charges["total"],
-                                "status"       : "invoiced",
-                                "invoice_date" : datetime.utcnow().date().isoformat(),
-                            }
-                            dm.update_client_invoice(ci["id"], updated_inv)
-                            if prov.get("email_intake_id"):
-                                dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
-                            st.success(f"Client invoice generated! Total: ${charges['total']:,.2f}")
+                        else:
+                            st.caption(
+                                {"in_out": "In-Out Storage", "transfer": "Transfer"}.get(current_svc, "—")
+                            )
+
+                    # ── Row 2: actions ────────────────────────────────────
+                    r2a, r2b, r2c, r2d = st.columns([2.5, 0.8, 0.8, 0.8])
+
+                    with r2a:
+                        if editable:
+                            temp = st.checkbox(
+                                "Temperature Recorder",
+                                value=ci.get("temp_recorder", False),
+                                key=f"tmp_{cid}",
+                            )
+                        elif ci.get("temp_recorder"):
+                            st.caption("🌡 Temp Recorder used")
+
+                    with r2b:
+                        if editable:
+                            if st.button("💾 Save", key=f"save_{cid}", use_container_width=True):
+                                dm.update_client_invoice(cid, {
+                                    "service_type" : svc,
+                                    "temp_recorder": temp,
+                                })
+                                st.success("Service details saved.")
+                                st.rerun()
+
+                    with r2c:
+                        if status in ("invoiced", "exported_to_qb") and ci.get("quickbooks_invoice_number"):
+                            pdf_bytes = generate_pdf(ci)
+                            pdf_name  = f"INCO_Invoice_{ci['quickbooks_invoice_number']}.pdf"
+                        else:
+                            pdf_path = prov.get("pdf_local_path", "")
+                            if pdf_path and Path(pdf_path).exists():
+                                pdf_bytes = Path(pdf_path).read_bytes()
+                                pdf_name  = prov.get("invoice_number", "invoice") + ".pdf"
+                            else:
+                                pdf_bytes = None
+                                pdf_name  = "invoice.pdf"
+
+                        if pdf_bytes:
+                            st.download_button(
+                                "📄 PDF", pdf_bytes, pdf_name,
+                                mime="application/pdf",
+                                key=f"pdf_{cid}",
+                                use_container_width=True,
+                            )
+                        else:
+                            st.button("📄 PDF", key=f"pdf_na_{cid}", disabled=True, use_container_width=True)
+
+                    with r2d:
+                        if st.session_state.get(confirm_key):
+                            st.caption("⚠️ Sure?")
+                        else:
+                            if st.button("🗑 Delete", key=f"del_{cid}", use_container_width=True):
+                                st.session_state[confirm_key] = True
+                                st.rerun()
+
+                    # ── Delete confirmation row ───────────────────────────
+                    if st.session_state.get(confirm_key):
+                        dc_yes, dc_no = st.columns(2)
+                        if dc_yes.button("✅ Yes, delete", key=f"del_yes_{cid}", type="primary", use_container_width=True):
+                            dm.delete_client_invoice(cid)
+                            st.session_state.pop(confirm_key, None)
+                            st.rerun()
+                        if dc_no.button("✗ Cancel", key=f"del_no_{cid}", use_container_width=True):
+                            st.session_state.pop(confirm_key, None)
                             st.rerun()
 
-                    # PDF download for already-invoiced items in this section
-                    if ci.get("status") == "invoiced" and ci.get("quickbooks_invoice_number"):
-                        pdf_bytes = generate_pdf(ci)
-                        fname = f"INCO_Invoice_{ci.get('quickbooks_invoice_number', ci['id'])}.pdf"
-                        st.download_button(
-                            label    ="⬇ Download PDF Invoice",
-                            data     =pdf_bytes,
-                            file_name=fname,
-                            mime     ="application/pdf",
-                            key      =f"pdf_approve_{ci['id']}",
-                        )
-        else:
-            st.info("No jobs ready for invoicing.")
+                    # ── Row 3: ready_to_invoice — worker details + QB gen ─
+                    if status == "ready_to_invoice":
+                        st.markdown("---")
+                        st.caption("Worker submitted:")
+                        w1, w2, w3 = st.columns(3)
+                        w1.metric("Pallets",         ci.get("pallet_count", 0))
+                        w2.metric("Damaged Pallets",  ci.get("damaged_pallets", 0))
+                        w3.metric("Broken Pallets",   ci.get("broken_pallets", 0))
+
+                        extras = ci.get("extra_charges", [])
+                        if extras:
+                            st.caption("Extra: " + ", ".join(e.replace("_", " ").title() for e in extras))
+                        if ci.get("worker_notes"):
+                            st.caption(f"Notes: {ci['worker_notes']}")
+
+                        photos = ci.get("photo_paths", [])
+                        if photos:
+                            pcols = st.columns(min(len(photos), 4))
+                            for ph_col, ph_path in zip(pcols, photos[:4]):
+                                try:
+                                    ph_col.image(ph_path, use_container_width=True)
+                                except Exception:
+                                    ph_col.caption(ph_path)
+
+                        qb_col, gen_col = st.columns([2, 1])
+                        with qb_col:
+                            qb_num = st.text_input(
+                                "QuickBooks Invoice Number",
+                                key=f"qb_{cid}",
+                                placeholder="e.g. 1042",
+                                help="NEVER auto-generated. Enter manually from QuickBooks.",
+                            )
+                        with gen_col:
+                            st.write("")  # vertical spacing
+                            if st.button("🟢 Generate Invoice", key=f"gen_{cid}", type="primary", use_container_width=True):
+                                if not qb_num.strip():
+                                    st.error("Enter the QuickBooks invoice number before generating.")
+                                else:
+                                    charges = calculate_charges(
+                                        dm=dm,
+                                        service_type=svc,
+                                        pallet_count=int(ci.get("pallet_count", 1)),
+                                        temp_recorder=temp,
+                                        extra_charges=ci.get("extra_charges", []),
+                                        damaged_pallets=int(ci.get("damaged_pallets", 0)),
+                                        broken_pallets=int(ci.get("broken_pallets", 0)),
+                                        client_name=ci.get("client_name", ""),
+                                    )
+                                    dm.update_client_invoice(cid, {
+                                        "quickbooks_invoice_number": qb_num.strip(),
+                                        "service_type" : svc,
+                                        "temp_recorder": temp,
+                                        "line_items"   : charges["line_items"],
+                                        "subtotal"     : charges["subtotal"],
+                                        "total"        : charges["total"],
+                                        "status"       : "invoiced",
+                                        "invoice_date" : datetime.utcnow().date().isoformat(),
+                                    })
+                                    if prov.get("email_intake_id"):
+                                        dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
+                                    st.success(f"Invoice generated! Total: ${charges['total']:,.2f}")
+                                    st.rerun()
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 3 — QUICKBOOKS EXPORT
