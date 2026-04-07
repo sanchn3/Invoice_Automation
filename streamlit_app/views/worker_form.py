@@ -34,7 +34,9 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
     def job_label(ci: dict) -> str:
         provider_inv = dm.get_provider_invoice_by_id(ci.get("provider_invoice_id", ""))
         provider = provider_inv.get("provider_name", "Unknown") if provider_inv else "Unknown"
-        return f"{ci.get('client_name', 'Unknown')} — {provider} — {ci.get('invoice_date', '')}"
+        inv_num  = provider_inv.get("invoice_number", "") if provider_inv else ""
+        inv_part = f" — {inv_num}" if inv_num else ""
+        return f"{ci.get('client_name', 'Unknown')} — {provider}{inv_part} — {ci.get('invoice_date', '')}"
 
     job_options = {job_label(ci): ci for ci in pending_jobs}
     selected_label = st.selectbox(
@@ -52,6 +54,18 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
     col1.metric("Client",   selected_job.get("client_name", "—"))
     col2.metric("Provider", provider_inv.get("provider_name", "—") if provider_inv else "—")
     col3.metric("Date",     selected_job.get("invoice_date", "—"))
+
+    pdf_path = provider_inv.get("pdf_local_path", "") if provider_inv else ""
+    if pdf_path and Path(pdf_path).exists():
+        pdf_key = f"worker_pdf_{job_id}"
+        pdf_label = "📄 Hide Invoice PDF" if st.session_state.get(pdf_key) else "📄 View Invoice PDF"
+        if st.button(pdf_label, key=f"pdftoggle_{job_id}"):
+            st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
+            st.rerun()
+        if st.session_state.get(pdf_key):
+            from streamlit_pdf_viewer import pdf_viewer
+            pdf_viewer(Path(pdf_path).read_bytes(), key=f"pdfview_{job_id}")
+
     st.markdown("---")
 
     # ── Worker inputs ─────────────────────────────────────────────────────────

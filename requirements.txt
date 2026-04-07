@@ -6,3 +6,5 @@ python-dotenv>=1.0.0
 apscheduler>=3.10.4
 Pillow>=10.0.0
 reportlab>=4.0.0
+streamlit-pdf-viewer>=0.0.12
+pypdf>=4.0.0

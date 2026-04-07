@@ -8,7 +8,9 @@ or written to disk.
 
 from datetime import datetime, timedelta
 from io import BytesIO
+from pathlib import Path
 
+from pypdf import PdfWriter, PdfReader
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
@@ -29,9 +31,11 @@ def _fmt_date(iso_date: str) -> str:
         return iso_date
 
 
-def generate_pdf(invoice: dict) -> bytes:
+def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     """
     Build a PDF invoice that matches the INCO GROUP template.
+    If provider_pdf_path is supplied and the file exists, the original
+    provider invoice pages are appended after the generated invoice page.
 
     Parameters
     ----------
@@ -39,6 +43,8 @@ def generate_pdf(invoice: dict) -> bytes:
         A client-invoice record from DataManager, expected keys:
         quickbooks_invoice_number, client_name, invoice_date,
         line_items, subtotal, total, po_number (optional).
+    provider_pdf_path : str | None
+        Local path to the original provider invoice PDF to append.
 
     Returns
     -------
@@ -311,4 +317,33 @@ def generate_pdf(invoice: dict) -> bytes:
 
     c.save()
     buffer.seek(0)
-    return buffer.read()
+    invoice_bytes = buffer.read()
+
+    if provider_pdf_path:
+        return merge_with_provider_pdf(invoice_bytes, provider_pdf_path)
+    return invoice_bytes
+
+
+def merge_with_provider_pdf(invoice_bytes: bytes, provider_pdf_path: str) -> bytes:
+    """
+    Append the original provider PDF pages after the generated invoice pages.
+    Returns the combined PDF as bytes. Falls back to invoice_bytes alone if
+    the provider PDF cannot be read.
+    """
+    writer = PdfWriter()
+
+    # Page(s) from the generated invoice
+    for page in PdfReader(BytesIO(invoice_bytes)).pages:
+        writer.add_page(page)
+
+    # Page(s) from the original provider PDF
+    provider_path = Path(provider_pdf_path)
+    if not provider_path.exists():
+        raise FileNotFoundError(f"Provider PDF not found: {provider_pdf_path}")
+    for page in PdfReader(str(provider_path)).pages:
+        writer.add_page(page)
+
+    out = BytesIO()
+    writer.write(out)
+    out.seek(0)
+    return out.read()

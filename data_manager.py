@@ -103,6 +103,12 @@ class DataManager:
             _write_json(_PROVIDER_INVOICES_FILE, invoices)
             return record
 
+    def delete_provider_invoice(self, id: str) -> None:
+        with _lock:
+            invoices = _read_json(_PROVIDER_INVOICES_FILE)
+            invoices = [inv for inv in invoices if inv["id"] != id]
+            _write_json(_PROVIDER_INVOICES_FILE, invoices)
+
     def update_provider_invoice(self, id: str, updates: dict) -> dict:
         with _lock:
             invoices = _read_json(_PROVIDER_INVOICES_FILE)
