@@ -53,8 +53,8 @@ def generate_iif(client_invoice_ids: list[str], dm: DataManager) -> str:
             )
         if not inv.get("quickbooks_invoice_number"):
             raise ValueError(
-                f"Invoice {inv_id} does not have a QuickBooks invoice number. "
-                f"Enter the QB number in the admin dashboard before exporting."
+                f"Invoice {inv_id} does not have an invoice number. "
+                f"Generate the invoice in the admin dashboard before exporting."
             )
         invoices_to_export.append(inv)
 

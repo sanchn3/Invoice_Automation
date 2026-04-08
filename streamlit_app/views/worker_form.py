@@ -83,6 +83,7 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
         "Repacking"         : "repacking",
         "Re-Inspection"     : "re_inspection",
         "Broken Pallets"    : "broken_pallets",
+        "Overtime"          : "overtime",
     }
     selected_extras: list[str] = []
     cols = st.columns(len(extra_options))

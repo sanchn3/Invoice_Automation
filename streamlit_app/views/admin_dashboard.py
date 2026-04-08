@@ -20,6 +20,28 @@ from alerting.alert_manager import AlertManager
 
 _STUCK_HOURS = 24
 
+# Canonical client-name aliases (lowercase key → display name)
+_CLIENT_ALIASES: dict[str, str] = {
+    "babia ice": "Babia Ice",
+    "babia"    : "Babia Ice",
+}
+
+
+def _canonical_client(name: str) -> str:
+    """Normalise variant spellings to a single display name."""
+    return _CLIENT_ALIASES.get(name.strip().lower(), name)
+
+
+def _generate_unique_invoice_id(dm: DataManager) -> str:
+    """Return the next sequential 5-digit numeric invoice ID."""
+    numeric_ids = [
+        int(ci["quickbooks_invoice_number"])
+        for ci in dm.get_client_invoices()
+        if ci.get("quickbooks_invoice_number", "").isdigit()
+    ]
+    next_id = (max(numeric_ids) + 1) if numeric_ids else 10001
+    return str(next_id)
+
 
 def _is_stuck(log: dict) -> bool:
     terminal = {"invoiced", "exported_to_qb"}
@@ -342,7 +364,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     with r2c:
                         if status in ("invoiced", "exported_to_qb") and ci.get("quickbooks_invoice_number"):
                             pdf_bytes = generate_pdf(ci, prov.get("pdf_local_path"))
-                            pdf_name  = f"INCO_Invoice_{ci['quickbooks_invoice_number']}.pdf"
+                            _yy = datetime.now().strftime("%y")
+                            pdf_name  = f"{ci['quickbooks_invoice_number']}-{_yy}.pdf"
                         else:
                             pdf_path = prov.get("pdf_local_path", "")
                             if pdf_path and Path(pdf_path).exists():
@@ -405,44 +428,34 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 except Exception:
                                     ph_col.caption(ph_path)
 
-                        qb_col, gen_col = st.columns([2, 1])
-                        with qb_col:
-                            qb_num = st.text_input(
-                                "QuickBooks Invoice Number",
-                                key=f"qb_{cid}",
-                                placeholder="e.g. 1042",
-                                help="NEVER auto-generated. Enter manually from QuickBooks.",
+                        if st.button("🟢 Generate Invoice", key=f"gen_{cid}", type="primary", width='stretch'):
+                            inv_id = _generate_unique_invoice_id(dm)
+                            charges = calculate_charges(
+                                dm=dm,
+                                service_type=svc,
+                                pallet_count=int(ci.get("pallet_count", 1)),
+                                temp_recorder=temp,
+                                extra_charges=ci.get("extra_charges", []),
+                                damaged_pallets=int(ci.get("damaged_pallets", 0)),
+                                broken_pallets=int(ci.get("broken_pallets", 0)),
+                                client_name=ci.get("client_name", ""),
                             )
-                        with gen_col:
-                            st.write("")  # vertical spacing
-                            if st.button("🟢 Generate Invoice", key=f"gen_{cid}", type="primary", width='stretch'):
-                                if not qb_num.strip():
-                                    st.error("Enter the QuickBooks invoice number before generating.")
-                                else:
-                                    charges = calculate_charges(
-                                        dm=dm,
-                                        service_type=svc,
-                                        pallet_count=int(ci.get("pallet_count", 1)),
-                                        temp_recorder=temp,
-                                        extra_charges=ci.get("extra_charges", []),
-                                        damaged_pallets=int(ci.get("damaged_pallets", 0)),
-                                        broken_pallets=int(ci.get("broken_pallets", 0)),
-                                        client_name=ci.get("client_name", ""),
-                                    )
-                                    dm.update_client_invoice(cid, {
-                                        "quickbooks_invoice_number": qb_num.strip(),
-                                        "service_type" : svc,
-                                        "temp_recorder": temp,
-                                        "line_items"   : charges["line_items"],
-                                        "subtotal"     : charges["subtotal"],
-                                        "total"        : charges["total"],
-                                        "status"       : "invoiced",
-                                        "invoice_date" : datetime.utcnow().date().isoformat(),
-                                    })
-                                    if prov.get("email_intake_id"):
-                                        dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
-                                    st.success(f"Invoice generated! Total: ${charges['total']:,.2f}")
-                                    st.rerun()
+                            client_rates = dm.get_rates_for_client(ci.get("client_name", ""))
+                            dm.update_client_invoice(cid, {
+                                "quickbooks_invoice_number": inv_id,
+                                "service_type" : svc,
+                                "temp_recorder": temp,
+                                "line_items"   : charges["line_items"],
+                                "subtotal"     : charges["subtotal"],
+                                "total"        : charges["total"],
+                                "net_days"     : int(client_rates.get("net_days", 30)),
+                                "status"       : "invoiced",
+                                "invoice_date" : datetime.utcnow().date().isoformat(),
+                            })
+                            if prov.get("email_intake_id"):
+                                dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
+                            st.success(f"Invoice #{inv_id} generated! Total: ${charges['total']:,.2f}")
+                            st.rerun()
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 3 — QUICKBOOKS EXPORT
@@ -472,7 +485,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 with col_pdf:
                     prov_exp      = dm.get_provider_invoice_by_id(ci.get("provider_invoice_id", ""))
                     pdf_bytes     = generate_pdf(ci, prov_exp.get("pdf_local_path") if prov_exp else None)
-                    fname = f"INCO_Invoice_{qb}.pdf"
+                    fname = f"{qb}-{datetime.now().strftime('%y')}.pdf"
                     st.download_button(
                         label    ="⬇ PDF",
                         data     =pdf_bytes,
@@ -519,7 +532,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     st.download_button(
                         label    ="⬇ PDF",
                         data     =pdf_bytes,
-                        file_name=f"INCO_Invoice_{qb}.pdf",
+                        file_name=f"{qb}-{datetime.now().strftime('%y')}.pdf",
                         mime     ="application/pdf",
                         key      =f"pdf_hist_{ci['id']}",
                     )
@@ -542,7 +555,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             client_counts: dict[str, int] = defaultdict(int)
             client_totals: dict[str, float] = defaultdict(float)
             for ci in all_ci:
-                client = ci.get("client_name", "Unknown")
+                client = _canonical_client(ci.get("client_name", "Unknown"))
                 client_counts[client] += 1
                 client_totals[client] += float(ci.get("total", 0))
 
@@ -618,6 +631,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             "broken_pallet_fee"     : "Broken Pallet (per pallet)",
             "repacking_fee"         : "Repacking",
             "re_inspection_fee"     : "Re-Inspection",
+            "broker_fee"            : "Broker Fee",
+            "net_days"              : "Net Days (payment terms)",
         }
 
         # ── Default Rates ─────────────────────────────────────────────────────
@@ -630,14 +645,23 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         items = list(labels.items())
         for i, (key, label) in enumerate(items):
             col = col1 if i < len(items) // 2 + len(items) % 2 else col2
-            updated[key] = col.number_input(
-                label=f"{label} ($)",
-                value=float(default_rates.get(key, 0)),
-                min_value=0.0,
-                step=0.25,
-                format="%.2f",
-                key=f"rate_{key}",
-            )
+            if key == "net_days":
+                updated[key] = col.number_input(
+                    label=label,
+                    value=int(default_rates.get(key, 30)),
+                    min_value=1,
+                    step=1,
+                    key=f"rate_{key}",
+                )
+            else:
+                updated[key] = col.number_input(
+                    label=f"{label} ($)",
+                    value=float(default_rates.get(key, 0)),
+                    min_value=0.0,
+                    step=0.25,
+                    format="%.2f",
+                    key=f"rate_{key}",
+                )
 
         if st.button("💾 Save Default Rates", type="primary"):
             dm.update_rate_card(updated)

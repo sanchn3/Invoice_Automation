@@ -10,6 +10,9 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
+from config import PHOTOS_DIR
+LOGO_PATH = str(PHOTOS_DIR / "logo_smaller_2.jpg")
+
 from pypdf import PdfWriter, PdfReader
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -56,29 +59,58 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     margin     = 0.60 * inch
     content_w  = W - 2 * margin
 
-    # ── LOGO BOX (top-left) ───────────────────────────────────────────────────
+    # ── LOGO (top-left) ───────────────────────────────────────────────────────
     logo_x = margin
     logo_y = H - margin - 0.90 * inch
     logo_w = 2.20 * inch
     logo_h = 0.90 * inch
+    r      = 10  # corner radius (points) used throughout
 
-    c.setFillColor(DARK)
-    c.rect(logo_x, logo_y, logo_w, logo_h, fill=1, stroke=0)
+    if Path(LOGO_PATH).exists():
+        # Clip to rounded rect before drawing the image
+        k = 0.5523  # Bezier approximation for a quarter circle
+        c.saveState()
+        p = c.beginPath()
+        p.moveTo(logo_x + r, logo_y)
+        p.lineTo(logo_x + logo_w - r, logo_y)
+        p.curveTo(logo_x + logo_w - r + k*r, logo_y,
+                  logo_x + logo_w, logo_y + r - k*r,
+                  logo_x + logo_w, logo_y + r)
+        p.lineTo(logo_x + logo_w, logo_y + logo_h - r)
+        p.curveTo(logo_x + logo_w, logo_y + logo_h - r + k*r,
+                  logo_x + logo_w - r + k*r, logo_y + logo_h,
+                  logo_x + logo_w - r, logo_y + logo_h)
+        p.lineTo(logo_x + r, logo_y + logo_h)
+        p.curveTo(logo_x + r - k*r, logo_y + logo_h,
+                  logo_x, logo_y + logo_h - r + k*r,
+                  logo_x, logo_y + logo_h - r)
+        p.lineTo(logo_x, logo_y + r)
+        p.curveTo(logo_x, logo_y + r - k*r,
+                  logo_x + r - k*r, logo_y,
+                  logo_x + r, logo_y)
+        p.closePath()
+        c.clipPath(p, fill=0, stroke=0)
+        c.drawImage(LOGO_PATH, logo_x, logo_y, width=logo_w, height=logo_h,
+                    preserveAspectRatio=True, mask="auto")
+        c.restoreState()
+    else:
+        # Fallback: blue box with text if image missing
+        c.setFillColor(BLUE)
+        c.roundRect(logo_x, logo_y, logo_w, logo_h, r, fill=1, stroke=0)
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 26)
+        c.drawString(logo_x + 0.14 * inch, logo_y + 0.50 * inch, "INCO")
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(logo_x + 0.14 * inch, logo_y + 0.22 * inch, "COLD STORAGE")
 
-    c.setFillColor(colors.white)
-    c.setFont("Helvetica-Bold", 22)
-    c.drawString(logo_x + 0.12 * inch, logo_y + 0.52 * inch, "INCO")
-    c.setFont("Helvetica", 9)
-    c.drawString(logo_x + 0.12 * inch, logo_y + 0.28 * inch, "COLD STORAGE")
-
-    # ── INVOICE BOX (top-right) ───────────────────────────────────────────────
+    # ── INVOICE BOX (top-right) — blue, rounded ───────────────────────────────
     inv_w = 2.30 * inch
     inv_h = 0.90 * inch
     inv_x = W - margin - inv_w
     inv_y = logo_y
 
     c.setFillColor(BLUE)
-    c.rect(inv_x, inv_y, inv_w, inv_h, fill=1, stroke=0)
+    c.roundRect(inv_x, inv_y, inv_w, inv_h, r, fill=1, stroke=0)
 
     c.setFillColor(colors.white)
     c.setFont("Helvetica-Bold", 16)
@@ -109,9 +141,9 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     for cw in col_widths[:-1]:
         col_x.append(col_x[-1] + cw)
 
-    # Background
+    # Background — rounded
     c.setFillColor(LIGHT_GRAY)
-    c.rect(margin, box_bottom, content_w, box_h, fill=1, stroke=0)
+    c.roundRect(margin, box_bottom, content_w, box_h, r, fill=1, stroke=0)
 
     # White vertical dividers
     c.setStrokeColor(colors.white)
@@ -119,10 +151,10 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     for i in range(1, 4):
         c.line(col_x[i], box_bottom, col_x[i], box_top)
 
-    # Outer border
+    # Outer border — rounded
     c.setStrokeColor(MID_GRAY)
     c.setLineWidth(0.5)
-    c.rect(margin, box_bottom, content_w, box_h, fill=0, stroke=1)
+    c.roundRect(margin, box_bottom, content_w, box_h, r, fill=0, stroke=1)
 
     def _label(x, y, text):
         c.setFillColor(LABEL_GRAY)
@@ -149,9 +181,10 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
 
     # INVOICE DATE / DUE DATE
     inv_date_str = invoice.get("invoice_date", datetime.utcnow().date().isoformat())
+    net_days     = int(invoice.get("net_days", 30))
     try:
         inv_dt  = datetime.fromisoformat(inv_date_str)
-        due_dt  = inv_dt + timedelta(days=30)
+        due_dt  = inv_dt + timedelta(days=net_days)
         inv_fmt = inv_dt.strftime("%m/%d/%Y")
         due_fmt = due_dt.strftime("%m/%d/%Y")
     except Exception:
@@ -165,7 +198,7 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
 
     # TERMS / P.O. NUMBER
     _label(col_x[3] + pad, box_top - 0.18 * inch, "TERMS")
-    _value(col_x[3] + pad, box_top - 0.36 * inch, "Net 30")
+    _value(col_x[3] + pad, box_top - 0.36 * inch, f"Net {net_days}")
     _label(col_x[3] + pad, box_top - 0.57 * inch, "P.O. NUMBER")
     _value(col_x[3] + pad, box_top - 0.75 * inch, invoice.get("po_number", ""))
 
@@ -261,10 +294,6 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
         c.setFont("Helvetica-Bold" if highlight else "Helvetica", 10 if highlight else 9)
         c.drawString(tot_x + 0.15 * inch, txt_y, label)
         c.drawRightString(tot_x + tot_w - 0.15 * inch, txt_y, value_str)
-        if highlight:
-            c.setFont("Helvetica", 8)
-            c.drawRightString(tot_x + tot_w - 0.15 * inch, y_top - h + 0.07 * inch - 0.10 * inch,
-                              "USD")
         return y_top - h
 
     t_y = row_top
