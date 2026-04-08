@@ -13,10 +13,12 @@ from pathlib import Path
 from config import PHOTOS_DIR
 LOGO_PATH = str(PHOTOS_DIR / "logo_smaller_2.jpg")
 
+from PIL import Image, ImageDraw
 from pypdf import PdfWriter, PdfReader
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 # ── Brand colours ─────────────────────────────────────────────────────────────
@@ -25,6 +27,32 @@ DARK       = colors.HexColor("#1A1A1A")
 LIGHT_GRAY = colors.HexColor("#F2F2F2")
 MID_GRAY   = colors.HexColor("#D0D0D0")
 LABEL_GRAY = colors.HexColor("#888888")
+
+
+def _rounded_image_reader(path: str, radius_px: int = 18) -> ImageReader:
+    """Return an ImageReader of the logo with rounded corners (RGBA PNG in memory).
+    Result is cached in memory so the image is only processed once per process."""
+    return _rounded_image_reader_cached(path, radius_px)
+
+
+def _rounded_image_reader_cached(path: str, radius_px: int) -> ImageReader:
+    # Keyed by path + mtime so cache invalidates if file changes
+    _key = (path, radius_px, Path(path).stat().st_mtime)
+    if _key not in _img_cache:
+        img = Image.open(path).convert("RGBA")
+        mask = Image.new("L", img.size, 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rounded_rectangle([(0, 0), (img.width - 1, img.height - 1)],
+                                radius=radius_px, fill=255)
+        img.putalpha(mask)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        _img_cache[_key] = buf.read()
+    return ImageReader(BytesIO(_img_cache[_key]))
+
+
+_img_cache: dict = {}
 
 
 def _fmt_date(iso_date: str) -> str:
@@ -67,32 +95,9 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     r      = 10  # corner radius (points) used throughout
 
     if Path(LOGO_PATH).exists():
-        # Clip to rounded rect before drawing the image
-        k = 0.5523  # Bezier approximation for a quarter circle
-        c.saveState()
-        p = c.beginPath()
-        p.moveTo(logo_x + r, logo_y)
-        p.lineTo(logo_x + logo_w - r, logo_y)
-        p.curveTo(logo_x + logo_w - r + k*r, logo_y,
-                  logo_x + logo_w, logo_y + r - k*r,
-                  logo_x + logo_w, logo_y + r)
-        p.lineTo(logo_x + logo_w, logo_y + logo_h - r)
-        p.curveTo(logo_x + logo_w, logo_y + logo_h - r + k*r,
-                  logo_x + logo_w - r + k*r, logo_y + logo_h,
-                  logo_x + logo_w - r, logo_y + logo_h)
-        p.lineTo(logo_x + r, logo_y + logo_h)
-        p.curveTo(logo_x + r - k*r, logo_y + logo_h,
-                  logo_x, logo_y + logo_h - r + k*r,
-                  logo_x, logo_y + logo_h - r)
-        p.lineTo(logo_x, logo_y + r)
-        p.curveTo(logo_x, logo_y + r - k*r,
-                  logo_x + r - k*r, logo_y,
-                  logo_x + r, logo_y)
-        p.closePath()
-        c.clipPath(p, fill=0, stroke=0)
-        c.drawImage(LOGO_PATH, logo_x, logo_y, width=logo_w, height=logo_h,
+        img_reader = _rounded_image_reader(LOGO_PATH, radius_px=18)
+        c.drawImage(img_reader, logo_x, logo_y, width=logo_w, height=logo_h,
                     preserveAspectRatio=True, mask="auto")
-        c.restoreState()
     else:
         # Fallback: blue box with text if image missing
         c.setFillColor(BLUE)
