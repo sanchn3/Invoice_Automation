@@ -161,7 +161,7 @@ def parse_pdf(pdf_path: str, provider_profile: dict | None, dm: Any) -> dict | N
 
     result = {
         "provider_name"  : provider_name,
-        "client_name"    : client_name or "",
+        "client_name"    : (client_name or "").upper(),
         "invoice_number" : invoice_number or "",
         "invoice_date"   : invoice_date or "",
         "line_items"     : _parse_line_items(tables),

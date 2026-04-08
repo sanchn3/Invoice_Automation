@@ -20,7 +20,7 @@ def calculate_charges(
     dm: DataManager,
     service_type: str,
     pallet_count: int,
-    temp_recorder: bool,
+    temp_recorder: str | bool,
     extra_charges: list[str],
     damaged_pallets: int = 0,
     broken_pallets: int = 0,
@@ -61,9 +61,21 @@ def calculate_charges(
 
     # ── Temperature recorder ─────────────────────────────────────────────────
     if temp_recorder:
-        fee = float(rates.get("temp_recorder_fee", 0))
+        # backwards-compat: old bool True → hardware_installation
+        _tr_type = temp_recorder if isinstance(temp_recorder, str) else "hardware_installation"
+        _tr_fee_key = (
+            "temp_recorder_installation_fee"
+            if _tr_type == "installation_only"
+            else "temp_recorder_hardware_fee"
+        )
+        # fallback to legacy key for old rate cards that haven't been migrated
+        fee = float(rates.get(_tr_fee_key) or rates.get("temp_recorder_fee", 0))
+        _tr_labels = {
+            "hardware_installation": "Temp. Recorder — Hardware & Installation",
+            "installation_only"    : "Temp. Recorder — Installation Only",
+        }
         line_items.append({
-            "description": "Temperature Recorder",
+            "description": _tr_labels.get(_tr_type, "Temperature Recorder"),
             "quantity"   : 1,
             "unit"       : "ea",
             "unit_price" : fee,

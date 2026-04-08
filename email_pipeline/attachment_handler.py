@@ -107,7 +107,7 @@ def process_pdf_from_path(
     now = datetime.utcnow().isoformat() + "Z"
     provider_invoice = dm.add_provider_invoice({
         "provider_name"   : provider_name,
-        "client_name"     : parsed.get("client_name", ""),
+        "client_name"     : parsed.get("client_name", "").upper(),
         "invoice_number"  : parsed.get("invoice_number", ""),
         "invoice_date"    : parsed.get("invoice_date", ""),
         "line_items"      : parsed.get("line_items", []),
@@ -122,7 +122,7 @@ def process_pdf_from_path(
 
     dm.add_client_invoice({
         "quickbooks_invoice_number": None,
-        "client_name"              : parsed.get("client_name", ""),
+        "client_name"              : parsed.get("client_name", "").upper(),
         "invoice_date"             : parsed.get("invoice_date", now[:10]),
         "service_type"             : None,
         "temp_recorder"            : False,
@@ -274,7 +274,7 @@ def handle_attachment(
     now = datetime.utcnow().isoformat() + "Z"
     provider_invoice = dm.add_provider_invoice({
         "provider_name"   : provider_name,
-        "client_name"     : parsed.get("client_name", ""),
+        "client_name"     : parsed.get("client_name", "").upper(),
         "invoice_number"  : parsed.get("invoice_number", ""),
         "invoice_date"    : parsed.get("invoice_date", ""),
         "line_items"      : parsed.get("line_items", []),
@@ -290,7 +290,7 @@ def handle_attachment(
     # ── Create pending client invoice ─────────────────────────────────────────
     dm.add_client_invoice({
         "quickbooks_invoice_number": None,
-        "client_name"              : parsed.get("client_name", ""),
+        "client_name"              : parsed.get("client_name", "").upper(),
         "invoice_date"             : parsed.get("invoice_date", now[:10]),
         "service_type"             : None,   # set by admin
         "temp_recorder"            : False,

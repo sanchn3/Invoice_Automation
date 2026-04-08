@@ -37,7 +37,7 @@ def _generate_unique_invoice_id(dm: DataManager) -> str:
     numeric_ids = [
         int(ci["quickbooks_invoice_number"])
         for ci in dm.get_client_invoices()
-        if ci.get("quickbooks_invoice_number", "").isdigit()
+        if (ci.get("quickbooks_invoice_number") or "").isdigit()
     ]
     next_id = (max(numeric_ids) + 1) if numeric_ids else 10001
     return str(next_id)
@@ -61,7 +61,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("📦 Invoice Automation — Admin Dashboard")
 
     tab_pipeline, tab_approve, tab_export, tab_report, tab_rates, tab_settings = st.tabs([
-        "🗂 Pipeline",
+        "🗂 Validate",
         "✅ Approve & Invoice",
         "📤 QuickBooks Export",
         "📊 Reports",
@@ -73,7 +73,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     # TAB 1 — PIPELINE BOARD
     # ──────────────────────────────────────────────────────────────────────────
     with tab_pipeline:
-        st.subheader("Invoice Pipeline")
+        st.subheader("Invoice Validation")
 
         poll_col, _ = st.columns([1, 4])
         with poll_col:
@@ -96,9 +96,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         sub_parsed, sub_invoices = st.tabs(["📄 Parsed", "🧾 Invoices"])
 
         with sub_parsed:
+            # Provider invoices that already have an invoiced/exported client invoice
+            # are moved to the Invoices tab — hide them from Parsed.
+            _done_prov_ids = {
+                ci.get("provider_invoice_id")
+                for ci in client_invs_list
+                if ci.get("status") in ("invoiced", "exported_to_qb")
+                and ci.get("provider_invoice_id")
+            }
+            active_provider_invs = [pi for pi in provider_invs if pi["id"] not in _done_prov_ids]
+
             # Combine parsed invoices + pending-review emails, newest first
             all_items = (
-                [("parsed",  pi)  for pi in provider_invs] +
+                [("parsed",  pi)  for pi in active_provider_invs] +
                 [("review",  log) for log in pending_review]
             )
             all_items.sort(key=lambda x: x[1].get("created_at", ""), reverse=True)
@@ -107,7 +117,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 st.info("No parsed invoices yet.")
             else:
                 st.caption(
-                    f"{len(provider_invs)} parsed"
+                    f"{len(active_provider_invs)} parsed"
                     + (f" · {len(pending_review)} pending review" if pending_review else "")
                 )
 
@@ -200,13 +210,21 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
                             s1, s2 = st.columns(2)
                             if s1.button("💾 Save", key=f"esave_{iid}", type="primary", width='stretch'):
+                                canonical = new_client.strip().upper()
                                 dm.update_provider_invoice(iid, {
                                     "invoice_number": new_num.strip(),
                                     "invoice_date"  : new_date.strip(),
-                                    "client_name"   : new_client.strip(),
+                                    "client_name"   : canonical,
                                     "total"         : new_total,
                                     "subtotal"      : new_total,
                                 })
+                                # Keep the linked client invoice in sync
+                                linked_ci = dm.get_client_invoice_by_provider_invoice_id(iid)
+                                if linked_ci:
+                                    dm.update_client_invoice(linked_ci["id"], {
+                                        "client_name" : canonical,
+                                        "invoice_date": new_date.strip(),
+                                    })
                                 st.session_state.pop(edit_key, None)
                                 st.rerun()
                             if s2.button("✗ Cancel", key=f"ecancel_{iid}", width='stretch'):
@@ -287,7 +305,11 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         provider_invoices = dm.get_provider_invoices()
         prov_by_id        = {pi["id"]: pi for pi in provider_invoices}
 
-        all_ci = sorted(client_invoices, key=lambda x: x.get("created_at", ""), reverse=True)
+        all_ci = sorted(
+            [ci for ci in client_invoices if ci.get("status") != "exported_to_qb"],
+            key=lambda x: x.get("created_at", ""),
+            reverse=True,
+        )
 
         if not all_ci:
             st.info("No invoices yet.")
@@ -303,7 +325,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 # Pre-initialise so they're always in scope
                 current_svc = ci.get("service_type") or "in_out"
                 svc  = current_svc
-                temp = ci.get("temp_recorder", False)
 
                 confirm_key = f"confirm_del_{cid}"
 
@@ -342,21 +363,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     r2a, r2b, r2c, r2d = st.columns([2.5, 0.8, 0.8, 0.8])
 
                     with r2a:
-                        if editable:
-                            temp = st.checkbox(
-                                "Temperature Recorder",
-                                value=ci.get("temp_recorder", False),
-                                key=f"tmp_{cid}",
-                            )
-                        elif ci.get("temp_recorder"):
-                            st.caption("🌡 Temp Recorder used")
+                        _TR_TO_LBL = {"hardware_installation": "Hardware & Installation",
+                                      "installation_only"    : "Installation Only"}
+                        _stored = ci.get("temp_recorder", "")
+                        if _stored is True:
+                            _stored = "hardware_installation"
+                        if _stored:
+                            st.caption(f"🌡 {_TR_TO_LBL.get(_stored, _stored)}")
 
                     with r2b:
                         if editable:
                             if st.button("💾 Save", key=f"save_{cid}", width='stretch'):
                                 dm.update_client_invoice(cid, {
-                                    "service_type" : svc,
-                                    "temp_recorder": temp,
+                                    "service_type": svc,
                                 })
                                 st.success("Service details saved.")
                                 st.rerun()
@@ -434,7 +453,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 dm=dm,
                                 service_type=svc,
                                 pallet_count=int(ci.get("pallet_count", 1)),
-                                temp_recorder=temp,
+                                temp_recorder=ci.get("temp_recorder", "hardware_installation"),
                                 extra_charges=ci.get("extra_charges", []),
                                 damaged_pallets=int(ci.get("damaged_pallets", 0)),
                                 broken_pallets=int(ci.get("broken_pallets", 0)),
@@ -623,16 +642,17 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             st.caption(f"Loaded {len(_debug_rates)} rate entries from file.")
 
         labels = {
-            "in_out"                : "In-Out Storage (per pallet)",
-            "transfer"              : "Transfer (per pallet)",
-            "temp_recorder_fee"     : "Temperature Recorder",
-            "quality_inspection_fee": "Quality Inspection",
-            "pallet_cleaning_fee"   : "Pallet Cleaning",
-            "broken_pallet_fee"     : "Broken Pallet (per pallet)",
-            "repacking_fee"         : "Repacking",
-            "re_inspection_fee"     : "Re-Inspection",
-            "broker_fee"            : "Broker Fee",
-            "net_days"              : "Net Days (payment terms)",
+            "in_out"                         : "In-Out Storage (per pallet)",
+            "transfer"                       : "Transfer (per pallet)",
+            "temp_recorder_hardware_fee"     : "Temp. Recorder — Hardware & Installation",
+            "temp_recorder_installation_fee" : "Temp. Recorder — Installation Only",
+            "quality_inspection_fee"         : "Quality Inspection",
+            "pallet_cleaning_fee"            : "Pallet Cleaning",
+            "broken_pallet_fee"              : "Broken Pallet (per pallet)",
+            "repacking_fee"                  : "Repacking",
+            "re_inspection_fee"              : "Re-Inspection",
+            "broker_fee"                     : "Broker Fee",
+            "net_days"                       : "Net Days (payment terms)",
         }
 
         # ── Default Rates ─────────────────────────────────────────────────────

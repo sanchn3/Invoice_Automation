@@ -82,7 +82,6 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
         "Pallet Cleaning"   : "pallet_cleaning",
         "Repacking"         : "repacking",
         "Re-Inspection"     : "re_inspection",
-        "Broken Pallets"    : "broken_pallets",
         "Overtime"          : "overtime",
     }
     selected_extras: list[str] = []
@@ -91,9 +90,16 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
         if col.checkbox(label):
             selected_extras.append(key)
 
-    # Auto-add broken_pallets charge if worker entered broken pallet count
-    if broken_pallets > 0 and "broken_pallets" not in selected_extras:
-        selected_extras.append("broken_pallets")
+    _TR_OPTS   = ["Hardware & Installation", "Installation Only"]
+    _TR_TO_KEY = {"Hardware & Installation": "hardware_installation",
+                  "Installation Only"      : "installation_only"}
+    _tr_sel = st.radio(
+        "Temperature Recorder",
+        options=_TR_OPTS,
+        horizontal=True,
+        key=f"tr_{job_id}",
+    )
+    temp_recorder = _TR_TO_KEY[_tr_sel]
 
     st.subheader("Notes")
     worker_notes = st.text_area(
@@ -136,6 +142,7 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
             "damaged_pallets": int(damaged_pallets),
             "broken_pallets" : int(broken_pallets),
             "extra_charges"  : selected_extras,
+            "temp_recorder"  : temp_recorder,
             "worker_notes"   : worker_notes,
             "photo_paths"    : photo_paths,
             "status"         : "ready_to_invoice",
