@@ -28,6 +28,16 @@ LIGHT_GRAY = colors.HexColor("#F2F2F2")
 MID_GRAY   = colors.HexColor("#D0D0D0")
 LABEL_GRAY = colors.HexColor("#888888")
 
+# ── Company contact info (single source of truth for FROM box and footer) ──────
+_CO_NAME  = "INCO GROUP, INC."
+_CO_ADDR1 = "9005 Travis Dr Ste 1"
+_CO_ADDR2 = "Pharr, TX 78577"
+_CO_PHONE = "(956) 702-8851"
+_CO_EMAIL = "admin@incogrp.com"
+
+# Logo existence checked once at import — avoids a stat() call per PDF.
+_LOGO_EXISTS = Path(LOGO_PATH).exists()
+
 # In-process logo cache: keyed by (path, radius_px, mtime) so it auto-invalidates if the file changes.
 _img_cache: dict = {}
 
@@ -89,7 +99,7 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     logo_h = 0.90 * inch
     r      = 10  # corner radius (points) used throughout
 
-    if Path(LOGO_PATH).exists():
+    if _LOGO_EXISTS:
         img_reader = _rounded_image_reader(LOGO_PATH, radius_px=18)
         c.drawImage(img_reader, logo_x, logo_y, width=logo_w, height=logo_h,
                     preserveAspectRatio=True, mask="auto")
@@ -170,10 +180,10 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
 
     # FROM
     _label(col_x[0] + pad, box_top - 0.18 * inch, "FROM")
-    _value(col_x[0] + pad, box_top - 0.36 * inch, "INCO GROUP, INC.", bold=True)
-    _value(col_x[0] + pad, box_top - 0.51 * inch, "9005 Travis Dr Ste 1")
-    _value(col_x[0] + pad, box_top - 0.64 * inch, "Pharr, TX 78577")
-    _value(col_x[0] + pad, box_top - 0.77 * inch, "(956) 702-8851")
+    _value(col_x[0] + pad, box_top - 0.36 * inch, _CO_NAME,  bold=True)
+    _value(col_x[0] + pad, box_top - 0.51 * inch, _CO_ADDR1)
+    _value(col_x[0] + pad, box_top - 0.64 * inch, _CO_ADDR2)
+    _value(col_x[0] + pad, box_top - 0.77 * inch, _CO_PHONE)
 
     # BILL TO
     _label(col_x[1] + pad, box_top - 0.18 * inch, "BILL TO")
@@ -353,8 +363,8 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     c.drawCentredString(
         W / 2,
         foot_y - 0.45 * inch,
-        "INCO GROUP, INC.  \u2022  9005 Travis Dr Ste 1, Pharr, TX 78577"
-        "  \u2022  (956) 702-8851  \u2022  admin@incogrp.com",
+        f"{_CO_NAME}  \u2022  {_CO_ADDR1}, {_CO_ADDR2}"
+        f"  \u2022  {_CO_PHONE}  \u2022  {_CO_EMAIL}",
     )
 
     c.save()

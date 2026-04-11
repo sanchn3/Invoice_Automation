@@ -450,11 +450,12 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             st.caption(f"{len(client_records)} invoice record(s) for **{selected_client}**")
 
             if client_records:
+                _prov_by_id = {pi["id"]: pi for pi in dm.get_provider_invoices()}
                 rows = []
                 for ci in client_records:
                     qb_num = ci.get("quickbooks_invoice_number")
                     if not qb_num and ci.get("provider_invoice_id"):
-                        prov = dm.get_provider_invoice_by_id(ci["provider_invoice_id"])
+                        prov  = _prov_by_id.get(ci["provider_invoice_id"])
                         qb_num = prov.get("invoice_number") if prov else None
                     rows.append({
                         "Invoice #" : qb_num or "—",
