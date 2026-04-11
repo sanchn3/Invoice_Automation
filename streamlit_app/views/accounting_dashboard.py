@@ -45,6 +45,39 @@ def _pdf_args(ci: dict, prov: dict | None) -> tuple:
     )
 
 
+def _colored_button(container, label: str, key: str, color: str, **kwargs) -> bool:
+    """Render a Streamlit button with a custom background color.
+
+    Injects a hidden <span> anchor immediately before the button so the CSS
+    adjacent-sibling selector (+) can target that specific button only.
+    Requires a browser that supports the :has() pseudo-class (Chrome 105+,
+    Firefox 121+, Safari 15.4+ — all modern browsers).
+    """
+    anchor = "ca_" + "".join(c if c.isalnum() or c == "_" else "_" for c in key)
+    container.markdown(
+        f"<span id='{anchor}'></span>"
+        f"<style>"
+        # Selector A: button is inside a stColumn that contains the anchor (st.columns use)
+        f"[data-testid='stColumn']:has(span#{anchor}) [data-testid='stButton']>button,"
+        # Selector B: button is a direct grandchild of the stVerticalBlock that has the anchor
+        #             as an immediate element-container>stMarkdown descendant (direct st use)
+        f"[data-testid='stVerticalBlock']:has(>[data-testid='element-container']"
+        f">[data-testid='stMarkdown'] span#{anchor})"
+        f">[data-testid='element-container']>[data-testid='stButton']>button"
+        f"{{background-color:{color}!important;"
+        f"border-color:{color}!important;"
+        f"color:white!important;}}"
+        f"[data-testid='stColumn']:has(span#{anchor}) [data-testid='stButton']>button:hover,"
+        f"[data-testid='stVerticalBlock']:has(>[data-testid='element-container']"
+        f">[data-testid='stMarkdown'] span#{anchor})"
+        f">[data-testid='element-container']>[data-testid='stButton']>button:hover"
+        f"{{filter:brightness(1.12)!important;}}"
+        f"</style>",
+        unsafe_allow_html=True,
+    )
+    return container.button(label, key=key, **kwargs)
+
+
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("🧾 Accounting Dashboard")
 
@@ -124,7 +157,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
                     else:
                         # ── View mode ─────────────────────────────────────────
-                        c1, c2, c3, c4, c5, c6, c7 = st.columns([1.2, 1, 2, 1, 0.7, 0.7, 0.7])
+                        c1, c2, c3, c4, c5, c6 = st.columns([1.2, 1, 2, 1, 0.8, 0.8])
 
                         c1.markdown(f"**QB #{qb}**")
                         c2.write(ci.get("invoice_date", "—"))
@@ -140,29 +173,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
                             st.rerun()
 
-                        if st.session_state.get(ret_key):
-                            c7.caption("⚠️ Sure?")
-                        else:
-                            if c7.button("↩", key=f"acc_retbtn_{cid}", width="stretch", help="Return to Admin"):
-                                st.session_state[ret_key] = True
-                                st.rerun()
-
                         if ci.get("po_number"):
                             st.caption(f"P.O.: {ci['po_number']}")
                         if ci.get("due_date"):
                             st.caption(f"Due: {ci['due_date']}")
-
-                        # Return confirmation
-                        if st.session_state.get(ret_key):
-                            rc1, rc2 = st.columns(2)
-                            if rc1.button("✅ Yes, return to Admin", key=f"acc_retyes_{cid}", type="primary", width="stretch"):
-                                dm.update_client_invoice(cid, {"status": "ready_to_invoice"})
-                                st.session_state.pop(ret_key, None)
-                                st.success("Invoice returned to Admin dashboard.")
-                                st.rerun()
-                            if rc2.button("✗ Cancel", key=f"acc_retno_{cid}", width="stretch"):
-                                st.session_state.pop(ret_key, None)
-                                st.rerun()
 
                         # Line items expander
                         line_items = ci.get("line_items", [])
@@ -181,15 +195,28 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             pdf_bytes = _cached_pdf(*_pdf_args(ci, prov))
                             pdf_viewer(pdf_bytes, key=f"acc_pdfview_{cid}")
 
+                        # ── Bottom action row ──────────────────────────────────
                         st.markdown("---")
-                        if st.button(
-                            "✅ Ready for Export",
-                            key=f"rfe_{cid}",
-                            type="primary",
-                            width="stretch",
-                        ):
-                            dm.update_client_invoice(cid, {"ready_for_export": True})
-                            st.rerun()
+                        if st.session_state.get(ret_key):
+                            st.warning("⚠️ Return this invoice to the Admin dashboard?")
+                            rc1, rc2 = st.columns(2)
+                            if rc1.button("✅ Yes, return to Admin", key=f"acc_retyes_{cid}", type="primary", width="stretch"):
+                                dm.update_client_invoice(cid, {"status": "ready_to_invoice"})
+                                st.session_state.pop(ret_key, None)
+                                st.rerun()
+                            if rc2.button("✗ Cancel", key=f"acc_retno_{cid}", width="stretch"):
+                                st.session_state.pop(ret_key, None)
+                                st.rerun()
+                        else:
+                            b_left, b_right = st.columns(2)
+                            ret_clicked = _colored_button(b_left, "↩ Return to Admin", f"acc_retbtn_{cid}", "#dc3545", width="stretch")
+                            rfe_clicked = _colored_button(b_right, "✅ Ready for Export", f"rfe_{cid}", "#198754", width="stretch")
+                            if ret_clicked:
+                                st.session_state[ret_key] = True
+                                st.rerun()
+                            if rfe_clicked:
+                                dm.update_client_invoice(cid, {"ready_for_export": True})
+                                st.rerun()
 
         st.markdown("---")
         st.subheader("Exported Invoices")
@@ -207,7 +234,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     "Date"   : ci.get("invoice_date", "—"),
                     "Client" : ci.get("client_name", "—"),
                     "Total"  : f"${ci.get('total', 0):,.2f}",
-                    "Net Days": ci.get("net_days", "—"),
+                    "Net Days": str(ci.get("net_days", "—")),
                 }
                 for ci in exported
             ]
@@ -266,19 +293,12 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
 
                     btn_l, btn_r = st.columns(2)
-                    if btn_l.button(
-                        "↩ Back to Review",
-                        key=f"btr_{ci['id']}",
-                        width="stretch",
-                    ):
+                    btr_clicked = _colored_button(btn_l, "↩ Back to Review", f"btr_{ci['id']}", "#dc3545", width="stretch")
+                    rte_clicked = _colored_button(btn_r, "📧 Ready to Email", f"rte_{ci['id']}", "#198754", width="stretch")
+                    if btr_clicked:
                         dm.update_client_invoice(ci["id"], {"ready_for_export": False})
                         st.rerun()
-                    if btn_r.button(
-                        "📧 Ready to Email",
-                        key=f"rte_{ci['id']}",
-                        type="primary",
-                        width="stretch",
-                    ):
+                    if rte_clicked:
                         dm.update_client_invoice(ci["id"], {"ready_to_email": True})
                         st.rerun()
 
@@ -369,7 +389,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     for ci in invoices:
                         qb     = ci.get("quickbooks_invoice_number", "—")
                         prov_e = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
-                        ic1, ic2, ic3, ic4 = st.columns([1.5, 1, 1, 1])
+                        ic1, ic2, ic3, ic4, ic5 = st.columns([1.5, 1, 1, 0.8, 1.2])
                         ic1.write(f"QB #{qb}")
                         ic2.write(ci.get("invoice_date", "—"))
                         ic3.write(f"${ci.get('total', 0):,.2f}")
@@ -380,16 +400,15 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             mime="application/pdf",
                             key=f"acc_emaildl_{ci['id']}",
                         )
+                        if _colored_button(ic5, "↩ Back to Export", f"bte_{ci['id']}", "#dc3545", width="stretch"):
+                            dm.update_client_invoice(ci["id"], {"ready_to_email": False})
+                            st.rerun()
 
                     st.markdown("---")
 
                     if not st.session_state.get(prep_key):
-                        if st.button(
-                            f"📧 Prepare Email for {cname}",
-                            key=f"prep_{cname}",
-                            type="primary",
-                            width="stretch",
-                        ):
+                        _prep_col, _ = st.columns(2)
+                        if _colored_button(_prep_col, f"📧 Prepare Email for {cname}", f"prep_{cname}", "#198754", width="stretch"):
                             st.session_state[prep_key] = True
                             st.rerun()
                     else:

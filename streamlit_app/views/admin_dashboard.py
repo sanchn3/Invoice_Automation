@@ -571,7 +571,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     "Date"    : ci.get("invoice_date", "—"),
                     "Client"  : ci.get("client_name", "—"),
                     "Total"   : f"${ci.get('total', 0):,.2f}",
-                    "Net Days": ci.get("net_days", "—"),
+                    "Net Days": str(ci.get("net_days", "—")),
                     "Status"  : "Exported to QB" if ci.get("quickbooks_exported") else "In Accounting",
                 }
                 for ci in filtered
