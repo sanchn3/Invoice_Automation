@@ -5,12 +5,13 @@ Accounting dashboard: Invoice Review, Import to QuickBooks, and Email Clients.
 """
 
 import streamlit as st
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
-from invoice_logic.iif_exporter import generate_iif
+from invoice_logic.iif_exporter import generate_iif, build_iif_content
 from invoice_logic.pdf_generator import generate_pdf
 
 
@@ -20,19 +21,43 @@ def _cached_pdf(
     qb_num: str,
     total: float,
     provider_pdf_path: str | None,
+    invoice_date: str,
+    due_date: str,
+    po_number: str,
     _ci: dict,
 ) -> bytes:
-    """Cache keyed by invoice id + QB number + total + provider path."""
+    """Cache keyed by all editable fields so any edit invalidates the cached PDF."""
     return generate_pdf(_ci, provider_pdf_path)
+
+
+def _pdf_args(ci: dict, prov: dict | None) -> tuple:
+    """Return the positional args for _cached_pdf from a client invoice + provider record."""
+    _pdf_path = (prov or {}).get("pdf_local_path", "")
+    return (
+        ci["id"],
+        ci.get("quickbooks_invoice_number", ""),
+        float(ci.get("total", 0)),
+        _pdf_path if _pdf_path and Path(_pdf_path).exists() else None,
+        ci.get("invoice_date", ""),
+        ci.get("due_date", ""),
+        ci.get("po_number", ""),
+        ci,
+    )
 
 
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("🧾 Accounting Dashboard")
 
-    tab_review, tab_qb, tab_email = st.tabs([
+    # Fetch once per render — reused across all three tabs.
+    client_invoices   = dm.get_client_invoices()
+    provider_invoices = dm.get_provider_invoices()
+    prov_by_id        = {pi["id"]: pi for pi in provider_invoices}
+
+    tab_review, tab_qb, tab_email, tab_processed = st.tabs([
         "📋 Invoice Review",
-        "📤 Import to QuickBooks",
+        "📤 Export to QuickBooks",
         "📧 Email Clients",
+        "📁 Processed Invoices",
     ])
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -41,13 +66,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_review:
         st.subheader("Invoice Review")
 
-        client_invoices   = dm.get_client_invoices()
-        provider_invoices = dm.get_provider_invoices()
-        prov_by_id        = {pi["id"]: pi for pi in provider_invoices}
-
         # Show invoices in "invoiced" state — generated but not yet exported
         reviewable = sorted(
-            [ci for ci in client_invoices if ci.get("status") == "invoiced"],
+            [ci for ci in client_invoices
+             if ci.get("status") == "invoiced" and not ci.get("ready_for_export")],
             key=lambda x: x.get("created_at", ""),
             reverse=True,
         )
@@ -151,20 +173,23 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                         f"{li.get('description', '—'):<40}"
                                         f"  qty: {li.get('quantity', '')}  "
                                         f"  rate: ${li.get('unit_price', 0):,.2f}  "
-                                        f"  total: ${li.get('amount', 0):,.2f}"
+                                        f"  total: ${li.get('total', 0):,.2f}"
                                     )
 
                         if st.session_state.get(pdf_key):
                             from streamlit_pdf_viewer import pdf_viewer
-                            _pdf_path = prov.get("pdf_local_path", "")
-                            pdf_bytes = _cached_pdf(
-                                cid,
-                                qb,
-                                float(ci.get("total", 0)),
-                                _pdf_path if _pdf_path and Path(_pdf_path).exists() else None,
-                                ci,
-                            )
+                            pdf_bytes = _cached_pdf(*_pdf_args(ci, prov))
                             pdf_viewer(pdf_bytes, key=f"acc_pdfview_{cid}")
+
+                        st.markdown("---")
+                        if st.button(
+                            "✅ Ready for Export",
+                            key=f"rfe_{cid}",
+                            type="primary",
+                            width="stretch",
+                        ):
+                            dm.update_client_invoice(cid, {"ready_for_export": True})
+                            st.rerun()
 
         st.markdown("---")
         st.subheader("Exported Invoices")
@@ -192,12 +217,11 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     # TAB 2 — IMPORT TO QUICKBOOKS
     # ──────────────────────────────────────────────────────────────────────────
     with tab_qb:
-        st.subheader("Import to QuickBooks")
+        st.subheader("Export to QuickBooks")
 
-        client_invoices = dm.get_client_invoices()
         exportable = [
             ci for ci in client_invoices
-            if ci.get("status") == "invoiced" and not ci.get("quickbooks_exported")
+            if ci.get("ready_for_export") and not ci.get("ready_to_email")
         ]
 
         if not exportable:
@@ -207,27 +231,56 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
             selected_ids: list[str] = []
             for ci in exportable:
-                qb    = ci.get("quickbooks_invoice_number", "—")
-                label = f"QB #{qb} — {ci.get('client_name', '—')} — ${ci.get('total', 0):,.2f}"
-                prov_exp = dm.get_provider_invoice_by_id(ci.get("provider_invoice_id", ""))
+                qb        = ci.get("quickbooks_invoice_number", "—")
+                prov_exp  = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
+                pdf_bytes = _cached_pdf(*_pdf_args(ci, prov_exp))
+                fname     = f"{qb}-{datetime.now().strftime('%y')}.pdf"
 
-                col_chk, col_pdf = st.columns([4, 1])
-                with col_chk:
-                    if st.checkbox(label, key=f"acc_exp_{ci['id']}"):
-                        selected_ids.append(ci["id"])
-                with col_pdf:
-                    _pp = prov_exp.get("pdf_local_path") if prov_exp else None
-                    pdf_bytes = _cached_pdf(
-                        ci["id"], qb, float(ci.get("total", 0)), _pp, ci
-                    )
-                    fname = f"{qb}-{datetime.now().strftime('%y')}.pdf"
-                    st.download_button(
-                        label    ="⬇ PDF",
-                        data     =pdf_bytes,
-                        file_name=fname,
-                        mime     ="application/pdf",
-                        key      =f"acc_pdf_exp_{ci['id']}",
-                    )
+                with st.container(border=True):
+                    if ci.get("quickbooks_exported"):
+                        col_info, col_pdf = st.columns([4, 1])
+                        col_info.markdown(
+                            f"**QB #{qb}** — {ci.get('client_name', '—')}"
+                            f" — ${ci.get('total', 0):,.2f}"
+                        )
+                        col_info.caption("✅ Exported to QuickBooks")
+                        col_pdf.download_button(
+                            "⬇ PDF", pdf_bytes, fname,
+                            mime="application/pdf",
+                            key=f"acc_pdf_exp_{ci['id']}",
+                        )
+                    else:
+                        col_chk, col_pdf = st.columns([4, 1])
+                        with col_chk:
+                            if st.checkbox(
+                                f"QB #{qb} — {ci.get('client_name', '—')}"
+                                f" — ${ci.get('total', 0):,.2f}",
+                                key=f"acc_exp_{ci['id']}",
+                            ):
+                                selected_ids.append(ci["id"])
+                        with col_pdf:
+                            st.download_button(
+                                "⬇ PDF", pdf_bytes, fname,
+                                mime="application/pdf",
+                                key=f"acc_pdf_exp_{ci['id']}",
+                            )
+
+                    btn_l, btn_r = st.columns(2)
+                    if btn_l.button(
+                        "↩ Back to Review",
+                        key=f"btr_{ci['id']}",
+                        width="stretch",
+                    ):
+                        dm.update_client_invoice(ci["id"], {"ready_for_export": False})
+                        st.rerun()
+                    if btn_r.button(
+                        "📧 Ready to Email",
+                        key=f"rte_{ci['id']}",
+                        type="primary",
+                        width="stretch",
+                    ):
+                        dm.update_client_invoice(ci["id"], {"ready_to_email": True})
+                        st.rerun()
 
             if selected_ids:
                 if st.button(
@@ -235,8 +288,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     type="primary",
                 ):
                     try:
-                        iif_path    = generate_iif(selected_ids, dm)
-                        iif_content = open(iif_path, "r", encoding="utf-8").read()
+                        iif_path = generate_iif(selected_ids, dm)
+                        with open(iif_path, "r", encoding="utf-8") as fh:
+                            iif_content = fh.read()
                         st.success(f"IIF file generated: {iif_path}")
                         st.download_button(
                             label    ="⬇ Download IIF File",
@@ -252,7 +306,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         st.markdown("---")
         st.subheader("Export History")
-        exported_hist = [ci for ci in dm.get_client_invoices() if ci.get("quickbooks_exported")]
+        exported_hist = [ci for ci in client_invoices if ci.get("quickbooks_exported")]
         if exported_hist:
             for ci in sorted(exported_hist, key=lambda x: x.get("created_at", ""), reverse=True):
                 qb = ci.get("quickbooks_invoice_number", "—")
@@ -265,12 +319,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         f"| {ci.get('invoice_date', '—')}"
                     )
                 with col_pdf:
-                    prov_hist = dm.get_provider_invoice_by_id(ci.get("provider_invoice_id", ""))
-                    pdf_bytes = _cached_pdf(
-                        ci["id"], qb, float(ci.get("total", 0)),
-                        prov_hist.get("pdf_local_path") if prov_hist else None,
-                        ci,
-                    )
+                    prov_hist = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
+                    pdf_bytes = _cached_pdf(*_pdf_args(ci, prov_hist))
                     st.download_button(
                         label    ="⬇ PDF",
                         data     =pdf_bytes,
@@ -287,82 +337,211 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_email:
         st.subheader("Email Clients")
 
-        client_invoices = dm.get_client_invoices()
+        # Only show invoices not yet emailed
+        emailable = [
+            ci for ci in client_invoices
+            if ci.get("ready_to_email") and not ci.get("emailed")
+        ]
 
-        # Invoices eligible to email: invoiced or exported
-        emailable = sorted(
+        if not emailable:
+            st.info("No invoices pending email. All sent invoices are in Processed Invoices.")
+        else:
+            # Group by client
+            by_client: dict[str, list] = defaultdict(list)
+            for ci in emailable:
+                by_client[ci.get("client_name", "Unknown")].append(ci)
+
+            st.caption(f"{len(emailable)} invoice(s) across {len(by_client)} client(s)")
+
+            for cname in sorted(by_client.keys()):
+                invoices    = by_client[cname]
+                prep_key    = f"email_prep_{cname}"
+                client_email = dm.get_client_email(cname)
+
+                with st.container(border=True):
+                    st.markdown(f"**{cname}** — {len(invoices)} invoice(s)")
+                    if client_email:
+                        st.caption(f"📧 {client_email}")
+                    else:
+                        st.caption("⚠️ No email on file — add one in Lead → Rate Card")
+
+                    # Invoice rows
+                    for ci in invoices:
+                        qb     = ci.get("quickbooks_invoice_number", "—")
+                        prov_e = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
+                        ic1, ic2, ic3, ic4 = st.columns([1.5, 1, 1, 1])
+                        ic1.write(f"QB #{qb}")
+                        ic2.write(ci.get("invoice_date", "—"))
+                        ic3.write(f"${ci.get('total', 0):,.2f}")
+                        ic4.download_button(
+                            "⬇ PDF",
+                            _cached_pdf(*_pdf_args(ci, prov_e)),
+                            f"{qb}-{datetime.now().strftime('%y')}.pdf",
+                            mime="application/pdf",
+                            key=f"acc_emaildl_{ci['id']}",
+                        )
+
+                    st.markdown("---")
+
+                    if not st.session_state.get(prep_key):
+                        if st.button(
+                            f"📧 Prepare Email for {cname}",
+                            key=f"prep_{cname}",
+                            type="primary",
+                            width="stretch",
+                        ):
+                            st.session_state[prep_key] = True
+                            st.rerun()
+                    else:
+                        # Draft email
+                        total_sum = sum(ci.get("total", 0) for ci in invoices)
+                        inv_lines = "\n".join(
+                            f"  • QB #{ci.get('quickbooks_invoice_number','—')}"
+                            f" — ${ci.get('total', 0):,.2f}"
+                            f" — {ci.get('invoice_date','—')}"
+                            for ci in invoices
+                        )
+                        default_subject = f"Invoices — INCO Group, Inc. — {cname}"
+                        default_body = (
+                            f"Dear {cname},\n\n"
+                            f"Please find attached the following invoice(s):\n\n"
+                            f"{inv_lines}\n\n"
+                            f"Total Outstanding: ${total_sum:,.2f}\n\n"
+                            f"Please do not hesitate to contact us if you have any questions.\n\n"
+                            f"Best regards,\nINCO Group, Inc."
+                        )
+                        st.text_input(
+                            "To",
+                            value=client_email or "",
+                            key=f"email_to_{cname}",
+                        )
+                        st.text_input(
+                            "Subject",
+                            value=default_subject,
+                            key=f"email_subj_{cname}",
+                        )
+                        st.text_area(
+                            "Body",
+                            value=default_body,
+                            height=180,
+                            key=f"email_body_{cname}",
+                        )
+                        st.caption("Download PDFs above to attach to your email.")
+
+                        mc1, mc2 = st.columns(2)
+                        if mc1.button(
+                            "✅ Mark as Emailed",
+                            key=f"mark_emailed_{cname}",
+                            type="primary",
+                            width="stretch",
+                        ):
+                            for ci in invoices:
+                                dm.update_client_invoice(ci["id"], {"emailed": True})
+                            st.session_state.pop(prep_key, None)
+                            st.rerun()
+                        if mc2.button(
+                            "✗ Cancel",
+                            key=f"cancel_email_{cname}",
+                            width="stretch",
+                        ):
+                            st.session_state.pop(prep_key, None)
+                            st.rerun()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAB 4 — PROCESSED INVOICES
+    # ──────────────────────────────────────────────────────────────────────────
+    with tab_processed:
+        st.subheader("Processed Invoices")
+
+        processed = sorted(
             [
                 ci for ci in client_invoices
-                if ci.get("status") in ("invoiced",) or ci.get("quickbooks_exported")
+                if ci.get("ready_for_export")
+                or ci.get("ready_to_email")
+                or ci.get("quickbooks_exported")
+                or ci.get("emailed")
+                or ci.get("paid")
             ],
-            key=lambda x: x.get("created_at", ""),
+            key=lambda x: x.get("invoice_date", x.get("created_at", "")),
             reverse=True,
         )
 
-        if not emailable:
-            st.info("No finalized invoices to email.")
+        if not processed:
+            st.info("No processed invoices yet.")
         else:
-            st.caption("Select an invoice to prepare a client email.")
+            st.caption(f"{len(processed)} invoice(s)")
 
-            selected_ci_id = st.selectbox(
-                "Invoice",
-                options=[ci["id"] for ci in emailable],
-                format_func=lambda cid: next(
-                    (
-                        f"QB #{ci.get('quickbooks_invoice_number', '—')} "
-                        f"— {ci.get('client_name', '—')} "
-                        f"— ${ci.get('total', 0):,.2f}"
-                        for ci in emailable if ci["id"] == cid
-                    ),
-                    cid,
-                ),
-                label_visibility="collapsed",
+            # Header
+            h1, h2, h3, h4, h5, h6, h7, h8 = st.columns(
+                [1.2, 1.8, 1, 1, 1.2, 1.2, 0.8, 0.9]
             )
+            h1.markdown("**Invoice #**")
+            h2.markdown("**Client**")
+            h3.markdown("**Date**")
+            h4.markdown("**Due Date**")
+            h5.markdown("**Reviewed**")
+            h6.markdown("**QB Export**")
+            h7.markdown("**Emailed**")
+            h8.markdown("**Paid**")
+            st.divider()
 
-            sel = next((ci for ci in emailable if ci["id"] == selected_ci_id), None)
+            for ci in processed:
+                cid = ci["id"]
+                qb  = ci.get("quickbooks_invoice_number", "—")
 
-            if sel:
-                qb          = sel.get("quickbooks_invoice_number", "—")
-                client_name = sel.get("client_name", "")
-                total       = sel.get("total", 0)
-                inv_date    = sel.get("invoice_date", "—")
-                net_days    = sel.get("net_days", 30)
+                # Due date: explicit override or calculated
+                due = ci.get("due_date", "").strip()
+                if not due:
+                    try:
+                        due = (
+                            datetime.fromisoformat(ci.get("invoice_date", ""))
+                            + timedelta(days=int(ci.get("net_days", 30)))
+                        ).date().isoformat()
+                    except Exception:
+                        due = "—"
 
-                st.markdown("---")
-                st.markdown("**Draft Email**")
-
-                default_subject = f"Invoice #{qb} — INCO Logistics"
-                default_body = (
-                    f"Dear {client_name},\n\n"
-                    f"Please find attached Invoice #{qb} dated {inv_date} "
-                    f"for ${total:,.2f}, due within {net_days} days.\n\n"
-                    f"Please do not hesitate to contact us if you have any questions.\n\n"
-                    f"Best regards,\nINGO Logistics"
+                reviewed = bool(
+                    ci.get("ready_for_export")
+                    or ci.get("ready_to_email")
+                    or ci.get("quickbooks_exported")
+                    or ci.get("emailed")
                 )
+                exported = bool(ci.get("quickbooks_exported"))
+                emailed  = bool(ci.get("emailed"))
+                paid     = bool(ci.get("paid"))
 
-                subject = st.text_input("Subject", value=default_subject, key=f"email_subj_{selected_ci_id}")
-                body    = st.text_area("Body", value=default_body, height=200, key=f"email_body_{selected_ci_id}")
-
-                # PDF attachment download
-                prov_em   = dm.get_provider_invoice_by_id(sel.get("provider_invoice_id", ""))
-                pdf_bytes = _cached_pdf(
-                    sel["id"], qb, float(total),
-                    prov_em.get("pdf_local_path") if prov_em else None,
-                    sel,
+                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(
+                    [1.2, 1.8, 1, 1, 1.2, 1.2, 0.8, 0.9]
                 )
-                pdf_fname = f"{qb}-{datetime.now().strftime('%y')}.pdf"
+                c1.write(f"QB #{qb}")
+                c2.write(ci.get("client_name", "—"))
+                c3.write(ci.get("invoice_date", "—"))
+                c4.write(due)
+                if reviewed:
+                    prov_proc = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
+                    c5.download_button(
+                        "✅ PDF",
+                        data=_cached_pdf(*_pdf_args(ci, prov_proc)),
+                        file_name=f"{qb}-invoice.pdf",
+                        mime="application/pdf",
+                        key=f"proc_pdf_{cid}",
+                    )
+                else:
+                    c5.write("❌")
 
-                dl_col, _ = st.columns([1, 3])
-                dl_col.download_button(
-                    label    ="⬇ Download PDF Attachment",
-                    data     =pdf_bytes,
-                    file_name=pdf_fname,
-                    mime     ="application/pdf",
-                    key      =f"acc_email_pdf_{selected_ci_id}",
-                    width    ="stretch",
-                )
+                if exported:
+                    c6.download_button(
+                        "✅ IIF",
+                        data=build_iif_content(ci),
+                        file_name=f"{qb}-export.iif",
+                        mime="text/plain",
+                        key=f"proc_iif_{cid}",
+                    )
+                else:
+                    c6.write("❌")
+                c7.write("✅" if emailed  else "❌")
 
-                st.info(
-                    "Copy the email body above and attach the PDF to send via your email client.",
-                    icon="ℹ️",
-                )
+                paid_label = "✅ Paid" if paid else "Mark Paid"
+                if c8.button(paid_label, key=f"paid_{cid}", width="stretch"):
+                    dm.update_client_invoice(cid, {"paid": not paid})
+                    st.rerun()

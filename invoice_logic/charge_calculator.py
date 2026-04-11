@@ -46,18 +46,28 @@ def calculate_charges(
     line_items: list[dict] = []
 
     # ── Base service charge ──────────────────────────────────────────────────
-    base_rate_key = "in_out" if service_type == "in_out" else "transfer"
-    base_rate     = float(rates.get(base_rate_key, 0))
-    base_label    = "In-Out Storage" if service_type == "in_out" else "Transfer (Truck-to-Truck)"
-    base_total    = base_rate * pallet_count
+    charged_by_pallet = bool(rates.get("charged_by_pallet", True))
 
-    line_items.append({
-        "description": base_label,
-        "quantity"   : pallet_count,
-        "unit"       : "pallets",
-        "unit_price" : base_rate,
-        "total"      : round(base_total, 2),
-    })
+    if charged_by_pallet:
+        base_rate_key = "in_out" if service_type == "in_out" else "transfer"
+        base_rate     = float(rates.get(base_rate_key, 0))
+        base_label    = "In-Out Storage" if service_type == "in_out" else "Transfer (Truck-to-Truck)"
+        line_items.append({
+            "description": base_label,
+            "quantity"   : pallet_count,
+            "unit"       : "pallets",
+            "unit_price" : base_rate,
+            "total"      : round(base_rate * pallet_count, 2),
+        })
+    else:
+        truck_cost = float(rates.get("cost_per_truck", 0))
+        line_items.append({
+            "description": "Truck Service",
+            "quantity"   : 1,
+            "unit"       : "truck",
+            "unit_price" : truck_cost,
+            "total"      : round(truck_cost, 2),
+        })
 
     # ── Temperature recorder ─────────────────────────────────────────────────
     if temp_recorder:

@@ -69,12 +69,23 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
     st.markdown("---")
 
     # ── Worker inputs ─────────────────────────────────────────────────────────
+    charged_by_pallet = bool(
+        dm.get_rates_for_client(selected_job.get("client_name", "")).get("charged_by_pallet", True)
+    )
+
     st.subheader("Pallet Details")
 
-    col_a, col_b, col_c = st.columns(3)
-    pallet_count    = col_a.number_input("Total Pallets",    min_value=1,  step=1, value=1)
-    damaged_pallets = col_b.number_input("Damaged Pallets",  min_value=0,  step=1, value=0)
-    broken_pallets  = col_c.number_input("Broken Pallets",   min_value=0,  step=1, value=0)
+    if charged_by_pallet:
+        col_a, col_b, col_c = st.columns(3)
+        pallet_count    = col_a.number_input("Total Pallets",   min_value=1, step=1, value=1)
+        damaged_pallets = col_b.number_input("Damaged Pallets", min_value=0, step=1, value=0)
+        broken_pallets  = col_c.number_input("Broken Pallets",  min_value=0, step=1, value=0)
+    else:
+        st.info("Billing is per truck — no pallet count required.")
+        pallet_count    = 1   # placeholder, unused in charge calculator
+        col_b, col_c    = st.columns(2)
+        damaged_pallets = col_b.number_input("Damaged Pallets", min_value=0, step=1, value=0)
+        broken_pallets  = col_c.number_input("Broken Pallets",  min_value=0, step=1, value=0)
 
     st.subheader("Extra Charges")
     extra_options = {
@@ -120,7 +131,7 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
 
     # ── Submit ────────────────────────────────────────────────────────────────
     if st.button("✅ Submit Job", type="primary", width='stretch'):
-        if pallet_count < 1:
+        if charged_by_pallet and pallet_count < 1:
             st.error("Pallet count must be at least 1.")
             return
 
@@ -160,5 +171,19 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
             job_id=job_id,
         )
 
-        st.success(f"Job submitted successfully! The admin has been notified.")
-        st.balloons()
+        st.markdown(
+            """
+            <div id="submit-toast" style="
+                position:fixed;bottom:2rem;left:50%;transform:translateX(-50%);
+                background:#198754;color:#fff;padding:14px 28px;
+                border-radius:8px;font-size:1rem;font-weight:600;
+                box-shadow:0 4px 12px rgba(0,0,0,0.25);z-index:9999;
+                animation:fadeout 0.6s ease 14.4s forwards;">
+                ✅ Job submitted successfully! The admin has been notified.
+            </div>
+            <style>
+            @keyframes fadeout { to { opacity:0; pointer-events:none; } }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )

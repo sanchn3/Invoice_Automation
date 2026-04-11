@@ -30,6 +30,36 @@ def _fmt_date(iso_date: str) -> str:
         return datetime.now().strftime("%m/%d/%Y")
 
 
+def build_iif_content(inv: dict) -> str:
+    """
+    Build and return the IIF file content for a single client invoice.
+    No file I/O, no state changes — safe to call for re-downloads.
+    """
+    lines: list[str] = [_TRNS_HEADER, _SPL_HEADER, _END_HEADER]
+    qb_num     = inv.get("quickbooks_invoice_number", "")
+    client     = inv.get("client_name", "")
+    inv_date   = _fmt_date(inv.get("invoice_date", inv.get("created_at", "")))
+    total      = float(inv.get("total", 0))
+    line_items = inv.get("line_items", [])
+    memo       = f"Service: {inv.get('service_type', '').replace('_', '-').title()}"
+
+    lines.append(
+        f"TRNS\t\tINVOICE\t{inv_date}\tAccounts Receivable\t"
+        f"{client}\t{total:.2f}\t{qb_num}\t{memo}"
+    )
+    for item in line_items:
+        qty    = item.get("quantity", 1)
+        price  = item.get("unit_price", 0)
+        itotal = item.get("total", 0)
+        desc   = item.get("description", "Service")
+        lines.append(
+            f"SPL\t\tINVOICE\t{inv_date}\tServices\t"
+            f"{client}\t-{itotal:.2f}\t{qb_num}\t{desc}\t{qty}\t{price:.2f}"
+        )
+    lines.append("ENDTRNS")
+    return "\n".join(lines) + "\n"
+
+
 def generate_iif(client_invoice_ids: list[str], dm: DataManager) -> str:
     """
     Generate an IIF file for the given client invoice IDs.

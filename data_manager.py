@@ -23,8 +23,14 @@ _PROVIDERS_FILE          = DATA_DIR / "providers.json"
 _RATE_CARD_FILE          = DATA_DIR / "rate_card.json"
 _CLIENT_RATES_FILE       = DATA_DIR / "client_rates.json"
 _CLIENT_ADDRESSES_FILE   = DATA_DIR / "client_addresses.json"
+_CLIENT_EMAILS_FILE      = DATA_DIR / "client_emails.json"
 
 _lock = threading.Lock()
+
+# In-memory read cache: path -> (mtime, parsed_data)
+# Keyed by file mtime so the background poller's writes auto-invalidate.
+# All access is inside _lock, so no additional synchronisation is needed.
+_file_cache: dict[Path, tuple[float, Any]] = {}
 
 
 def _now() -> str:
@@ -35,16 +41,38 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+_JSON_DEFAULTS: dict[Path, Any] = {
+    _RATE_CARD_FILE       : {},
+    _CLIENT_RATES_FILE    : {},
+    _CLIENT_ADDRESSES_FILE: {},
+    _CLIENT_EMAILS_FILE   : {},
+}
+
+
 def _read_json(path: Path) -> Any:
-    if not path.exists():
-        return [] if path.name != "rate_card.json" else {}
+    default = _JSON_DEFAULTS.get(path, [])
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return default
+    cached = _file_cache.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    _file_cache[path] = (mtime, data)
+    return data
 
 
 def _write_json(path: Path, data: Any) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    # Update cache immediately so the next read within the same lock
+    # cycle doesn't go back to disk.
+    try:
+        _file_cache[path] = (path.stat().st_mtime, data)
+    except OSError:
+        _file_cache.pop(path, None)
 
 
 class DataManager:
@@ -208,17 +236,18 @@ class DataManager:
     def get_client_rates(self) -> dict:
         """Returns dict mapping client_name -> {rate_key: value} overrides."""
         with _lock:
-            data = _read_json(_CLIENT_RATES_FILE)
-            return data if isinstance(data, dict) else {}
+            return _read_json(_CLIENT_RATES_FILE)
 
     def get_rates_for_client(self, client_name: str) -> dict:
         """
         Returns the effective rate card for a client:
         default rate card merged with any client-specific overrides.
+        Single lock acquisition reads both files.
         """
-        defaults  = self.get_rate_card()
-        overrides = self.get_client_rates().get(client_name, {})
-        return {**defaults, **overrides}
+        with _lock:
+            defaults  = _read_json(_RATE_CARD_FILE)
+            all_rates = _read_json(_CLIENT_RATES_FILE)
+        return {**defaults, **all_rates.get(client_name, {})}
 
     def set_client_rates(self, client_name: str, rates: dict) -> None:
         """Save per-client rate overrides. Pass an empty dict to remove overrides."""
@@ -246,8 +275,7 @@ class DataManager:
     def get_client_addresses(self) -> dict:
         """Returns dict mapping client_name -> billing address string."""
         with _lock:
-            data = _read_json(_CLIENT_ADDRESSES_FILE)
-            return data if isinstance(data, dict) else {}
+            return _read_json(_CLIENT_ADDRESSES_FILE)
 
     def get_client_address(self, client_name: str) -> str:
         """Returns the billing address for a client, or empty string."""
@@ -264,3 +292,28 @@ class DataManager:
             else:
                 all_addrs.pop(client_name, None)
             _write_json(_CLIENT_ADDRESSES_FILE, all_addrs)
+
+    # ─────────────────────────────────────────
+    # CLIENT EMAILS
+    # ─────────────────────────────────────────
+
+    def get_client_emails(self) -> dict:
+        """Returns dict mapping client_name -> email address string."""
+        with _lock:
+            return _read_json(_CLIENT_EMAILS_FILE)
+
+    def get_client_email(self, client_name: str) -> str:
+        """Returns the email for a client, or empty string."""
+        return self.get_client_emails().get(client_name, "")
+
+    def set_client_email(self, client_name: str, email: str) -> None:
+        """Save or remove an email for a client."""
+        with _lock:
+            all_emails = _read_json(_CLIENT_EMAILS_FILE)
+            if not isinstance(all_emails, dict):
+                all_emails = {}
+            if email.strip():
+                all_emails[client_name] = email.strip()
+            else:
+                all_emails.pop(client_name, None)
+            _write_json(_CLIENT_EMAILS_FILE, all_emails)

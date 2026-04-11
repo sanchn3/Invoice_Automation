@@ -28,15 +28,13 @@ LIGHT_GRAY = colors.HexColor("#F2F2F2")
 MID_GRAY   = colors.HexColor("#D0D0D0")
 LABEL_GRAY = colors.HexColor("#888888")
 
+# In-process logo cache: keyed by (path, radius_px, mtime) so it auto-invalidates if the file changes.
+_img_cache: dict = {}
+
 
 def _rounded_image_reader(path: str, radius_px: int = 18) -> ImageReader:
     """Return an ImageReader of the logo with rounded corners (RGBA PNG in memory).
-    Result is cached in memory so the image is only processed once per process."""
-    return _rounded_image_reader_cached(path, radius_px)
-
-
-def _rounded_image_reader_cached(path: str, radius_px: int) -> ImageReader:
-    # Keyed by path + mtime so cache invalidates if file changes
+    Cached by path + radius + mtime so the image is only processed once per file version."""
     _key = (path, radius_px, Path(path).stat().st_mtime)
     if _key not in _img_cache:
         img = Image.open(path).convert("RGBA")
@@ -50,9 +48,6 @@ def _rounded_image_reader_cached(path: str, radius_px: int) -> ImageReader:
         buf.seek(0)
         _img_cache[_key] = buf.read()
     return ImageReader(BytesIO(_img_cache[_key]))
-
-
-_img_cache: dict = {}
 
 
 def _fmt_date(iso_date: str) -> str:
@@ -193,12 +188,21 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     net_days     = int(invoice.get("net_days", 30))
     try:
         inv_dt  = datetime.fromisoformat(inv_date_str)
-        due_dt  = inv_dt + timedelta(days=net_days)
         inv_fmt = inv_dt.strftime("%m/%d/%Y")
-        due_fmt = due_dt.strftime("%m/%d/%Y")
     except Exception:
         inv_fmt = inv_date_str
-        due_fmt = ""
+
+    explicit_due = invoice.get("due_date", "").strip()
+    if explicit_due:
+        try:
+            due_fmt = datetime.fromisoformat(explicit_due).strftime("%m/%d/%Y")
+        except Exception:
+            due_fmt = explicit_due
+    else:
+        try:
+            due_fmt = (inv_dt + timedelta(days=net_days)).strftime("%m/%d/%Y")
+        except Exception:
+            due_fmt = ""
 
     _label(col_x[2] + pad, box_top - 0.18 * inch, "INVOICE DATE")
     _value(col_x[2] + pad, box_top - 0.36 * inch, inv_fmt)

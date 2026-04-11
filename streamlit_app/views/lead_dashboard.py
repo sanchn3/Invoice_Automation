@@ -109,15 +109,35 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_rates:
         st.subheader("Rate Card")
 
-        _debug_rates = dm.get_rate_card()
-        if not _debug_rates:
+        default_rates = dm.get_rate_card()
+        all_client_rates = dm.get_client_rates()
+
+        if not default_rates:
             st.error("⚠️ Rate card file not found or empty. Check that data/rate_card.json exists.")
         else:
-            st.caption(f"Loaded {len(_debug_rates)} rate entries from file.")
+            st.caption(f"Loaded {len(default_rates)} rate entries from file.")
 
-        labels = {
-            "in_out"                         : "In-Out Storage (per pallet)",
-            "transfer"                       : "Transfer (per pallet)",
+        # ── Billing Mode Toggle ───────────────────────────────────────────────
+        charged_by_pallet = st.toggle(
+            "Charged by Pallet",
+            value=bool(default_rates.get("charged_by_pallet", True)),
+            key="rate_charged_by_pallet",
+            help="ON = rates per pallet. OFF = single flat cost per truck; workers skip pallet count.",
+        )
+
+        # Billing labels change based on mode
+        if charged_by_pallet:
+            billing_labels = {
+                "in_out"  : "In-Out Storage (per pallet)",
+                "transfer": "Transfer (per pallet)",
+            }
+        else:
+            billing_labels = {
+                "cost_per_truck": "Cost per Truck",
+            }
+
+        # Non-billing labels are the same regardless of mode — reused in all loops
+        _non_billing_labels = {
             "temp_recorder_hardware_fee"     : "Temp. Recorder — Hardware & Installation",
             "temp_recorder_installation_fee" : "Temp. Recorder — Installation Only",
             "quality_inspection_fee"         : "Quality Inspection",
@@ -129,11 +149,12 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             "net_days"                       : "Net Days (payment terms)",
         }
 
+        labels = {**billing_labels, **_non_billing_labels}
+
         # ── Default Rates ─────────────────────────────────────────────────────
         st.markdown("#### Default Rates")
         st.caption("Applies to all clients unless a client-specific rate is set.")
 
-        default_rates = dm.get_rate_card()
         updated: dict[str, float] = {}
         col1, col2 = st.columns(2)
         items = list(labels.items())
@@ -158,7 +179,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 )
 
         if st.button("💾 Save Default Rates", type="primary"):
-            dm.update_rate_card(updated)
+            dm.update_rate_card({**updated, "charged_by_pallet": charged_by_pallet})
             st.success("Default rates saved.")
 
         st.markdown("---")
@@ -167,29 +188,57 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         st.markdown("#### Per-Client Rate Overrides")
         st.caption("Set rates for a specific client. Only fields you change here will override the defaults.")
 
-        all_client_rates = dm.get_client_rates()
-
         if all_client_rates:
             st.markdown("**Clients with custom rates:**")
             for cname, crates in all_client_rates.items():
                 with st.expander(cname):
+                    # Per-client billing mode toggle
+                    client_cbp = st.toggle(
+                        "Charged by Pallet",
+                        value=bool(crates.get("charged_by_pallet", charged_by_pallet)),
+                        key=f"cbp_{cname}",
+                        help="ON = per pallet. OFF = flat cost per truck.",
+                    )
+                    if client_cbp:
+                        client_billing = {
+                            "in_out"  : "In-Out Storage (per pallet)",
+                            "transfer": "Transfer (per pallet)",
+                        }
+                    else:
+                        client_billing = {"cost_per_truck": "Cost per Truck"}
+
+                    client_labels  = {**client_billing, **_non_billing_labels}
+                    override_items = list(client_labels.items())
+                    # Always persist the toggle state; other fields added below if they differ
+                    new_overrides: dict = {"charged_by_pallet": client_cbp}
+
                     override_col1, override_col2 = st.columns(2)
-                    override_items = list(labels.items())
-                    new_overrides: dict[str, float] = {}
                     for i, (key, label) in enumerate(override_items):
                         col = override_col1 if i < len(override_items) // 2 + len(override_items) % 2 else override_col2
-                        default_val = float(default_rates.get(key, 0))
-                        current_val = float(crates.get(key, default_val))
                         is_override = key in crates
-                        new_val = col.number_input(
-                            label=f"{label} ($)" + (" ✏️" if is_override else ""),
-                            value=current_val,
-                            min_value=0.0,
-                            step=0.25,
-                            format="%.2f",
-                            key=f"cr_{cname}_{key}",
-                            help="Default: ${:.2f}".format(default_val),
-                        )
+                        if key == "net_days":
+                            default_val = int(default_rates.get(key, 30))
+                            current_val = int(crates.get(key, default_val))
+                            new_val = col.number_input(
+                                label=label + (" ✏️" if is_override else ""),
+                                value=current_val,
+                                min_value=1,
+                                step=1,
+                                key=f"cr_{cname}_{key}",
+                                help=f"Default: {default_val}",
+                            )
+                        else:
+                            default_val = float(default_rates.get(key, 0))
+                            current_val = float(crates.get(key, default_val))
+                            new_val = col.number_input(
+                                label=f"{label} ($)" + (" ✏️" if is_override else ""),
+                                value=current_val,
+                                min_value=0.0,
+                                step=0.25,
+                                format="%.2f",
+                                key=f"cr_{cname}_{key}",
+                                help="Default: ${:.2f}".format(default_val),
+                            )
                         if new_val != default_val:
                             new_overrides[key] = new_val
 
@@ -237,7 +286,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             st.info("No billing addresses saved yet.")
 
         st.markdown("**Add / update a billing address:**")
-        clients_with_rates = sorted(dm.get_client_rates().keys())
+        clients_with_rates = sorted(all_client_rates.keys())
         if not clients_with_rates:
             st.caption("No clients with rates found. Add client rates above first.")
         else:
@@ -264,34 +313,112 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     st.rerun()
 
         st.markdown("---")
+
+        # ── Client Emails ─────────────────────────────────────────────────────
+        st.markdown("#### Client Emails")
+        st.caption("Email addresses used when sending invoices to clients.")
+
+        all_emails = dm.get_client_emails()
+
+        if all_emails:
+            st.markdown("**Saved emails:**")
+            for cname, email in sorted(all_emails.items()):
+                with st.expander(cname):
+                    new_email = st.text_input(
+                        "Email",
+                        value=email,
+                        key=f"email_{cname}",
+                        label_visibility="collapsed",
+                    )
+                    ec1, ec2 = st.columns(2)
+                    if ec1.button("💾 Save", key=f"save_email_{cname}", type="primary", width="stretch"):
+                        dm.set_client_email(cname, new_email.strip())
+                        st.success(f"Email saved for {cname}.")
+                        st.rerun()
+                    if ec2.button("🗑 Remove", key=f"del_email_{cname}", width="stretch"):
+                        dm.set_client_email(cname, "")
+                        st.success(f"Email removed for {cname}.")
+                        st.rerun()
+        else:
+            st.info("No client emails saved yet.")
+
+        st.markdown("**Add / update a client email:**")
+        if not clients_with_rates:
+            st.caption("No clients with rates found. Add client rates above first.")
+        else:
+            email_client = st.selectbox(
+                "Client",
+                options=clients_with_rates,
+                key="new_email_client",
+                label_visibility="collapsed",
+            )
+            existing_email = dm.get_client_email(email_client)
+            new_email_val = st.text_input(
+                "Email address",
+                value=existing_email,
+                placeholder="billing@client.com",
+                key="new_email_val",
+            )
+            if st.button("💾 Save Email", type="primary", key="save_new_email"):
+                if not new_email_val.strip():
+                    st.warning("Email cannot be empty.")
+                else:
+                    dm.set_client_email(email_client, new_email_val.strip())
+                    st.success(f"Email saved for {email_client}.")
+                    st.rerun()
+
+        st.markdown("---")
         st.markdown("**Add rates for a new client:**")
         new_client_name = st.text_input("Client name", placeholder="e.g. Walmart", key="new_client_name")
 
         if new_client_name.strip():
+            new_cbp = st.toggle(
+                "Charged by Pallet",
+                value=True,
+                key="new_client_cbp",
+                help="ON = per pallet. OFF = flat cost per truck.",
+            )
+            if new_cbp:
+                new_billing = {
+                    "in_out"  : "In-Out Storage (per pallet)",
+                    "transfer": "Transfer (per pallet)",
+                }
+            else:
+                new_billing = {"cost_per_truck": "Cost per Truck"}
+
+            new_client_labels = {**new_billing, **_non_billing_labels}
             new_col1, new_col2 = st.columns(2)
-            new_client_overrides: dict[str, float] = {}
-            new_items = list(labels.items())
+            # Always store the billing mode; rate fields added below if they differ
+            new_client_overrides: dict = {"charged_by_pallet": new_cbp}
+            new_items = list(new_client_labels.items())
             for i, (key, label) in enumerate(new_items):
                 col = new_col1 if i < len(new_items) // 2 + len(new_items) % 2 else new_col2
-                default_val = float(default_rates.get(key, 0))
-                new_val = col.number_input(
-                    label=f"{label} ($)",
-                    value=default_val,
-                    min_value=0.0,
-                    step=0.25,
-                    format="%.2f",
-                    key=f"new_cr_{key}",
-                )
+                if key == "net_days":
+                    default_val = int(default_rates.get(key, 30))
+                    new_val = col.number_input(
+                        label=label,
+                        value=default_val,
+                        min_value=1,
+                        step=1,
+                        key=f"new_cr_{key}",
+                    )
+                else:
+                    default_val = float(default_rates.get(key, 0))
+                    new_val = col.number_input(
+                        label=f"{label} ($)",
+                        value=default_val,
+                        min_value=0.0,
+                        step=0.25,
+                        format="%.2f",
+                        key=f"new_cr_{key}",
+                    )
                 if new_val != default_val:
                     new_client_overrides[key] = new_val
 
             if st.button("💾 Save Client Rates", type="primary", key="save_new_client"):
-                if not new_client_overrides:
-                    st.warning("No rates differ from the defaults — nothing to save.")
-                else:
-                    dm.set_client_rates(new_client_name.strip().upper(), new_client_overrides)
-                    st.success(f"Custom rates saved for {new_client_name.strip().upper()}.")
-                    st.rerun()
+                dm.set_client_rates(new_client_name.strip().upper(), new_client_overrides)
+                st.success(f"Custom rates saved for {new_client_name.strip().upper()}.")
+                st.rerun()
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 3 — SETTINGS

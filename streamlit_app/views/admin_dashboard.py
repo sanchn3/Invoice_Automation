@@ -12,18 +12,11 @@ from pathlib import Path
 
 from data_manager import DataManager
 from invoice_logic.charge_calculator import calculate_charges
-from invoice_logic.pdf_generator import generate_pdf
 from email_pipeline.attachment_handler import process_pdf_from_path
 from alerting.alert_manager import AlertManager
 
 _STUCK_HOURS = 24
 
-
-@st.cache_data(show_spinner=False)
-def _cached_pdf(ci_id: str, qb_num: str, total: float, provider_pdf_path: str | None, _ci: dict) -> bytes:
-    """Cache keyed by invoice id + QB number + total + provider path.
-    _ci is excluded from the key (underscore prefix) but used for generation."""
-    return generate_pdf(_ci, provider_pdf_path)
 
 # Canonical client-name aliases (lowercase key → display name)
 _CLIENT_ALIASES: dict[str, str] = {
@@ -67,6 +60,12 @@ def _is_stuck(log: dict) -> bool:
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("📦 Invoice Automation — Admin Dashboard")
 
+    # Fetch all data once per render — reused across all three tabs.
+    email_logs       = dm.get_email_logs()
+    provider_invs    = dm.get_provider_invoices()
+    client_invs_list = dm.get_client_invoices()
+    prov_by_id       = {pi["id"]: pi for pi in provider_invs}
+
     tab_pipeline, tab_approve, tab_export = st.tabs([
         "🗂 Validate",
         "✅ Approve & Invoice",
@@ -87,10 +86,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     new_count = poll_inbox(dm, alert_manager)
                 st.success(f"Poll complete — {new_count} new email(s) processed.")
                 st.rerun()
-
-        email_logs       = dm.get_email_logs()
-        provider_invs    = dm.get_provider_invoices()
-        client_invs_list = dm.get_client_invoices()
 
         pending_review = [log for log in email_logs if log.get("status") == "pending_review"]
         if pending_review:
@@ -319,12 +314,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_approve:
         st.subheader("Approve & Invoice")
 
-        client_invoices   = dm.get_client_invoices()
-        provider_invoices = dm.get_provider_invoices()
-        prov_by_id        = {pi["id"]: pi for pi in provider_invoices}
-
         all_ci = sorted(
-            [ci for ci in client_invoices
+            [ci for ci in client_invs_list
              if ci.get("status") in ("validated", "pending_worker", "ready_to_invoice")],
             key=lambda x: x.get("created_at", ""),
             reverse=True,
@@ -537,10 +528,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_export:
         st.subheader("Sent to Accounting")
 
-        client_invoices = dm.get_client_invoices()
         sent = sorted(
             [
-                ci for ci in client_invoices
+                ci for ci in client_invs_list
                 if ci.get("status") in ("invoiced",) or ci.get("quickbooks_exported")
             ],
             key=lambda x: x.get("created_at", ""),
