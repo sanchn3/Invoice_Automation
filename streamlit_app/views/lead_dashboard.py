@@ -206,6 +206,64 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             st.info("No client-specific rates set yet.")
 
         st.markdown("---")
+
+        # ── Client Billing Addresses ──────────────────────────────────────────
+        st.markdown("#### Client Billing Addresses")
+        st.caption("Address printed in the Bill To section of the generated invoice.")
+
+        all_addresses = dm.get_client_addresses()
+
+        if all_addresses:
+            st.markdown("**Saved addresses:**")
+            for cname, addr in sorted(all_addresses.items()):
+                with st.expander(cname):
+                    new_addr = st.text_area(
+                        "Address",
+                        value=addr,
+                        height=90,
+                        key=f"addr_{cname}",
+                        label_visibility="collapsed",
+                    )
+                    ac1, ac2 = st.columns(2)
+                    if ac1.button("💾 Save", key=f"save_addr_{cname}", type="primary", width="stretch"):
+                        dm.set_client_address(cname, new_addr)
+                        st.success(f"Address saved for {cname}.")
+                        st.rerun()
+                    if ac2.button("🗑 Remove", key=f"del_addr_{cname}", width="stretch"):
+                        dm.set_client_address(cname, "")
+                        st.success(f"Address removed for {cname}.")
+                        st.rerun()
+        else:
+            st.info("No billing addresses saved yet.")
+
+        st.markdown("**Add / update a billing address:**")
+        clients_with_rates = sorted(dm.get_client_rates().keys())
+        if not clients_with_rates:
+            st.caption("No clients with rates found. Add client rates above first.")
+        else:
+            addr_client = st.selectbox(
+                "Client",
+                options=clients_with_rates,
+                key="new_addr_client",
+                label_visibility="collapsed",
+            )
+            existing = dm.get_client_address(addr_client)
+            new_addr_val = st.text_area(
+                "Billing Address",
+                value=existing,
+                placeholder="123 Main St\nCity, TX 78000",
+                height=90,
+                key="new_addr_val",
+            )
+            if st.button("💾 Save Address", type="primary", key="save_new_addr"):
+                if not new_addr_val.strip():
+                    st.warning("Address cannot be empty.")
+                else:
+                    dm.set_client_address(addr_client, new_addr_val.strip())
+                    st.success(f"Billing address saved for {addr_client}.")
+                    st.rerun()
+
+        st.markdown("---")
         st.markdown("**Add rates for a new client:**")
         new_client_name = st.text_input("Client name", placeholder="e.g. Walmart", key="new_client_name")
 

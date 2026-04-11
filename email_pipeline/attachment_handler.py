@@ -137,7 +137,7 @@ def process_pdf_from_path(
         "total"                    : 0.0,
         "provider_invoice_id"      : provider_invoice["id"],
         "quickbooks_exported"      : False,
-        "status"                   : "pending_worker",
+        "status"                   : "pending_validation",
     })
 
     dm.update_email_log(email_log_id, {"status": "parsed", "error_text": None})
@@ -305,7 +305,7 @@ def handle_attachment(
         "total"                    : 0.0,
         "provider_invoice_id"      : provider_invoice["id"],
         "quickbooks_exported"      : False,
-        "status"                   : "pending_worker",
+        "status"                   : "pending_validation",
     })
 
     dm.update_email_log(email_log_id, {"status": "parsed"})

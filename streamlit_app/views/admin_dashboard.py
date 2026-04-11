@@ -12,7 +12,6 @@ from pathlib import Path
 
 from data_manager import DataManager
 from invoice_logic.charge_calculator import calculate_charges
-from invoice_logic.iif_exporter import generate_iif
 from invoice_logic.pdf_generator import generate_pdf
 from email_pipeline.attachment_handler import process_pdf_from_path
 from alerting.alert_manager import AlertManager
@@ -71,7 +70,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     tab_pipeline, tab_approve, tab_export = st.tabs([
         "🗂 Validate",
         "✅ Approve & Invoice",
-        "📤 QuickBooks Export",
+        "📤 Sent to Accounting",
     ])
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -101,15 +100,17 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         sub_parsed, sub_invoices = st.tabs(["📄 Parsed", "🧾 Invoices"])
 
         with sub_parsed:
-            # Provider invoices that already have an invoiced/exported client invoice
-            # are moved to the Invoices tab — hide them from Parsed.
-            _done_prov_ids = {
-                ci.get("provider_invoice_id")
+            # Build map: provider_invoice_id → client_invoice for quick status lookup
+            _ci_by_prov_id = {
+                ci.get("provider_invoice_id"): ci
                 for ci in client_invs_list
-                if ci.get("status") in ("invoiced", "exported_to_qb")
-                and ci.get("provider_invoice_id")
+                if ci.get("provider_invoice_id")
             }
-            active_provider_invs = [pi for pi in provider_invs if pi["id"] not in _done_prov_ids]
+            # Show only provider invoices whose linked CI is pending_validation
+            active_provider_invs = [
+                pi for pi in provider_invs
+                if _ci_by_prov_id.get(pi["id"], {}).get("status") == "pending_validation"
+            ]
 
             # Combine parsed invoices + pending-review emails, newest first
             all_items = (
@@ -119,10 +120,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             all_items.sort(key=lambda x: x[1].get("created_at", ""), reverse=True)
 
             if not all_items:
-                st.info("No parsed invoices yet.")
+                st.info("No invoices pending validation.")
             else:
                 st.caption(
-                    f"{len(active_provider_invs)} parsed"
+                    f"{len(active_provider_invs)} awaiting validation"
                     + (f" · {len(pending_review)} pending review" if pending_review else "")
                 )
 
@@ -283,6 +284,18 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 from streamlit_pdf_viewer import pdf_viewer
                                 pdf_viewer(Path(pdf_path).read_bytes(), key=f"pdfview_{iid}")
 
+                            # ── Validate action ───────────────────────────────
+                            st.markdown("---")
+                            val_col, _ = st.columns([1, 2])
+                            if val_col.button("✅ Validate", key=f"validate_{iid}", type="primary", width='stretch'):
+                                linked_ci = _ci_by_prov_id.get(iid)
+                                if linked_ci:
+                                    dm.update_client_invoice(linked_ci["id"], {"status": "validated"})
+                                    st.success("Invoice validated — now visible in Approve & Invoice tab.")
+                                    st.rerun()
+                                else:
+                                    st.error("No linked client invoice found.")
+
         with sub_invoices:
             sorted_cli = sorted(client_invs_list, key=lambda x: x.get("created_at", ""), reverse=True)
             if not sorted_cli:
@@ -311,13 +324,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         prov_by_id        = {pi["id"]: pi for pi in provider_invoices}
 
         all_ci = sorted(
-            [ci for ci in client_invoices if ci.get("status") != "exported_to_qb"],
+            [ci for ci in client_invoices
+             if ci.get("status") in ("validated", "pending_worker", "ready_to_invoice")],
             key=lambda x: x.get("created_at", ""),
             reverse=True,
         )
 
         if not all_ci:
-            st.info("No invoices yet.")
+            st.info("No invoices awaiting processing.")
         else:
             st.caption(f"{len(all_ci)} invoice(s) — newest first")
 
@@ -325,16 +339,32 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 prov    = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
                 status  = ci.get("status", "")
                 cid     = ci["id"]
-                editable = status in ("pending_worker", "ready_to_invoice")
 
-                # Pre-initialise so they're always in scope
                 current_svc = ci.get("service_type") or "in_out"
-                svc  = current_svc
+                svc = current_svc
 
                 confirm_key = f"confirm_del_{cid}"
 
                 with st.container(border=True):
-                    # ── Row 1: table fields ───────────────────────────────
+                    # ── Status banner ─────────────────────────────────────
+                    if status == "pending_worker":
+                        st.markdown(
+                            '<div style="background:#fff3cd;border:1px solid #ffc107;'
+                            'border-radius:4px;padding:4px 10px;margin-bottom:6px;">'
+                            '<span style="color:#856404;font-weight:600;">'
+                            '⏳ Waiting for Worker</span></div>',
+                            unsafe_allow_html=True,
+                        )
+                    elif status == "ready_to_invoice":
+                        st.markdown(
+                            '<div style="background:#d1e7dd;border:1px solid #198754;'
+                            'border-radius:4px;padding:4px 10px;margin-bottom:6px;">'
+                            '<span style="color:#0a3622;font-weight:600;">'
+                            '✅ Ready to Invoice</span></div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    # ── Row 1: invoice info ───────────────────────────────
                     r1a, r1b, r1c, r1d, r1e = st.columns([1.2, 0.9, 2, 1, 1.8])
 
                     with r1a:
@@ -350,7 +380,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     with r1d:
                         st.write(f"${ci.get('total', 0):,.2f}")
                     with r1e:
-                        if editable:
+                        if status == "validated":
                             svc = st.selectbox(
                                 label="Service Type",
                                 options=["in_out", "transfer"],
@@ -364,7 +394,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 {"in_out": "In-Out Storage", "transfer": "Transfer"}.get(current_svc, "—")
                             )
 
-                    # ── Row 2: actions ────────────────────────────────────
+                    # ── Row 2: temp recorder + actions ────────────────────
                     r2a, r2b, r2c, r2d = st.columns([2.5, 0.8, 0.8, 0.8])
 
                     with r2a:
@@ -377,34 +407,24 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.caption(f"🌡 {_TR_TO_LBL.get(_stored, _stored)}")
 
                     with r2b:
-                        if editable:
+                        if status == "validated":
                             if st.button("💾 Save", key=f"save_{cid}", width='stretch'):
-                                dm.update_client_invoice(cid, {
-                                    "service_type": svc,
-                                })
-                                st.success("Service details saved.")
+                                dm.update_client_invoice(cid, {"service_type": svc})
+                                st.success("Saved.")
                                 st.rerun()
 
                     with r2c:
-                        if status in ("invoiced", "exported_to_qb") and ci.get("quickbooks_invoice_number"):
-                            pdf_bytes = _cached_pdf(
-                                cid, ci.get("quickbooks_invoice_number", ""),
-                                float(ci.get("total", 0)), prov.get("pdf_local_path"), ci,
-                            )
-                            _yy = datetime.now().strftime("%y")
-                            pdf_name  = f"{ci['quickbooks_invoice_number']}-{_yy}.pdf"
+                        _pdf_path = prov.get("pdf_local_path", "")
+                        if _pdf_path and Path(_pdf_path).exists():
+                            _pdf_bytes = Path(_pdf_path).read_bytes()
+                            _pdf_name  = prov.get("invoice_number", "invoice") + ".pdf"
                         else:
-                            pdf_path = prov.get("pdf_local_path", "")
-                            if pdf_path and Path(pdf_path).exists():
-                                pdf_bytes = Path(pdf_path).read_bytes()
-                                pdf_name  = prov.get("invoice_number", "invoice") + ".pdf"
-                            else:
-                                pdf_bytes = None
-                                pdf_name  = "invoice.pdf"
+                            _pdf_bytes = None
+                            _pdf_name  = "invoice.pdf"
 
-                        if pdf_bytes:
+                        if _pdf_bytes:
                             st.download_button(
-                                "📄 PDF", pdf_bytes, pdf_name,
+                                "📄 PDF", _pdf_bytes, _pdf_name,
                                 mime="application/pdf",
                                 key=f"pdf_{cid}",
                                 width='stretch',
@@ -420,7 +440,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 st.session_state[confirm_key] = True
                                 st.rerun()
 
-                    # ── Delete confirmation row ───────────────────────────
+                    # ── Delete confirmation ───────────────────────────────
                     if st.session_state.get(confirm_key):
                         dc_yes, dc_no = st.columns(2)
                         if dc_yes.button("✅ Yes, delete", key=f"del_yes_{cid}", type="primary", width='stretch'):
@@ -431,14 +451,24 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.session_state.pop(confirm_key, None)
                             st.rerun()
 
-                    # ── Row 3: ready_to_invoice — worker details + QB gen ─
-                    if status == "ready_to_invoice":
+                    # ── Status-specific action area ───────────────────────
+                    if status == "validated":
+                        st.markdown("---")
+                        if st.button("📤 Send to Worker", key=f"send_worker_{cid}", type="primary", width='stretch'):
+                            dm.update_client_invoice(cid, {
+                                "service_type": svc,
+                                "status"      : "pending_worker",
+                            })
+                            st.success("Sent to worker.")
+                            st.rerun()
+
+                    elif status == "ready_to_invoice":
                         st.markdown("---")
                         st.caption("Worker submitted:")
                         w1, w2, w3 = st.columns(3)
-                        w1.metric("Pallets",         ci.get("pallet_count", 0))
-                        w2.metric("Damaged Pallets",  ci.get("damaged_pallets", 0))
-                        w3.metric("Broken Pallets",   ci.get("broken_pallets", 0))
+                        w1.metric("Pallets",        ci.get("pallet_count", 0))
+                        w2.metric("Damaged Pallets", ci.get("damaged_pallets", 0))
+                        w3.metric("Broken Pallets",  ci.get("broken_pallets", 0))
 
                         extras = ci.get("extra_charges", [])
                         if extras:
@@ -455,7 +485,22 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 except Exception:
                                     ph_col.caption(ph_path)
 
-                        if st.button("🟢 Generate Invoice", key=f"gen_{cid}", type="primary", width='stretch'):
+                        act1, act2 = st.columns(2)
+                        if act1.button("↩ Send back to Worker", key=f"send_back_{cid}", width='stretch'):
+                            dm.update_client_invoice(cid, {
+                                "status"         : "pending_worker",
+                                "pallet_count"   : 0,
+                                "damaged_pallets": 0,
+                                "broken_pallets" : 0,
+                                "extra_charges"  : [],
+                                "worker_notes"   : "",
+                                "photo_paths"    : [],
+                                "temp_recorder"  : False,
+                            })
+                            st.info("Invoice sent back to worker.")
+                            st.rerun()
+
+                        if act2.button("📤 Send to Accounting", key=f"gen_{cid}", type="primary", width='stretch'):
                             inv_id = _generate_unique_invoice_id(dm)
                             charges = calculate_charges(
                                 dm=dm,
@@ -467,17 +512,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 broken_pallets=int(ci.get("broken_pallets", 0)),
                                 client_name=ci.get("client_name", ""),
                             )
-                            client_rates = dm.get_rates_for_client(ci.get("client_name", ""))
+                            client_rates   = dm.get_rates_for_client(ci.get("client_name", ""))
+                            billing_addr   = dm.get_client_address(ci.get("client_name", ""))
                             dm.update_client_invoice(cid, {
                                 "quickbooks_invoice_number": inv_id,
-                                "service_type" : svc,
-                                "temp_recorder": ci.get("temp_recorder", "hardware_installation"),
-                                "line_items"   : charges["line_items"],
-                                "subtotal"     : charges["subtotal"],
-                                "total"        : charges["total"],
-                                "net_days"     : int(client_rates.get("net_days", 30)),
-                                "status"       : "invoiced",
-                                "invoice_date" : datetime.utcnow().date().isoformat(),
+                                "service_type"    : svc,
+                                "temp_recorder"   : ci.get("temp_recorder", "hardware_installation"),
+                                "line_items"      : charges["line_items"],
+                                "subtotal"        : charges["subtotal"],
+                                "total"           : charges["total"],
+                                "net_days"        : int(client_rates.get("net_days", 30)),
+                                "billing_address" : billing_addr,
+                                "status"          : "invoiced",
+                                "invoice_date"    : datetime.utcnow().date().isoformat(),
                             })
                             if prov.get("email_intake_id"):
                                 dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
@@ -485,90 +532,59 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.rerun()
 
     # ──────────────────────────────────────────────────────────────────────────
-    # TAB 3 — QUICKBOOKS EXPORT
+    # TAB 3 — SENT TO ACCOUNTING
     # ──────────────────────────────────────────────────────────────────────────
     with tab_export:
-        st.subheader("Export to QuickBooks")
+        st.subheader("Sent to Accounting")
 
         client_invoices = dm.get_client_invoices()
-        exportable      = [
-            ci for ci in client_invoices
-            if ci.get("status") == "invoiced" and not ci.get("quickbooks_exported")
-        ]
+        sent = sorted(
+            [
+                ci for ci in client_invoices
+                if ci.get("status") in ("invoiced",) or ci.get("quickbooks_exported")
+            ],
+            key=lambda x: x.get("created_at", ""),
+            reverse=True,
+        )
 
-        if not exportable:
-            st.info("No invoices ready to export.")
+        if not sent:
+            st.info("No invoices sent to accounting yet.")
         else:
-            st.caption(f"{len(exportable)} invoice(s) ready for export.")
+            # ── Filters ───────────────────────────────────────────────────────
+            all_clients = sorted({ci.get("client_name", "") for ci in sent if ci.get("client_name")})
+            all_dates   = sorted({ci.get("invoice_date", "")[:10] for ci in sent if ci.get("invoice_date")}, reverse=True)
 
-            selected_ids: list[str] = []
-            for ci in exportable:
-                qb = ci.get("quickbooks_invoice_number", "—")
-                label = f"QB #{qb} — {ci.get('client_name', '—')} — ${ci.get('total', 0):,.2f}"
-                col_chk, col_pdf = st.columns([4, 1])
-                with col_chk:
-                    if st.checkbox(label, key=f"exp_{ci['id']}"):
-                        selected_ids.append(ci["id"])
-                with col_pdf:
-                    prov_exp  = dm.get_provider_invoice_by_id(ci.get("provider_invoice_id", ""))
-                    pdf_bytes = _cached_pdf(
-                        ci["id"], qb, float(ci.get("total", 0)),
-                        prov_exp.get("pdf_local_path") if prov_exp else None, ci,
-                    )
-                    fname = f"{qb}-{datetime.now().strftime('%y')}.pdf"
-                    st.download_button(
-                        label    ="⬇ PDF",
-                        data     =pdf_bytes,
-                        file_name=fname,
-                        mime     ="application/pdf",
-                        key      =f"pdf_exp_{ci['id']}",
-                    )
+            f_col, f_col2 = st.columns(2)
+            with f_col:
+                sel_client = st.selectbox(
+                    "Filter by client",
+                    options=["All"] + all_clients,
+                    key="acc_filter_client",
+                )
+            with f_col2:
+                sel_date = st.selectbox(
+                    "Filter by date",
+                    options=["All"] + all_dates,
+                    key="acc_filter_date",
+                )
 
-            if selected_ids:
-                if st.button(f"Export {len(selected_ids)} invoice(s) to IIF", type="primary"):
-                    try:
-                        iif_path = generate_iif(selected_ids, dm)
-                        iif_content = open(iif_path, "r", encoding="utf-8").read()
-                        st.success(f"IIF file generated: {iif_path}")
-                        st.download_button(
-                            label    ="⬇ Download IIF File",
-                            data     =iif_content,
-                            file_name=iif_path.split("\\")[-1].split("/")[-1],
-                            mime     ="text/plain",
-                        )
-                        st.rerun()
-                    except ValueError as e:
-                        st.error(str(e))
-                    except Exception as e:
-                        st.error(f"Export failed: {e}")
+            filtered = [
+                ci for ci in sent
+                if (sel_client == "All" or ci.get("client_name") == sel_client)
+                and (sel_date == "All" or (ci.get("invoice_date", "")[:10]) == sel_date)
+            ]
 
-        st.markdown("---")
-        st.subheader("Export History")
-        exported = [ci for ci in dm.get_client_invoices() if ci.get("quickbooks_exported")]
-        if exported:
-            for ci in sorted(exported, key=lambda x: x.get("created_at", ""), reverse=True):
-                qb = ci.get("quickbooks_invoice_number", "—")
-                col_info, col_pdf = st.columns([5, 1])
-                with col_info:
-                    st.text(
-                        f"QB #{qb}  "
-                        f"| {ci.get('client_name', '—')}  "
-                        f"| ${ci.get('total', 0):,.2f}  "
-                        f"| {ci.get('invoice_date', '—')}"
-                    )
-                with col_pdf:
-                    prov_hist = dm.get_provider_invoice_by_id(ci.get("provider_invoice_id", ""))
-                    pdf_bytes = _cached_pdf(
-                        ci["id"], qb, float(ci.get("total", 0)),
-                        prov_hist.get("pdf_local_path") if prov_hist else None, ci,
-                    )
-                    st.download_button(
-                        label    ="⬇ PDF",
-                        data     =pdf_bytes,
-                        file_name=f"{qb}-{datetime.now().strftime('%y')}.pdf",
-                        mime     ="application/pdf",
-                        key      =f"pdf_hist_{ci['id']}",
-                    )
-        else:
-            st.caption("No invoices exported yet.")
+            st.caption(f"{len(filtered)} of {len(sent)} invoice(s)")
+            rows = [
+                {
+                    "QB #"    : ci.get("quickbooks_invoice_number") or "—",
+                    "Date"    : ci.get("invoice_date", "—"),
+                    "Client"  : ci.get("client_name", "—"),
+                    "Total"   : f"${ci.get('total', 0):,.2f}",
+                    "Net Days": ci.get("net_days", "—"),
+                    "Status"  : "Exported to QB" if ci.get("quickbooks_exported") else "In Accounting",
+                }
+                for ci in filtered
+            ]
+            st.dataframe(rows, use_container_width=True, hide_index=True)
 

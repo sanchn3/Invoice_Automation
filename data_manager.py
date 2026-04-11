@@ -16,12 +16,13 @@ from typing import Any
 from config import DATA_DIR
 
 # File paths
-_EMAIL_LOG_FILE        = DATA_DIR / "email_intake_log.json"
-_PROVIDER_INVOICES_FILE = DATA_DIR / "provider_invoices.json"
-_CLIENT_INVOICES_FILE  = DATA_DIR / "client_invoices.json"
-_PROVIDERS_FILE        = DATA_DIR / "providers.json"
-_RATE_CARD_FILE        = DATA_DIR / "rate_card.json"
-_CLIENT_RATES_FILE     = DATA_DIR / "client_rates.json"
+_EMAIL_LOG_FILE          = DATA_DIR / "email_intake_log.json"
+_PROVIDER_INVOICES_FILE  = DATA_DIR / "provider_invoices.json"
+_CLIENT_INVOICES_FILE    = DATA_DIR / "client_invoices.json"
+_PROVIDERS_FILE          = DATA_DIR / "providers.json"
+_RATE_CARD_FILE          = DATA_DIR / "rate_card.json"
+_CLIENT_RATES_FILE       = DATA_DIR / "client_rates.json"
+_CLIENT_ADDRESSES_FILE   = DATA_DIR / "client_addresses.json"
 
 _lock = threading.Lock()
 
@@ -237,3 +238,29 @@ class DataManager:
             if isinstance(all_rates, dict):
                 all_rates.pop(client_name, None)
                 _write_json(_CLIENT_RATES_FILE, all_rates)
+
+    # ─────────────────────────────────────────
+    # CLIENT BILLING ADDRESSES
+    # ─────────────────────────────────────────
+
+    def get_client_addresses(self) -> dict:
+        """Returns dict mapping client_name -> billing address string."""
+        with _lock:
+            data = _read_json(_CLIENT_ADDRESSES_FILE)
+            return data if isinstance(data, dict) else {}
+
+    def get_client_address(self, client_name: str) -> str:
+        """Returns the billing address for a client, or empty string."""
+        return self.get_client_addresses().get(client_name, "")
+
+    def set_client_address(self, client_name: str, address: str) -> None:
+        """Save or remove a billing address for a client."""
+        with _lock:
+            all_addrs = _read_json(_CLIENT_ADDRESSES_FILE)
+            if not isinstance(all_addrs, dict):
+                all_addrs = {}
+            if address.strip():
+                all_addrs[client_name] = address.strip()
+            else:
+                all_addrs.pop(client_name, None)
+            _write_json(_CLIENT_ADDRESSES_FILE, all_addrs)
