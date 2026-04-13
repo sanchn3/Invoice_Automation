@@ -60,6 +60,17 @@ def _is_stuck(log: dict) -> bool:
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("📦 Invoice Automation — Admin Dashboard")
 
+    # ── In / Out mode toggle ──────────────────────────────────────────────────
+    c_in, c_tog, c_out, _ = st.columns([0.4, 0.5, 0.5, 5])
+    c_in.markdown("**In**")
+    is_out = c_tog.toggle("", key="admin_mode_out", label_visibility="collapsed")
+    c_out.markdown("**Out**")
+
+    if is_out:
+        from streamlit_app.views import bol_dashboard
+        bol_dashboard.render(dm)
+        return
+
     # Fetch all data once per render — reused across all three tabs.
     email_logs       = dm.get_email_logs()
     provider_invs    = dm.get_provider_invoices()

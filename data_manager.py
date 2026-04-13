@@ -24,6 +24,7 @@ _RATE_CARD_FILE          = DATA_DIR / "rate_card.json"
 _CLIENT_RATES_FILE       = DATA_DIR / "client_rates.json"
 _CLIENT_ADDRESSES_FILE   = DATA_DIR / "client_addresses.json"
 _CLIENT_EMAILS_FILE      = DATA_DIR / "client_emails.json"
+_BOL_RECORDS_FILE        = DATA_DIR / "bol_records.json"
 
 _lock = threading.Lock()
 
@@ -46,6 +47,7 @@ _JSON_DEFAULTS: dict[Path, Any] = {
     _CLIENT_RATES_FILE    : {},
     _CLIENT_ADDRESSES_FILE: {},
     _CLIENT_EMAILS_FILE   : {},
+    _BOL_RECORDS_FILE     : [],
 }
 
 
@@ -317,3 +319,36 @@ class DataManager:
             else:
                 all_emails.pop(client_name, None)
             _write_json(_CLIENT_EMAILS_FILE, all_emails)
+
+    # ─────────────────────────────────────────
+    # BILL OF LADING RECORDS
+    # ─────────────────────────────────────────
+
+    def get_bol_records(self) -> list[dict]:
+        with _lock:
+            return _read_json(_BOL_RECORDS_FILE)
+
+    def add_bol_record(self, record: dict) -> dict:
+        with _lock:
+            records = _read_json(_BOL_RECORDS_FILE)
+            record.setdefault("id", _new_id())
+            record.setdefault("created_at", _now())
+            records.append(record)
+            _write_json(_BOL_RECORDS_FILE, records)
+            return record
+
+    def update_bol_record(self, id: str, updates: dict) -> dict:
+        with _lock:
+            records = _read_json(_BOL_RECORDS_FILE)
+            for i, rec in enumerate(records):
+                if rec["id"] == id:
+                    records[i].update(updates)
+                    _write_json(_BOL_RECORDS_FILE, records)
+                    return records[i]
+            raise KeyError(f"BOL record {id} not found.")
+
+    def delete_bol_record(self, id: str) -> None:
+        with _lock:
+            records = _read_json(_BOL_RECORDS_FILE)
+            records = [r for r in records if r["id"] != id]
+            _write_json(_BOL_RECORDS_FILE, records)
