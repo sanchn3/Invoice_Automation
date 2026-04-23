@@ -1,23 +1,24 @@
+# Secrets
+.env
+
 # Virtual environment
 venv/
 .venv/
-
-# Environment variables — never commit secrets
-.env
 
 # Python cache
 __pycache__/
 *.py[cod]
 
 # Generated output
-invoices_output/
-invoices_report.csv
+pdfs/
+exports/
 logs/
 
-# Distribution / build
-dist/
-build/
-*.egg-info/
+# Runtime pipeline data (live invoice state — not for version control)
+data/
+
+# O365 token cache
+o365_token.txt
 
 # IDE
 .vscode/
@@ -25,3 +26,7 @@ build/
 
 # macOS
 .DS_Store
+
+# claude
+claude.md
+.claude
