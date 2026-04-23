@@ -27,7 +27,7 @@ _DATE_CENTER_Y = 0.44   # vertical centre of the date box from top of stamp
 _FONT_H_FRAC   = 0.075  # font height as fraction of stamp image height
 _CHAR_SPACING  = 1.45   # tracking multiplier applied per character
 _DATE_ROTATION  = 4     # degrees; positive = counter-clockwise
-_DATE_X_OFFSET_PX = -24 # horizontal nudge in pixels (negative = left)
+_DATE_X_OFFSET_PX = -31 # horizontal nudge in pixels (negative = left)
 _STAMP_W_FRAC  = 0.42   # stamp width as fraction of PDF page width
 
 _MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
