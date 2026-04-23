@@ -11,14 +11,11 @@ __pycache__/
 
 # Generated output
 pdfs/
-photos/
 exports/
 logs/
 
 # Runtime pipeline data (live invoice state — not for version control)
-data/client_invoices.json
-data/email_intake_log.json
-data/provider_invoices.json
+data/
 
 # O365 token cache
 o365_token.txt
@@ -32,3 +29,4 @@ o365_token.txt
 
 # claude
 claude.md
+.claude

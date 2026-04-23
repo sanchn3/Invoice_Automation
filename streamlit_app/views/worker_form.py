@@ -34,7 +34,9 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
     def job_label(ci: dict) -> str:
         provider_inv = dm.get_provider_invoice_by_id(ci.get("provider_invoice_id", ""))
         provider = provider_inv.get("provider_name", "Unknown") if provider_inv else "Unknown"
-        return f"{ci.get('client_name', 'Unknown')} — {provider} — {ci.get('invoice_date', '')}"
+        inv_num  = provider_inv.get("invoice_number", "") if provider_inv else ""
+        inv_part = f" — {inv_num}" if inv_num else ""
+        return f"{ci.get('client_name', 'Unknown')} — {provider}{inv_part} — {ci.get('invoice_date', '')}"
 
     job_options = {job_label(ci): ci for ci in pending_jobs}
     selected_label = st.selectbox(
@@ -52,15 +54,38 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
     col1.metric("Client",   selected_job.get("client_name", "—"))
     col2.metric("Provider", provider_inv.get("provider_name", "—") if provider_inv else "—")
     col3.metric("Date",     selected_job.get("invoice_date", "—"))
+
+    pdf_path = provider_inv.get("pdf_local_path", "") if provider_inv else ""
+    if pdf_path and Path(pdf_path).exists():
+        pdf_key = f"worker_pdf_{job_id}"
+        pdf_label = "📄 Hide Invoice PDF" if st.session_state.get(pdf_key) else "📄 View Invoice PDF"
+        if st.button(pdf_label, key=f"pdftoggle_{job_id}"):
+            st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
+            st.rerun()
+        if st.session_state.get(pdf_key):
+            from streamlit_pdf_viewer import pdf_viewer
+            pdf_viewer(Path(pdf_path).read_bytes(), key=f"pdfview_{job_id}")
+
     st.markdown("---")
 
     # ── Worker inputs ─────────────────────────────────────────────────────────
+    charged_by_pallet = bool(
+        dm.get_rates_for_client(selected_job.get("client_name", "")).get("charged_by_pallet", True)
+    )
+
     st.subheader("Pallet Details")
 
-    col_a, col_b, col_c = st.columns(3)
-    pallet_count    = col_a.number_input("Total Pallets",    min_value=1,  step=1, value=1)
-    damaged_pallets = col_b.number_input("Damaged Pallets",  min_value=0,  step=1, value=0)
-    broken_pallets  = col_c.number_input("Broken Pallets",   min_value=0,  step=1, value=0)
+    if charged_by_pallet:
+        col_a, col_b, col_c = st.columns(3)
+        pallet_count    = col_a.number_input("Total Pallets",   min_value=1, step=1, value=1)
+        damaged_pallets = col_b.number_input("Damaged Pallets", min_value=0, step=1, value=0)
+        broken_pallets  = col_c.number_input("Broken Pallets",  min_value=0, step=1, value=0)
+    else:
+        st.info("Billing is per truck — no pallet count required.")
+        pallet_count    = 1   # placeholder, unused in charge calculator
+        col_b, col_c    = st.columns(2)
+        damaged_pallets = col_b.number_input("Damaged Pallets", min_value=0, step=1, value=0)
+        broken_pallets  = col_c.number_input("Broken Pallets",  min_value=0, step=1, value=0)
 
     st.subheader("Extra Charges")
     extra_options = {
@@ -68,7 +93,7 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
         "Pallet Cleaning"   : "pallet_cleaning",
         "Repacking"         : "repacking",
         "Re-Inspection"     : "re_inspection",
-        "Broken Pallets"    : "broken_pallets",
+        "Overtime"          : "overtime",
     }
     selected_extras: list[str] = []
     cols = st.columns(len(extra_options))
@@ -76,9 +101,16 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
         if col.checkbox(label):
             selected_extras.append(key)
 
-    # Auto-add broken_pallets charge if worker entered broken pallet count
-    if broken_pallets > 0 and "broken_pallets" not in selected_extras:
-        selected_extras.append("broken_pallets")
+    _TR_OPTS   = ["Hardware & Installation", "Installation Only"]
+    _TR_TO_KEY = {"Hardware & Installation": "hardware_installation",
+                  "Installation Only"      : "installation_only"}
+    _tr_sel = st.radio(
+        "Temperature Recorder",
+        options=_TR_OPTS,
+        horizontal=True,
+        key=f"tr_{job_id}",
+    )
+    temp_recorder = _TR_TO_KEY[_tr_sel]
 
     st.subheader("Notes")
     worker_notes = st.text_area(
@@ -98,8 +130,8 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
     st.markdown("---")
 
     # ── Submit ────────────────────────────────────────────────────────────────
-    if st.button("✅ Submit Job", type="primary", use_container_width=True):
-        if pallet_count < 1:
+    if st.button("✅ Submit Job", type="primary", width='stretch'):
+        if charged_by_pallet and pallet_count < 1:
             st.error("Pallet count must be at least 1.")
             return
 
@@ -121,6 +153,7 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
             "damaged_pallets": int(damaged_pallets),
             "broken_pallets" : int(broken_pallets),
             "extra_charges"  : selected_extras,
+            "temp_recorder"  : temp_recorder,
             "worker_notes"   : worker_notes,
             "photo_paths"    : photo_paths,
             "status"         : "ready_to_invoice",
@@ -138,5 +171,19 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
             job_id=job_id,
         )
 
-        st.success(f"Job submitted successfully! The admin has been notified.")
-        st.balloons()
+        st.markdown(
+            """
+            <div id="submit-toast" style="
+                position:fixed;bottom:2rem;left:50%;transform:translateX(-50%);
+                background:#198754;color:#fff;padding:14px 28px;
+                border-radius:8px;font-size:1rem;font-weight:600;
+                box-shadow:0 4px 12px rgba(0,0,0,0.25);z-index:9999;
+                animation:fadeout 0.6s ease 14.4s forwards;">
+                ✅ Job submitted successfully! The admin has been notified.
+            </div>
+            <style>
+            @keyframes fadeout { to { opacity:0; pointer-events:none; } }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )

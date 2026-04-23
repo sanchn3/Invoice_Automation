@@ -28,8 +28,8 @@ LOGS_DIR    = BASE_DIR / "logs"
 for _dir in [DATA_DIR, PDFS_DIR, PHOTOS_DIR, EXPORTS_DIR, LOGS_DIR]:
     _dir.mkdir(exist_ok=True)
 
-# Claude model
-CLAUDE_MODEL = "claude-sonnet-4-6"
+# Claude model (override via CLAUDE_MODEL env var if needed)
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 REQUIRED_VARS = [
     "MS_CLIENT_ID",
