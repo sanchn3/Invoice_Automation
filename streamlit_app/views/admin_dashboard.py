@@ -363,8 +363,25 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     else:
                         bc2.button("📄 PDF", key=f"tbr_pdfbtn_na_{cid}", disabled=True, width='stretch')
                     if bc3.button("✅ Received", key=f"tbr_received_{cid}", width='stretch'):
-                        dm.update_client_invoice(cid, {"status": "validated"})
-                        st.rerun()
+                        from invoice_logic.stamp_pdf import stamp_pdf as _stamp_pdf
+                        _rcv_date    = datetime.utcnow().date()
+                        _stamp_error = None
+                        if _tbr_pdf_exists:
+                            try:
+                                _stamp_pdf(_tbr_pdf_path, _rcv_date)
+                            except Exception as _e:
+                                _stamp_error = str(_e)
+                        if _stamp_error:
+                            st.error(
+                                f"⚠️ PDF stamp failed — invoice NOT moved forward. "
+                                f"Fix the issue and try again.\n\n`{_stamp_error}`"
+                            )
+                        else:
+                            dm.update_client_invoice(cid, {
+                                "status"       : "validated",
+                                "received_date": _rcv_date.isoformat(),
+                            })
+                            st.rerun()
 
                     if st.session_state.get(_tbr_pdf_key) and _tbr_pdf_exists:
                         from streamlit_pdf_viewer import pdf_viewer
