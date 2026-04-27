@@ -140,7 +140,7 @@ def _photo_page_bytes(photos: list[bytes]) -> bytes | None:
     return buf.read()
 
 
-def generate_pdf(invoice: dict, provider_pdf_path: str | None = None, photo_bytes_list: list[bytes] | None = None) -> bytes:
+def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     """
     Build a PDF invoice that matches the INCO GROUP template.
     If provider_pdf_path is supplied and the file exists, the original
@@ -444,25 +444,18 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None, photo_byte
     buffer.seek(0)
     invoice_bytes = buffer.read()
 
-    if not provider_pdf_path and not photo_bytes_list:
+    if not provider_pdf_path:
         return invoice_bytes
 
     writer = PdfWriter()
     for page in PdfReader(BytesIO(invoice_bytes)).pages:
         writer.add_page(page)
 
-    if provider_pdf_path:
-        try:
-            for page in PdfReader(str(provider_pdf_path)).pages:
-                writer.add_page(page)
-        except Exception as e:
-            logger.warning("generate_pdf: could not append provider PDF '%s': %s", provider_pdf_path, e)
-
-    if photo_bytes_list:
-        photo_pdf = _photo_page_bytes(photo_bytes_list)
-        if photo_pdf:
-            for page in PdfReader(BytesIO(photo_pdf)).pages:
-                writer.add_page(page)
+    try:
+        for page in PdfReader(str(provider_pdf_path)).pages:
+            writer.add_page(page)
+    except Exception as e:
+        logger.warning("generate_pdf: could not append provider PDF '%s': %s", provider_pdf_path, e)
 
     out = BytesIO()
     writer.write(out)

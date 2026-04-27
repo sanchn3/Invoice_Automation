@@ -13,14 +13,13 @@ from pathlib import Path
 
 from data_manager import DataManager
 from invoice_logic.charge_calculator import calculate_charges
-from invoice_logic.pdf_generator import generate_pdf as _generate_pdf, append_photos_to_pdf as _append_photos
+from invoice_logic.pdf_generator import generate_pdf as _generate_pdf
 from email_pipeline.attachment_handler import process_pdf_from_path
 from alerting.alert_manager import AlertManager
 from utils.pdf_storage import (
     get_pdf_bytes as _get_pdf_bytes,
     move_to_processed as _move_to_processed,
     upload_pdf_bytes as _upload_pdf_bytes,
-    download_photo as _download_photo,
 )
 
 logger = logging.getLogger(__name__)
@@ -575,11 +574,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         from streamlit_pdf_viewer import pdf_viewer
                         _b = _get_pdf_bytes(_pdf_path)
                         if _b:
-                            _photo_keys = ci.get("photo_paths", [])
-                            if _photo_keys:
-                                _photo_data = [d for k in _photo_keys if (d := _download_photo(k)) is not None]
-                                if _photo_data:
-                                    _b = _append_photos(_b, _photo_data)
                             pdf_viewer(_b, key=f"approve_pdfview_{cid}")
                         else:
                             st.warning("PDF not available.")
@@ -658,15 +652,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             ci_updated = dm.get_client_invoice_by_id(cid)
                             if ci_updated:
                                 try:
-                                    _photo_bytes = [
-                                        d for k in ci_updated.get("photo_paths", [])
-                                        if (d := _download_photo(k)) is not None
-                                    ]
-                                    _pdf_bytes = _generate_pdf(
-                                        ci_updated,
-                                        prov.get("pdf_local_path"),
-                                        _photo_bytes or None,
-                                    )
+                                    _pdf_bytes = _generate_pdf(ci_updated, prov.get("pdf_local_path"))
                                     _upload_pdf_bytes(f"{inv_id}-invoice.pdf", _pdf_bytes)
                                 except Exception as _e:
                                     logger.warning("Could not upload generated invoice PDF: %s", _e)
