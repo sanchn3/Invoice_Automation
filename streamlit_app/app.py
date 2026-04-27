@@ -6,6 +6,7 @@ import streamlit as st
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
+from streamlit_app import auth
 from streamlit_app.views import admin_dashboard, worker_form, lead_dashboard, accounting_dashboard
 
 st.set_page_config(
@@ -24,25 +25,61 @@ def get_dm() -> DataManager:
 def get_alert_manager() -> AlertManager:
     return AlertManager()
 
+
+# ── Auth gate ─────────────────────────────────────────────────────────────────
+
+if not auth.is_authenticated():
+    st.markdown(
+        "<h2 style='text-align:center;margin-top:3rem;'>📦 INCO Staff Portal</h2>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<p style='text-align:center;color:#888;'>Sign in to continue</p>", unsafe_allow_html=True)
+    st.markdown("---")
+
+    col_l, col_c, col_r = st.columns([1, 1, 1])
+    with col_c:
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
+
+        if submitted:
+            user = auth.verify_login(username, password)
+            if user:
+                auth.login(user)
+                st.rerun()
+            else:
+                st.error("Invalid username or password.")
+    st.stop()
+
+
+# ── Authenticated: sidebar + routing ─────────────────────────────────────────
+
 dm            = get_dm()
 alert_manager = get_alert_manager()
 
-# Sidebar navigation
-st.sidebar.title("📦 Invoice Automation")
+role     = auth.current_role()
+username = st.session_state.get("_auth_username", "")
+
+st.sidebar.title("📦 INCO")
+st.sidebar.markdown(f"**{auth.ROLE_LABELS.get(role, role)}**  \n`{username}`")
 st.sidebar.markdown("---")
-view = st.sidebar.radio(
-    "Navigate",
-    options=["Forklift Operator", "Administrator", "Lead", "Accounting"],
-    label_visibility="collapsed",
-)
+
+if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+    auth.logout()
+    st.rerun()
+
 st.sidebar.markdown("---")
 st.sidebar.caption("INCO Logistics • Invoice Automation v1.0")
 
-if view == "Forklift Operator":
-    worker_form.render(dm, alert_manager)
-elif view == "Lead":
-    lead_dashboard.render(dm, alert_manager)
-elif view == "Accounting":
-    accounting_dashboard.render(dm, alert_manager)
-else:
+# Route to the dashboard matching the user's role
+if role == "admin":
     admin_dashboard.render(dm, alert_manager)
+elif role == "accounting":
+    accounting_dashboard.render(dm, alert_manager)
+elif role == "operator":
+    worker_form.render(dm, alert_manager)
+elif role == "lead":
+    lead_dashboard.render(dm, alert_manager)
+else:
+    st.error(f"Unknown role: {role!r}. Please contact your administrator.")

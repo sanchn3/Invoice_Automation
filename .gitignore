@@ -1,5 +1,6 @@
 # Secrets
 .env
+create_users.py
 
 # Virtual environment
 venv/
