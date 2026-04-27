@@ -15,7 +15,7 @@ from data_manager import DataManager
 from alerting.alert_manager import AlertManager
 from invoice_logic.iif_exporter import build_iif_content, build_multi_iif_content
 from invoice_logic.pdf_generator import generate_pdf
-from utils.pdf_storage import upload_pdf_bytes as _upload_pdf_bytes, download_photo as _dl_photo
+from utils.pdf_storage import upload_pdf_bytes as _upload_pdf_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +29,10 @@ def _cached_pdf(
     invoice_date: str,
     due_date: str,
     po_number: str,
-    photo_paths: tuple[str, ...],
     _ci: dict,
 ) -> bytes:
     """Cache keyed by all editable fields so any edit invalidates the cached PDF."""
-    photo_bytes: list[bytes] = []
-    for key in photo_paths:
-        data = _dl_photo(key)
-        if data:
-            photo_bytes.append(data)
-    return generate_pdf(_ci, provider_pdf_path, photo_bytes or None)
+    return generate_pdf(_ci, provider_pdf_path)
 
 
 def _pdf_args(ci: dict, prov: dict | None) -> tuple:
@@ -52,7 +46,6 @@ def _pdf_args(ci: dict, prov: dict | None) -> tuple:
         ci.get("invoice_date", ""),
         ci.get("due_date", ""),
         ci.get("po_number", ""),
-        tuple(ci.get("photo_paths", [])),
         ci,
     )
 
@@ -91,7 +84,7 @@ def _colored_button(container, label: str, key: str, color: str, **kwargs) -> bo
 
 
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
-    st.title("🧾 Accounting Dashboard")
+    st.title("🧾 Accounting")
 
     # Fetch once per render — reused across all three tabs.
     client_invoices   = dm.get_client_invoices()
@@ -165,11 +158,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             ci_upd = dm.get_client_invoice_by_id(cid)
                             if ci_upd:
                                 try:
-                                    _photo_bytes = [
-                                        d for k in ci_upd.get("photo_paths", [])
-                                        if (d := _dl_photo(k)) is not None
-                                    ]
-                                    _pdf = generate_pdf(ci_upd, prov.get("pdf_local_path"), _photo_bytes or None)
+                                    _pdf = generate_pdf(ci_upd, prov.get("pdf_local_path"))
                                     qb_key = ci_upd.get("quickbooks_invoice_number", cid)
                                     _upload_pdf_bytes(f"{qb_key}-invoice.pdf", _pdf)
                                 except Exception as _e:
@@ -242,28 +231,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             if rfe_clicked:
                                 dm.update_client_invoice(cid, {"ready_for_export": True})
                                 st.rerun()
-
-        st.markdown("---")
-        st.subheader("Exported Invoices")
-        exported = sorted(
-            [ci for ci in client_invoices if ci.get("quickbooks_exported")],
-            key=lambda x: x.get("created_at", ""),
-            reverse=True,
-        )
-        if not exported:
-            st.caption("No invoices exported yet.")
-        else:
-            rows = [
-                {
-                    "QB #"   : ci.get("quickbooks_invoice_number", "—"),
-                    "Date"   : ci.get("invoice_date", "—"),
-                    "Client" : ci.get("client_name", "—"),
-                    "Total"  : f"${ci.get('total', 0):,.2f}",
-                    "Net Days": str(ci.get("net_days", "—")),
-                }
-                for ci in exported
-            ]
-            st.dataframe(rows, use_container_width=True, hide_index=True)
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 2 — IMPORT TO QUICKBOOKS
