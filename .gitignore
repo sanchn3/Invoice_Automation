@@ -13,6 +13,7 @@ __pycache__/
 pdfs/
 exports/
 logs/
+photos/
 
 # Runtime pipeline data (live invoice state — not for version control)
 data/

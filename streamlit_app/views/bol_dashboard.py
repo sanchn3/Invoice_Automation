@@ -19,6 +19,7 @@ from pathlib import Path
 import streamlit as st
 
 from data_manager import DataManager
+from utils.pdf_storage import get_pdf_bytes as _get_pdf_bytes
 
 _CHECKIN_HOLD_SECONDS = 30
 
@@ -129,7 +130,7 @@ def _render_inbox_section(dm: DataManager) -> None:
     for bol in inbox_bols:
         bid        = bol["id"]
         pdf_path   = bol.get("pdf_local_path", "")
-        pdf_exists = bool(pdf_path and Path(pdf_path).exists())
+        pdf_exists = bool(pdf_path)
         pdf_key    = f"bol_pdf_{bid}"
         del_key    = f"bol_del_{bid}"
         edit_key   = f"bol_edit_{bid}"
@@ -189,7 +190,11 @@ def _render_inbox_section(dm: DataManager) -> None:
 
                 if st.session_state.get(pdf_key) and pdf_exists:
                     from streamlit_pdf_viewer import pdf_viewer
-                    pdf_viewer(Path(pdf_path).read_bytes(), key=f"bol_pdfview_{bid}")
+                    _b = _get_pdf_bytes(pdf_path)
+                    if _b:
+                        pdf_viewer(_b, key=f"bol_pdfview_{bid}")
+                    else:
+                        st.warning("PDF not available.")
 
                 st.markdown("---")
                 val_col, _ = st.columns([1, 2])
@@ -303,7 +308,7 @@ def _render_inspection_tab(dm: DataManager) -> None:
         po_num     = bol.get("po_number", "—")
         received   = bol.get("received_at", "—")[:10]
         pdf_path   = bol.get("pdf_local_path", "")
-        pdf_exists = bool(pdf_path and Path(pdf_path).exists())
+        pdf_exists = bool(pdf_path)
         pdf_key    = f"bol_insp_pdf_{bid}"
         edit_key   = f"bol_insp_edit_{bid}"
 
@@ -344,7 +349,11 @@ def _render_inspection_tab(dm: DataManager) -> None:
 
                 if st.session_state.get(pdf_key) and pdf_exists:
                     from streamlit_pdf_viewer import pdf_viewer
-                    pdf_viewer(Path(pdf_path).read_bytes(), key=f"insp_pdfview_{bid}")
+                    _b = _get_pdf_bytes(pdf_path)
+                    if _b:
+                        pdf_viewer(_b, key=f"insp_pdfview_{bid}")
+                    else:
+                        st.warning("PDF not available.")
 
                 st.markdown("---")
                 print_col, _ = st.columns([1, 2])
@@ -380,7 +389,7 @@ def _render_printed_tab(dm: DataManager) -> None:
     rows = []
     for bol in printed_bols:
         pdf_path   = bol.get("pdf_local_path", "")
-        pdf_exists = bool(pdf_path and Path(pdf_path).exists())
+        pdf_exists = bool(pdf_path)
         shipped    = bol.get("checkin_at", "")
         rows.append({
             "PO Number"          : bol.get("po_number", "—"),
@@ -400,14 +409,16 @@ def _render_printed_tab(dm: DataManager) -> None:
         st.caption("PDF Downloads:")
         for bol in printed_bols:
             pdf_path = bol.get("pdf_local_path", "")
-            if pdf_path and Path(pdf_path).exists():
-                st.download_button(
-                    f"✅ {bol.get('po_number', '?')} — Download PDF",
-                    Path(pdf_path).read_bytes(),
-                    file_name=f"BOL_{bol.get('po_number', 'unknown')}.pdf",
-                    mime="application/pdf",
-                    key=f"bol_dl_{bol['id']}",
-                )
+            if pdf_path:
+                _b = _get_pdf_bytes(pdf_path)
+                if _b:
+                    st.download_button(
+                        f"✅ {bol.get('po_number', '?')} — Download PDF",
+                        _b,
+                        file_name=f"BOL_{bol.get('po_number', 'unknown')}.pdf",
+                        mime="application/pdf",
+                        key=f"bol_dl_{bol['id']}",
+                    )
 
 
 # ─── main render ──────────────────────────────────────────────────────────────
