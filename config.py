@@ -14,6 +14,10 @@ ADMIN_EMAIL      = os.getenv("ADMIN_EMAIL", "")
 # Anthropic
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
+# Supabase
+SUPABASE_URL              = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
 # Outlook folder to poll
 OUTLOOK_INVOICE_FOLDER = os.getenv("OUTLOOK_INVOICE_FOLDER", "Provider Invoices")
 

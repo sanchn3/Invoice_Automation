@@ -5,6 +5,7 @@ Full admin dashboard with pipeline board, invoice approval,
 QuickBooks export, reporting, and rate card editor.
 """
 
+import logging
 import streamlit as st
 from datetime import datetime, timedelta, timezone
 
@@ -12,8 +13,17 @@ from pathlib import Path
 
 from data_manager import DataManager
 from invoice_logic.charge_calculator import calculate_charges
+from invoice_logic.pdf_generator import generate_pdf as _generate_pdf, append_photos_to_pdf as _append_photos
 from email_pipeline.attachment_handler import process_pdf_from_path
 from alerting.alert_manager import AlertManager
+from utils.pdf_storage import (
+    get_pdf_bytes as _get_pdf_bytes,
+    move_to_processed as _move_to_processed,
+    upload_pdf_bytes as _upload_pdf_bytes,
+    download_photo as _download_photo,
+)
+
+logger = logging.getLogger(__name__)
 
 _STUCK_HOURS = 24
 
@@ -63,7 +73,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     # ── In / Out mode toggle ──────────────────────────────────────────────────
     c_in, c_tog, c_out, _ = st.columns([0.4, 0.5, 0.5, 5])
     c_in.markdown("**In**")
-    is_out = c_tog.toggle("", key="admin_mode_out", label_visibility="collapsed")
+    is_out = c_tog.toggle("In/Out", key="admin_mode_out", label_visibility="collapsed")
     c_out.markdown("**Out**")
 
     if is_out:
@@ -101,224 +111,273 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         pending_review = [log for log in email_logs if log.get("status") == "pending_review"]
         if pending_review:
-            st.warning(f"⚠️ {len(pending_review)} email(s) need your review — see Parsed tab below.")
+            st.warning(f"⚠️ {len(pending_review)} email(s) need your review — see below.")
 
-        # ── Sub-tabs ───────────────────────────────────────────────────────────
-        sub_parsed, sub_invoices = st.tabs(["📄 Parsed", "🧾 Invoices"])
+        # Build map: provider_invoice_id → client_invoice for quick status lookup
+        _ci_by_prov_id = {
+            ci.get("provider_invoice_id"): ci
+            for ci in client_invs_list
+            if ci.get("provider_invoice_id")
+        }
+        # Show only provider invoices whose linked CI is pending_validation
+        active_provider_invs = [
+            pi for pi in provider_invs
+            if _ci_by_prov_id.get(pi["id"], {}).get("status") == "pending_validation"
+        ]
 
-        with sub_parsed:
-            # Build map: provider_invoice_id → client_invoice for quick status lookup
-            _ci_by_prov_id = {
-                ci.get("provider_invoice_id"): ci
-                for ci in client_invs_list
-                if ci.get("provider_invoice_id")
-            }
-            # Show only provider invoices whose linked CI is pending_validation
-            active_provider_invs = [
-                pi for pi in provider_invs
-                if _ci_by_prov_id.get(pi["id"], {}).get("status") == "pending_validation"
-            ]
+        # Combine parsed invoices + pending-review emails, newest first
+        all_items = (
+            [("parsed",  pi)  for pi in active_provider_invs] +
+            [("review",  log) for log in pending_review]
+        )
+        all_items.sort(key=lambda x: x[1].get("created_at", ""), reverse=True)
 
-            # Combine parsed invoices + pending-review emails, newest first
-            all_items = (
-                [("parsed",  pi)  for pi in active_provider_invs] +
-                [("review",  log) for log in pending_review]
+        if not all_items:
+            st.info("No invoices pending validation.")
+        else:
+            st.caption(
+                f"{len(active_provider_invs)} awaiting validation"
+                + (f" · {len(pending_review)} pending review" if pending_review else "")
             )
-            all_items.sort(key=lambda x: x[1].get("created_at", ""), reverse=True)
 
-            if not all_items:
-                st.info("No invoices pending validation.")
-            else:
-                st.caption(
-                    f"{len(active_provider_invs)} awaiting validation"
-                    + (f" · {len(pending_review)} pending review" if pending_review else "")
+        for item_type, item in all_items:
+            iid     = item["id"]
+            pdf_key = f"view_pdf_{iid}"
+            del_key = f"del_prov_{iid}"
+
+            # ── REVIEW item: yellow HTML card ──────────────────────────────────
+            if item_type == "review":
+                log       = item
+                reason    = log.get("error_text") or "Flagged for review"
+                r_date    = log.get("received_at", "—")[:10]
+                r_sender  = log.get("sender", "—")
+                pdf_path  = log.get("pdf_local_path", "")
+                pdf_exists = bool(pdf_path)
+                pdf_label = "📄 Hide" if st.session_state.get(pdf_key) else "📄 PDF"
+
+                st.markdown(
+                    f'<div style="background:#fff3cd;border:2px solid #ffc107;'
+                    f'border-radius:8px;padding:10px 14px 10px 14px;margin-bottom:4px;">'
+                    f'<p style="color:#856404;font-weight:700;font-size:0.85em;margin:0 0 6px 0;">'
+                    f'⚠️ Needs Review &mdash; {reason}</p>'
+                    f'<span style="font-size:0.9em;margin-right:20px;">📅 {r_date}</span>'
+                    f'<span style="font-size:0.9em;">✉️ {r_sender}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
                 )
 
-            for item_type, item in all_items:
-                iid     = item["id"]
-                pdf_key = f"view_pdf_{iid}"
-                del_key = f"del_prov_{iid}"
+                rb1, rb2, rb3, rb4 = st.columns([0.7, 0.7, 0.7, 3.5])
+                rb1.button("✏️ Edit", key=f"ebtn_{iid}", disabled=True, width='stretch')
 
-                # ── REVIEW item: yellow HTML card ──────────────────────────────────
-                if item_type == "review":
-                    log       = item
-                    reason    = log.get("error_text") or "Flagged for review"
-                    r_date    = log.get("received_at", "—")[:10]
-                    r_sender  = log.get("sender", "—")
-                    pdf_path  = log.get("pdf_local_path", "")
-                    pdf_exists = bool(pdf_path and Path(pdf_path).exists())
-                    pdf_label = "📄 Hide" if st.session_state.get(pdf_key) else "📄 PDF"
-
-                    st.markdown(
-                        f'<div style="background:#fff3cd;border:2px solid #ffc107;'
-                        f'border-radius:8px;padding:10px 14px 10px 14px;margin-bottom:4px;">'
-                        f'<p style="color:#856404;font-weight:700;font-size:0.85em;margin:0 0 6px 0;">'
-                        f'⚠️ Needs Review &mdash; {reason}</p>'
-                        f'<span style="font-size:0.9em;margin-right:20px;">📅 {r_date}</span>'
-                        f'<span style="font-size:0.9em;">✉️ {r_sender}</span>'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
-
-                    rb1, rb2, rb3, rb4 = st.columns([0.7, 0.7, 0.7, 3.5])
-                    rb1.button("✏️ Edit", key=f"ebtn_{iid}", disabled=True, width='stretch')
-
-                    if pdf_exists:
-                        if rb2.button(pdf_label, key=f"epdf_{iid}", width='stretch'):
-                            st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
-                            st.rerun()
-                    else:
-                        rb2.button("📄 PDF", key=f"epdf_na_{iid}", disabled=True, width='stretch')
-
-                    if st.session_state.get(del_key):
-                        rb3.caption("⚠️ Sure?")
-                    else:
-                        if rb3.button("🗑", key=f"delbtn_{iid}", width='stretch'):
-                            st.session_state[del_key] = True
-                            st.rerun()
-
-                    if rb4.button("✅ Complete Review", key=f"complete_{iid}", type="primary", width='stretch'):
-                        if not pdf_exists:
-                            st.error("No PDF available to process.")
-                        else:
-                            _am = alert_manager or AlertManager()
-                            success = process_pdf_from_path(pdf_path, iid, dm, _am)
-                            if success:
-                                st.success("Invoice processed and added to the pipeline.")
-                            else:
-                                st.error("Processing failed — check the PDF and try again.")
-                            st.rerun()
-
-                    if st.session_state.get(del_key):
-                        dc1, dc2 = st.columns(2)
-                        if dc1.button("✅ Yes, delete", key=f"delyes_{iid}", type="primary", width='stretch'):
-                            dm.update_email_log(iid, {
-                                "status"    : "rejected",
-                                "error_text": "Manually rejected by admin.",
-                            })
-                            st.session_state.pop(del_key, None)
-                            st.rerun()
-                        if dc2.button("✗ Cancel", key=f"delno_{iid}", width='stretch'):
-                            st.session_state.pop(del_key, None)
-                            st.rerun()
-
-                    if st.session_state.get(pdf_key) and pdf_exists:
-                        from streamlit_pdf_viewer import pdf_viewer
-                        pdf_viewer(Path(pdf_path).read_bytes(), key=f"pdfview_{iid}")
-
-                # ── PARSED item: bordered container ────────────────────────────────
+                if pdf_exists:
+                    if rb2.button(pdf_label, key=f"epdf_{iid}", width='stretch'):
+                        st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
+                        st.rerun()
                 else:
-                    edit_key = f"edit_prov_{iid}"
-                    with st.container(border=True):
+                    rb2.button("📄 PDF", key=f"epdf_na_{iid}", disabled=True, width='stretch')
 
-                        if st.session_state.get(edit_key):
-                            pi = item
-                            e1, e2 = st.columns(2)
-                            new_num    = e1.text_input("Invoice #", value=pi.get("invoice_number", ""), key=f"en_{iid}")
-                            new_date   = e2.text_input("Date",      value=pi.get("invoice_date",   ""), key=f"ed_{iid}")
-                            new_client = e1.text_input("Client",    value=pi.get("client_name",    ""), key=f"ec_{iid}")
-                            new_total  = e2.number_input(
-                                "Total ($)", value=float(pi.get("total", 0)),
-                                min_value=0.0, step=0.01, format="%.2f", key=f"et_{iid}",
-                            )
-                            s1, s2 = st.columns(2)
-                            if s1.button("💾 Save", key=f"esave_{iid}", type="primary", width='stretch'):
-                                canonical = new_client.strip().upper()
-                                dm.update_provider_invoice(iid, {
-                                    "invoice_number": new_num.strip(),
-                                    "invoice_date"  : new_date.strip(),
-                                    "client_name"   : canonical,
-                                    "total"         : new_total,
-                                    "subtotal"      : new_total,
+                if st.session_state.get(del_key):
+                    rb3.caption("⚠️ Sure?")
+                else:
+                    if rb3.button("🗑", key=f"delbtn_{iid}", width='stretch'):
+                        st.session_state[del_key] = True
+                        st.rerun()
+
+                if rb4.button("✅ Complete Review", key=f"complete_{iid}", type="primary", width='stretch'):
+                    if not pdf_exists:
+                        st.error("No PDF available to process.")
+                    else:
+                        _am = alert_manager or AlertManager()
+                        success = process_pdf_from_path(pdf_path, iid, dm, _am)
+                        if success:
+                            st.success("Invoice processed and added to the pipeline.")
+                            st.rerun()
+                        else:
+                            st.session_state[f"manual_entry_{iid}"] = True
+                            st.rerun()
+
+                # ── Manual entry fallback (shown when auto-parsing fails) ──
+                if st.session_state.get(f"manual_entry_{iid}"):
+                    st.warning(
+                        "⚠️ Auto-parsing failed (scanned or unreadable PDF). "
+                        "Fill in the invoice details manually."
+                    )
+                    me1, me2 = st.columns(2)
+                    m_num    = me1.text_input("Invoice #",        key=f"m_num_{iid}")
+                    m_date   = me2.text_input("Date (YYYY-MM-DD)", key=f"m_date_{iid}")
+                    m_client = me1.text_input("Client",           key=f"m_client_{iid}")
+                    m_total  = me2.number_input(
+                        "Total ($)", min_value=0.0, step=0.01,
+                        format="%.2f", key=f"m_total_{iid}",
+                    )
+                    ms1, ms2 = st.columns(2)
+                    if ms1.button("💾 Create Invoice", key=f"m_save_{iid}", type="primary", width='stretch'):
+                        if not m_num.strip() or not m_client.strip():
+                            st.error("Invoice # and Client are required.")
+                        else:
+                            _now      = datetime.utcnow().isoformat() + "Z"
+                            _canonical = m_client.strip().upper()
+                            _prov_inv  = dm.add_provider_invoice({
+                                "provider_name"  : log.get("sender", ""),
+                                "client_name"    : _canonical,
+                                "invoice_number" : m_num.strip(),
+                                "invoice_date"   : m_date.strip() or _now[:10],
+                                "line_items"     : [],
+                                "subtotal"       : float(m_total),
+                                "taxes"          : 0.0,
+                                "total"          : float(m_total),
+                                "pdf_local_path" : pdf_path,
+                                "email_intake_id": iid,
+                                "parsed_at"      : _now,
+                                "status"         : "parsed",
+                            })
+                            dm.add_client_invoice({
+                                "quickbooks_invoice_number": None,
+                                "client_name"    : _canonical,
+                                "invoice_date"   : m_date.strip() or _now[:10],
+                                "service_type"   : None,
+                                "temp_recorder"  : False,
+                                "extra_charges"  : [],
+                                "pallet_count"   : 0,
+                                "damaged_pallets": 0,
+                                "broken_pallets" : 0,
+                                "worker_notes"   : "",
+                                "photo_paths"    : [],
+                                "line_items"     : [],
+                                "subtotal"       : float(m_total),
+                                "total"          : float(m_total),
+                                "provider_invoice_id": _prov_inv["id"],
+                                "quickbooks_exported": False,
+                                "status"         : "pending_validation",
+                            })
+                            dm.update_email_log(iid, {"status": "parsed", "error_text": None})
+                            st.session_state.pop(f"manual_entry_{iid}", None)
+                            st.rerun()
+                    if ms2.button("✗ Cancel", key=f"m_cancel_{iid}", width='stretch'):
+                        st.session_state.pop(f"manual_entry_{iid}", None)
+                        st.rerun()
+
+                if st.session_state.get(del_key):
+                    dc1, dc2 = st.columns(2)
+                    if dc1.button("✅ Yes, delete", key=f"delyes_{iid}", type="primary", width='stretch'):
+                        dm.update_email_log(iid, {
+                            "status"    : "rejected",
+                            "error_text": "Manually rejected by admin.",
+                        })
+                        st.session_state.pop(del_key, None)
+                        st.rerun()
+                    if dc2.button("✗ Cancel", key=f"delno_{iid}", width='stretch'):
+                        st.session_state.pop(del_key, None)
+                        st.rerun()
+
+                if st.session_state.get(pdf_key) and pdf_exists:
+                    from streamlit_pdf_viewer import pdf_viewer
+                    _b = _get_pdf_bytes(pdf_path)
+                    if _b:
+                        pdf_viewer(_b, key=f"pdfview_{iid}")
+                    else:
+                        st.warning("PDF not available.")
+
+            # ── PARSED item: bordered container ────────────────────────────────
+            else:
+                edit_key = f"edit_prov_{iid}"
+                with st.container(border=True):
+
+                    if st.session_state.get(edit_key):
+                        pi = item
+                        e1, e2 = st.columns(2)
+                        new_num    = e1.text_input("Invoice #", value=pi.get("invoice_number", ""), key=f"en_{iid}")
+                        new_date   = e2.text_input("Date",      value=pi.get("invoice_date",   ""), key=f"ed_{iid}")
+                        new_client = e1.text_input("Client",    value=pi.get("client_name",    ""), key=f"ec_{iid}")
+                        new_total  = e2.number_input(
+                            "Total ($)", value=float(pi.get("total", 0)),
+                            min_value=0.0, step=0.01, format="%.2f", key=f"et_{iid}",
+                        )
+                        s1, s2 = st.columns(2)
+                        if s1.button("💾 Save", key=f"esave_{iid}", type="primary", width='stretch'):
+                            canonical = new_client.strip().upper()
+                            dm.update_provider_invoice(iid, {
+                                "invoice_number": new_num.strip(),
+                                "invoice_date"  : new_date.strip(),
+                                "client_name"   : canonical,
+                                "total"         : new_total,
+                                "subtotal"      : new_total,
+                            })
+                            # Keep the linked client invoice in sync
+                            linked_ci = dm.get_client_invoice_by_provider_invoice_id(iid)
+                            if linked_ci:
+                                dm.update_client_invoice(linked_ci["id"], {
+                                    "client_name" : canonical,
+                                    "invoice_date": new_date.strip(),
                                 })
-                                # Keep the linked client invoice in sync
+                            st.session_state.pop(edit_key, None)
+                            st.rerun()
+                        if s2.button("✗ Cancel", key=f"ecancel_{iid}", width='stretch'):
+                            st.session_state.pop(edit_key, None)
+                            st.rerun()
+
+                    else:
+                        pi = item
+                        pdf_path   = pi.get("pdf_local_path", "")
+                        pdf_exists = bool(pdf_path)
+                        pdf_label  = "📄 Hide" if st.session_state.get(pdf_key) else "📄 PDF"
+
+                        c1, c2, c3, c4, c5, c6, c7 = st.columns([1.2, 1, 2, 1, 0.6, 0.6, 0.6])
+                        c1.markdown(f"**{pi.get('invoice_number', '—')}**")
+                        c2.write(pi.get("invoice_date", "—"))
+                        c3.write(pi.get("client_name", "—"))
+                        c4.write(f"${pi.get('total', 0):,.2f}")
+
+                        if c5.button("✏️ Edit", key=f"ebtn_{iid}", width='stretch'):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+
+                        if pdf_exists:
+                            if c6.button(pdf_label, key=f"epdf_{iid}", width='stretch'):
+                                st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
+                                st.rerun()
+                        else:
+                            c6.button("📄 PDF", key=f"epdf_na_{iid}", disabled=True, width='stretch')
+
+                        if st.session_state.get(del_key):
+                            c7.caption("⚠️ Sure?")
+                        else:
+                            if c7.button("🗑 TRASH", key=f"delbtn_{iid}", width='stretch'):
+                                st.session_state[del_key] = True
+                                st.rerun()
+
+                        if st.session_state.get(del_key):
+                            dc1, dc2 = st.columns(2)
+                            if dc1.button("✅ Yes, delete", key=f"delyes_{iid}", type="primary", width='stretch'):
                                 linked_ci = dm.get_client_invoice_by_provider_invoice_id(iid)
                                 if linked_ci:
-                                    dm.update_client_invoice(linked_ci["id"], {
-                                        "client_name" : canonical,
-                                        "invoice_date": new_date.strip(),
-                                    })
-                                st.session_state.pop(edit_key, None)
+                                    dm.delete_client_invoice(linked_ci["id"])
+                                dm.delete_provider_invoice(iid)
+                                st.session_state.pop(del_key, None)
                                 st.rerun()
-                            if s2.button("✗ Cancel", key=f"ecancel_{iid}", width='stretch'):
-                                st.session_state.pop(edit_key, None)
+                            if dc2.button("✗ Cancel", key=f"delno_{iid}", width='stretch'):
+                                st.session_state.pop(del_key, None)
                                 st.rerun()
 
-                        else:
-                            pi = item
-                            pdf_path   = pi.get("pdf_local_path", "")
-                            pdf_exists = bool(pdf_path and Path(pdf_path).exists())
-                            pdf_label  = "📄 Hide" if st.session_state.get(pdf_key) else "📄 PDF"
-
-                            c1, c2, c3, c4, c5, c6, c7 = st.columns([1.2, 1, 2, 1, 0.6, 0.6, 0.6])
-                            c1.markdown(f"**{pi.get('invoice_number', '—')}**")
-                            c2.write(pi.get("invoice_date", "—"))
-                            c3.write(pi.get("client_name", "—"))
-                            c4.write(f"${pi.get('total', 0):,.2f}")
-
-                            if c5.button("✏️ Edit", key=f"ebtn_{iid}", width='stretch'):
-                                st.session_state[edit_key] = True
-                                st.rerun()
-
-                            if pdf_exists:
-                                if c6.button(pdf_label, key=f"epdf_{iid}", width='stretch'):
-                                    st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
-                                    st.rerun()
+                        if st.session_state.get(pdf_key) and pdf_exists:
+                            from streamlit_pdf_viewer import pdf_viewer
+                            _b = _get_pdf_bytes(pdf_path)
+                            if _b:
+                                pdf_viewer(_b, key=f"pdfview_{iid}")
                             else:
-                                c6.button("📄 PDF", key=f"epdf_na_{iid}", disabled=True, width='stretch')
+                                st.warning("PDF not available.")
 
-                            if st.session_state.get(del_key):
-                                c7.caption("⚠️ Sure?")
+                        # ── Validate action ───────────────────────────────
+                        st.markdown("---")
+                        val_col, _ = st.columns([1, 2])
+                        if val_col.button("✅ Validate", key=f"validate_{iid}", type="primary", width='stretch'):
+                            linked_ci = _ci_by_prov_id.get(iid)
+                            if linked_ci:
+                                dm.update_client_invoice(linked_ci["id"], {"status": "to_be_received"})
+                                st.success("Invoice validated — now visible in To Be Received tab.")
+                                st.rerun()
                             else:
-                                if c7.button("🗑 TRASH", key=f"delbtn_{iid}", width='stretch'):
-                                    st.session_state[del_key] = True
-                                    st.rerun()
-
-                            if st.session_state.get(del_key):
-                                dc1, dc2 = st.columns(2)
-                                if dc1.button("✅ Yes, delete", key=f"delyes_{iid}", type="primary", width='stretch'):
-                                    linked_ci = dm.get_client_invoice_by_provider_invoice_id(iid)
-                                    if linked_ci:
-                                        dm.delete_client_invoice(linked_ci["id"])
-                                    dm.delete_provider_invoice(iid)
-                                    st.session_state.pop(del_key, None)
-                                    st.rerun()
-                                if dc2.button("✗ Cancel", key=f"delno_{iid}", width='stretch'):
-                                    st.session_state.pop(del_key, None)
-                                    st.rerun()
-
-                            if st.session_state.get(pdf_key) and pdf_exists:
-                                from streamlit_pdf_viewer import pdf_viewer
-                                pdf_viewer(Path(pdf_path).read_bytes(), key=f"pdfview_{iid}")
-
-                            # ── Validate action ───────────────────────────────
-                            st.markdown("---")
-                            val_col, _ = st.columns([1, 2])
-                            if val_col.button("✅ Validate", key=f"validate_{iid}", type="primary", width='stretch'):
-                                linked_ci = _ci_by_prov_id.get(iid)
-                                if linked_ci:
-                                    dm.update_client_invoice(linked_ci["id"], {"status": "to_be_received"})
-                                    st.success("Invoice validated — now visible in To Be Received tab.")
-                                    st.rerun()
-                                else:
-                                    st.error("No linked client invoice found.")
-
-        with sub_invoices:
-            sorted_cli = sorted(client_invs_list, key=lambda x: x.get("created_at", ""), reverse=True)
-            if not sorted_cli:
-                st.info("No client invoices yet.")
-            else:
-                st.caption(f"{len(sorted_cli)} client invoice(s)")
-                rows = [
-                    {
-                        "Invoice #": ci.get("quickbooks_invoice_number") or "—",
-                        "Date"     : ci.get("invoice_date", "—"),
-                        "Client"   : ci.get("client_name", "—"),
-                        "Total"    : f"${ci.get('total', 0):,.2f}",
-                    }
-                    for ci in sorted_cli
-                ]
-                st.dataframe(rows, use_container_width=True, hide_index=True)
+                                st.error("No linked client invoice found.")
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 2 — TO BE RECEIVED
@@ -348,7 +407,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     ic4.write(f"${ci.get('total', 0):,.2f}")
                     # Action buttons
                     _tbr_pdf_path   = prov_pi.get("pdf_local_path", "")
-                    _tbr_pdf_exists = bool(_tbr_pdf_path and Path(_tbr_pdf_path).exists())
+                    _tbr_pdf_exists = bool(_tbr_pdf_path)
                     _tbr_pdf_key    = f"tbr_pdf_{cid}"
                     _tbr_pdf_label  = "📄 Hide" if st.session_state.get(_tbr_pdf_key) else "📄 PDF"
 
@@ -385,7 +444,11 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
                     if st.session_state.get(_tbr_pdf_key) and _tbr_pdf_exists:
                         from streamlit_pdf_viewer import pdf_viewer
-                        pdf_viewer(Path(_tbr_pdf_path).read_bytes(), key=f"tbr_pdfview_{cid}")
+                        _b = _get_pdf_bytes(_tbr_pdf_path)
+                        if _b:
+                            pdf_viewer(_b, key=f"tbr_pdfview_{cid}")
+                        else:
+                            st.warning("PDF not available.")
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 3 — APPROVE & GENERATE INVOICE
@@ -465,7 +528,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
 
                     # ── Row 2: temp recorder + actions ────────────────────
-                    r2a, r2b, r2c, r2d = st.columns([2.5, 0.8, 0.8, 0.8])
+                    r2a, r2c, r2d = st.columns([2.5, 0.8, 0.8])
 
                     with r2a:
                         _TR_TO_LBL = {"hardware_installation": "Hardware & Installation",
@@ -476,16 +539,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         if _stored:
                             st.caption(f"🌡 {_TR_TO_LBL.get(_stored, _stored)}")
 
-                    with r2b:
-                        if status == "validated":
-                            if st.button("💾 Save", key=f"save_{cid}", width='stretch'):
-                                dm.update_client_invoice(cid, {"service_type": svc})
-                                st.success("Saved.")
-                                st.rerun()
-
                     with r2c:
                         _pdf_path   = prov.get("pdf_local_path", "")
-                        _pdf_exists = bool(_pdf_path and Path(_pdf_path).exists())
+                        _pdf_exists = bool(_pdf_path)
                         _pdf_key    = f"approve_pdf_{cid}"
                         _pdf_label  = "📄 Hide" if st.session_state.get(_pdf_key) else "📄 PDF"
                         if _pdf_exists:
@@ -517,7 +573,16 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     # ── Inline PDF viewer ─────────────────────────────────
                     if st.session_state.get(f"approve_pdf_{cid}") and _pdf_exists:
                         from streamlit_pdf_viewer import pdf_viewer
-                        pdf_viewer(Path(_pdf_path).read_bytes(), key=f"approve_pdfview_{cid}")
+                        _b = _get_pdf_bytes(_pdf_path)
+                        if _b:
+                            _photo_keys = ci.get("photo_paths", [])
+                            if _photo_keys:
+                                _photo_data = [d for k in _photo_keys if (d := _download_photo(k)) is not None]
+                                if _photo_data:
+                                    _b = _append_photos(_b, _photo_data)
+                            pdf_viewer(_b, key=f"approve_pdfview_{cid}")
+                        else:
+                            st.warning("PDF not available.")
 
                     # ── Status-specific action area ───────────────────────
                     if status == "validated":
@@ -543,15 +608,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.caption("Extra: " + ", ".join(e.replace("_", " ").title() for e in extras))
                         if ci.get("worker_notes"):
                             st.caption(f"Notes: {ci['worker_notes']}")
-
-                        photos = ci.get("photo_paths", [])
-                        if photos:
-                            pcols = st.columns(min(len(photos), 4))
-                            for ph_col, ph_path in zip(pcols, photos[:4]):
-                                try:
-                                    ph_col.image(ph_path, use_container_width=True)
-                                except Exception:
-                                    ph_col.caption(ph_path)
 
                         act1, act2 = st.columns(2)
                         if act1.button("↩ Send back to Worker", key=f"send_back_{cid}", width='stretch'):
@@ -596,6 +652,24 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             })
                             if prov.get("email_intake_id"):
                                 dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
+                            if prov.get("pdf_local_path"):
+                                _move_to_processed(prov["pdf_local_path"])
+                            # Upload the generated client invoice PDF to Supabase
+                            ci_updated = dm.get_client_invoice_by_id(cid)
+                            if ci_updated:
+                                try:
+                                    _photo_bytes = [
+                                        d for k in ci_updated.get("photo_paths", [])
+                                        if (d := _download_photo(k)) is not None
+                                    ]
+                                    _pdf_bytes = _generate_pdf(
+                                        ci_updated,
+                                        prov.get("pdf_local_path"),
+                                        _photo_bytes or None,
+                                    )
+                                    _upload_pdf_bytes(f"{inv_id}-invoice.pdf", _pdf_bytes)
+                                except Exception as _e:
+                                    logger.warning("Could not upload generated invoice PDF: %s", _e)
                             st.success(f"Invoice #{inv_id} generated! Total: ${charges['total']:,.2f}")
                             st.rerun()
 

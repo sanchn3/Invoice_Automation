@@ -6,12 +6,10 @@ fill in pallet counts, extra charges, notes, and photos.
 """
 
 import streamlit as st
-from pathlib import Path
-from datetime import datetime
 
-from config import PHOTOS_DIR
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
+from utils.pdf_storage import get_pdf_bytes, upload_photo as _upload_photo
 
 
 def render(dm: DataManager, alert_manager: AlertManager) -> None:
@@ -56,15 +54,19 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
     col3.metric("Date",     selected_job.get("invoice_date", "—"))
 
     pdf_path = provider_inv.get("pdf_local_path", "") if provider_inv else ""
-    if pdf_path and Path(pdf_path).exists():
+    if pdf_path:
         pdf_key = f"worker_pdf_{job_id}"
         pdf_label = "📄 Hide Invoice PDF" if st.session_state.get(pdf_key) else "📄 View Invoice PDF"
         if st.button(pdf_label, key=f"pdftoggle_{job_id}"):
             st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
             st.rerun()
         if st.session_state.get(pdf_key):
-            from streamlit_pdf_viewer import pdf_viewer
-            pdf_viewer(Path(pdf_path).read_bytes(), key=f"pdfview_{job_id}")
+            _bytes = get_pdf_bytes(pdf_path)
+            if _bytes:
+                from streamlit_pdf_viewer import pdf_viewer
+                pdf_viewer(_bytes, key=f"pdfview_{job_id}")
+            else:
+                st.warning("PDF not available.")
 
     st.markdown("---")
 
@@ -135,17 +137,14 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
             st.error("Pallet count must be at least 1.")
             return
 
-        # Save photos
+        # Upload photos to Supabase (keys stored; no local files written)
         photo_paths: list[str] = []
         if uploaded_photos:
-            job_photo_dir = PHOTOS_DIR / job_id
-            job_photo_dir.mkdir(parents=True, exist_ok=True)
             for photo in uploaded_photos:
-                ts        = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
                 safe_name = photo.name.replace(" ", "_")
-                save_path = job_photo_dir / f"{ts}_{safe_name}"
-                save_path.write_bytes(photo.getvalue())
-                photo_paths.append(str(save_path))
+                key = _upload_photo(job_id, safe_name, photo.getvalue())
+                if key:
+                    photo_paths.append(key)
 
         # Update client invoice
         dm.update_client_invoice(job_id, {

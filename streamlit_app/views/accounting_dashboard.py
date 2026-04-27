@@ -4,15 +4,20 @@ accounting_dashboard.py
 Accounting dashboard: Invoice Review, Import to QuickBooks, and Email Clients.
 """
 
+import logging
 import streamlit as st
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from config import EXPORTS_DIR
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
-from invoice_logic.iif_exporter import generate_iif, build_iif_content
+from invoice_logic.iif_exporter import build_iif_content, build_multi_iif_content
 from invoice_logic.pdf_generator import generate_pdf
+from utils.pdf_storage import upload_pdf_bytes as _upload_pdf_bytes, download_photo as _dl_photo
+
+logger = logging.getLogger(__name__)
 
 
 @st.cache_data(show_spinner=False)
@@ -24,10 +29,16 @@ def _cached_pdf(
     invoice_date: str,
     due_date: str,
     po_number: str,
+    photo_paths: tuple[str, ...],
     _ci: dict,
 ) -> bytes:
     """Cache keyed by all editable fields so any edit invalidates the cached PDF."""
-    return generate_pdf(_ci, provider_pdf_path)
+    photo_bytes: list[bytes] = []
+    for key in photo_paths:
+        data = _dl_photo(key)
+        if data:
+            photo_bytes.append(data)
+    return generate_pdf(_ci, provider_pdf_path, photo_bytes or None)
 
 
 def _pdf_args(ci: dict, prov: dict | None) -> tuple:
@@ -41,6 +52,7 @@ def _pdf_args(ci: dict, prov: dict | None) -> tuple:
         ci.get("invoice_date", ""),
         ci.get("due_date", ""),
         ci.get("po_number", ""),
+        tuple(ci.get("photo_paths", [])),
         ci,
     )
 
@@ -149,6 +161,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "due_date"    : new_due_date.strip(),
                                 "po_number"   : new_po.strip(),
                             })
+                            # Re-upload the generated PDF since editable fields changed
+                            ci_upd = dm.get_client_invoice_by_id(cid)
+                            if ci_upd:
+                                try:
+                                    _photo_bytes = [
+                                        d for k in ci_upd.get("photo_paths", [])
+                                        if (d := _dl_photo(k)) is not None
+                                    ]
+                                    _pdf = generate_pdf(ci_upd, prov.get("pdf_local_path"), _photo_bytes or None)
+                                    qb_key = ci_upd.get("quickbooks_invoice_number", cid)
+                                    _upload_pdf_bytes(f"{qb_key}-invoice.pdf", _pdf)
+                                except Exception as _e:
+                                    logger.warning("Could not re-upload invoice PDF after edit: %s", _e)
                             st.session_state.pop(edit_key, None)
                             st.rerun()
                         if s2.button("✗ Cancel", key=f"acc_ecancel_{cid}", width="stretch"):
@@ -303,26 +328,72 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         st.rerun()
 
             if selected_ids:
-                if st.button(
-                    f"Export {len(selected_ids)} invoice(s) to IIF",
-                    type="primary",
-                ):
-                    try:
-                        iif_path = generate_iif(selected_ids, dm)
-                        with open(iif_path, "r", encoding="utf-8") as fh:
-                            iif_content = fh.read()
-                        st.success(f"IIF file generated: {iif_path}")
-                        st.download_button(
-                            label    ="⬇ Download IIF File",
-                            data     =iif_content,
-                            file_name=iif_path.split("\\")[-1].split("/")[-1],
-                            mime     ="text/plain",
-                        )
-                        st.rerun()
-                    except ValueError as e:
-                        st.error(str(e))
-                    except Exception as e:
-                        st.error(f"Export failed: {e}")
+                # Pre-validate and pre-build content so clicking the button
+                # triggers an immediate download (no second click required).
+                _iif_err: str | None = None
+                _iif_content: str = ""
+                _invs_to_export: list[dict] = []
+                try:
+                    for _iid in selected_ids:
+                        _inv = dm.get_client_invoice_by_id(_iid)
+                        if _inv is None:
+                            raise ValueError(f"Invoice {_iid} not found.")
+                        if _inv.get("quickbooks_exported"):
+                            raise ValueError(
+                                f"Invoice QB# {_inv.get('quickbooks_invoice_number')} "
+                                f"has already been exported."
+                            )
+                        if not _inv.get("quickbooks_invoice_number"):
+                            raise ValueError(
+                                f"Invoice {_iid} is missing a QB number — "
+                                f"generate it in the admin dashboard first."
+                            )
+                        _invs_to_export.append(_inv)
+                    _iif_content = build_multi_iif_content(_invs_to_export)
+                except ValueError as e:
+                    _iif_err = str(e)
+                except Exception as e:
+                    _iif_err = f"Export preparation failed: {e}"
+
+                if _iif_err:
+                    st.error(_iif_err)
+                else:
+                    _iif_fname = (
+                        f"invoices_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.iif"
+                    )
+
+                    def _on_export_click(
+                        _invs=_invs_to_export,
+                        _content=_iif_content,
+                        _fname=_iif_fname,
+                    ):
+                        """Write IIF to disk and mark invoices as exported."""
+                        try:
+                            (EXPORTS_DIR / _fname).write_text(_content, encoding="utf-8")
+                            logger.info("IIF exported: %s (%d invoices)", _fname, len(_invs))
+                        except Exception as e:
+                            logger.error("IIF file write failed: %s", e)
+                        for _inv in _invs:
+                            dm.update_client_invoice(_inv["id"], {
+                                "quickbooks_exported": True,
+                                "status"             : "exported_to_qb",
+                            })
+                            _ci = dm.get_client_invoice_by_id(_inv["id"])
+                            if _ci and _ci.get("provider_invoice_id"):
+                                _pi = dm.get_provider_invoice_by_id(_ci["provider_invoice_id"])
+                                if _pi and _pi.get("email_intake_id"):
+                                    dm.update_email_log(
+                                        _pi["email_intake_id"], {"status": "exported_to_qb"}
+                                    )
+
+                    st.download_button(
+                        label     = f"Export {len(selected_ids)} invoice(s) to IIF",
+                        data      = _iif_content,
+                        file_name = _iif_fname,
+                        mime      = "text/plain",
+                        on_click  = _on_export_click,
+                        type      = "primary",
+                    )
 
         st.markdown("---")
         st.subheader("Export History")
