@@ -74,13 +74,40 @@ def _clear_cookie() -> None:
     _cookies.save()
 
 
+_IS_PRODUCTION = os.environ.get("RENDER", "").lower() == "true"
+
+
 def _redirect_to_login() -> None:
-    import streamlit.components.v1 as components
-    components.html(
-        '<script>window.top.location.href = "https://incogrp.com/staff-login";</script>',
-        height=0,
-    )
-    st.stop()
+    if _IS_PRODUCTION:
+        import streamlit.components.v1 as components
+        components.html(
+            '<script>window.top.location.href = "https://incogrp.com/staff-login";</script>',
+            height=0,
+        )
+        st.stop()
+    else:
+        # Local dev: show login form instead of redirecting
+        st.markdown(
+            "<h2 style='text-align:center;margin-top:3rem;'>📦 INCO Staff Portal</h2>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("<p style='text-align:center;color:#888;'>Sign in to continue</p>", unsafe_allow_html=True)
+        st.markdown("---")
+        col_l, col_c, col_r = st.columns([1, 1, 1])
+        with col_c:
+            with st.form("login_form"):
+                username  = st.text_input("Username")
+                password  = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
+            if submitted:
+                user = auth.verify_login(username, password)
+                if user:
+                    auth.login(user)
+                    _save_cookie(user)
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
+        st.stop()
 
 
 # ── Restore session from cookie on refresh ────────────────────────────────────
