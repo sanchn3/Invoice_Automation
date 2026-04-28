@@ -571,13 +571,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.warning("PDF not available.")
 
                     # ── Job details form + Generate Invoice ───────────────
-                    _extra_options = {
-                        "Quality Inspection": "quality_inspection",
-                        "Pallet Cleaning"   : "pallet_cleaning",
-                        "Repacking"         : "repacking",
-                        "Re-Inspection"     : "re_inspection",
-                        "Overtime"          : "overtime",
-                    }
                     _TR_OPTS   = ["Hardware & Installation", "Installation Only"]
                     _TR_TO_KEY = {"Hardware & Installation": "hardware_installation",
                                   "Installation Only"      : "installation_only"}
@@ -600,12 +593,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _dmg = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
                         _brk = _pc.number_input("Broken Pallets",  min_value=0, step=1, value=int(ci.get("broken_pallets", 0) or 0), key=f"val_brk_{cid}")
 
-                    _cur_extras = ci.get("extra_charges", [])
                     _new_extras: list[str] = []
-                    _ex_cols = st.columns(len(_extra_options))
-                    for _col, (_lbl, _ekey) in zip(_ex_cols, _extra_options.items()):
-                        if _col.checkbox(_lbl, value=(_ekey in _cur_extras), key=f"val_ex_{_ekey}_{cid}"):
-                            _new_extras.append(_ekey)
 
                     _stored_tr = ci.get("temp_recorder", "hardware_installation")
                     if _stored_tr is True:
