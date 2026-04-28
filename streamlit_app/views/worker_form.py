@@ -1,8 +1,8 @@
 """
 worker_form.py
 ==============
-Mobile-friendly worker form. Workers select a pending job,
-fill in pallet counts, extra charges, notes, and photos.
+Operator view — shows active jobs and allows notes/photos to be submitted.
+Pallet details and extra charges are handled by the Administrator.
 """
 
 import streamlit as st
@@ -15,18 +15,18 @@ from utils.pdf_storage import get_pdf_bytes, overwrite_provider_pdf as _overwrit
 
 def render(dm: DataManager, alert_manager: AlertManager) -> None:
     st.title("📋 Operator")
-    st.caption("Fill in the details after loading is complete.")
+    st.caption("View your active jobs and submit notes or photos.")
     st.markdown("---")
 
-    # ── Load pending jobs ─────────────────────────────────────────────────────
+    # ── Load active jobs ──────────────────────────────────────────────────────
     all_client_invoices = dm.get_client_invoices()
-    pending_jobs = [
+    active_jobs = [
         ci for ci in all_client_invoices
-        if ci.get("status") == "pending_worker"
+        if ci.get("status") == "validated"
     ]
 
-    if not pending_jobs:
-        st.info("No pending jobs at this time. Check back later.")
+    if not active_jobs:
+        st.info("No active jobs at this time. Check back later.")
         return
 
     # ── Job selector ──────────────────────────────────────────────────────────
@@ -37,16 +37,16 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
         inv_part = f" — {inv_num}" if inv_num else ""
         return f"{ci.get('client_name', 'Unknown')} — {provider}{inv_part} — {ci.get('invoice_date', '')}"
 
-    job_options = {job_label(ci): ci for ci in pending_jobs}
+    job_options = {job_label(ci): ci for ci in active_jobs}
     selected_label = st.selectbox(
         "Select your job",
         options=list(job_options.keys()),
-        help="Choose the job you just completed loading.",
+        help="Choose the job you are working on.",
     )
     selected_job = job_options[selected_label]
     job_id       = selected_job["id"]
 
-    # ── Pre-filled info ───────────────────────────────────────────────────────
+    # ── Job info ──────────────────────────────────────────────────────────────
     provider_inv = dm.get_provider_invoice_by_id(selected_job.get("provider_invoice_id", ""))
     st.markdown("---")
     col1, col2, col3 = st.columns(3)
@@ -56,7 +56,7 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
 
     pdf_path = provider_inv.get("pdf_local_path", "") if provider_inv else ""
     if pdf_path:
-        pdf_key = f"worker_pdf_{job_id}"
+        pdf_key   = f"worker_pdf_{job_id}"
         pdf_label = "📄 Hide Invoice PDF" if st.session_state.get(pdf_key) else "📄 View Invoice PDF"
         if st.button(pdf_label, key=f"pdftoggle_{job_id}"):
             st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
@@ -71,50 +71,7 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
 
     st.markdown("---")
 
-    # ── Worker inputs ─────────────────────────────────────────────────────────
-    charged_by_pallet = bool(
-        dm.get_rates_for_client(selected_job.get("client_name", "")).get("charged_by_pallet", True)
-    )
-
-    st.subheader("Pallet Details")
-
-    if charged_by_pallet:
-        col_a, col_b, col_c = st.columns(3)
-        pallet_count    = col_a.number_input("Total Pallets",   min_value=1, step=1, value=1)
-        damaged_pallets = col_b.number_input("Damaged Pallets", min_value=0, step=1, value=0)
-        broken_pallets  = col_c.number_input("Broken Pallets",  min_value=0, step=1, value=0)
-    else:
-        st.info("Billing is per truck — no pallet count required.")
-        pallet_count    = 1   # placeholder, unused in charge calculator
-        col_b, col_c    = st.columns(2)
-        damaged_pallets = col_b.number_input("Damaged Pallets", min_value=0, step=1, value=0)
-        broken_pallets  = col_c.number_input("Broken Pallets",  min_value=0, step=1, value=0)
-
-    st.subheader("Extra Charges")
-    extra_options = {
-        "Quality Inspection": "quality_inspection",
-        "Pallet Cleaning"   : "pallet_cleaning",
-        "Repacking"         : "repacking",
-        "Re-Inspection"     : "re_inspection",
-        "Overtime"          : "overtime",
-    }
-    selected_extras: list[str] = []
-    cols = st.columns(len(extra_options))
-    for col, (label, key) in zip(cols, extra_options.items()):
-        if col.checkbox(label):
-            selected_extras.append(key)
-
-    _TR_OPTS   = ["Hardware & Installation", "Installation Only"]
-    _TR_TO_KEY = {"Hardware & Installation": "hardware_installation",
-                  "Installation Only"      : "installation_only"}
-    _tr_sel = st.radio(
-        "Temperature Recorder",
-        options=_TR_OPTS,
-        horizontal=True,
-        key=f"tr_{job_id}",
-    )
-    temp_recorder = _TR_TO_KEY[_tr_sel]
-
+    # ── Notes ─────────────────────────────────────────────────────────────────
     st.subheader("Notes")
     worker_notes = st.text_area(
         "Observations / Notes",
@@ -122,6 +79,7 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
         height=120,
     )
 
+    # ── Photos ────────────────────────────────────────────────────────────────
     st.subheader("Photos")
     uploaded_photos = st.file_uploader(
         "Upload photos (JPG / PNG)",
@@ -133,12 +91,8 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
     st.markdown("---")
 
     # ── Submit ────────────────────────────────────────────────────────────────
-    if st.button("✅ Submit Job", type="primary", width='stretch'):
-        if charged_by_pallet and pallet_count < 1:
-            st.error("Pallet count must be at least 1.")
-            return
-
-        # Bake photos into the provider PDF in memory (no separate photo storage)
+    if st.button("✅ Submit", type="primary", width='stretch'):
+        # Bake photos into the provider PDF in memory
         if uploaded_photos and provider_inv:
             _pdf_path = provider_inv.get("pdf_local_path", "")
             if _pdf_path:
@@ -148,28 +102,10 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
                     _combined   = _append_photos(_existing, _photo_data)
                     _overwrite_provider_pdf(_pdf_path, _combined)
 
-        # Update client invoice
+        # Save notes only — pallet/charge details handled by Administrator
         dm.update_client_invoice(job_id, {
-            "pallet_count"   : int(pallet_count),
-            "damaged_pallets": int(damaged_pallets),
-            "broken_pallets" : int(broken_pallets),
-            "extra_charges"  : selected_extras,
-            "temp_recorder"  : temp_recorder,
-            "worker_notes"   : worker_notes,
-            "status"         : "ready_to_invoice",
+            "worker_notes": worker_notes,
         })
-
-        # Update linked email log
-        if provider_inv and provider_inv.get("email_intake_id"):
-            dm.update_email_log(
-                provider_inv["email_intake_id"],
-                {"status": "ready_to_invoice"},
-            )
-
-        alert_manager.worker_submitted(
-            client_name=selected_job.get("client_name", ""),
-            job_id=job_id,
-        )
 
         st.markdown(
             """
@@ -179,7 +115,7 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
                 border-radius:8px;font-size:1rem;font-weight:600;
                 box-shadow:0 4px 12px rgba(0,0,0,0.25);z-index:9999;
                 animation:fadeout 0.6s ease 14.4s forwards;">
-                ✅ Job submitted successfully! The admin has been notified.
+                ✅ Submitted successfully!
             </div>
             <style>
             @keyframes fadeout { to { opacity:0; pointer-events:none; } }

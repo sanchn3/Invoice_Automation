@@ -457,7 +457,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         all_ci = sorted(
             [ci for ci in client_invs_list
-             if ci.get("status") in ("validated", "pending_worker", "ready_to_invoice")],
+             if ci.get("status") in ("validated", "ready_to_invoice")],
             key=lambda x: x.get("created_at", ""),
             reverse=True,
         )
@@ -479,15 +479,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
                 with st.container(border=True):
                     # ── Status banner ─────────────────────────────────────
-                    if status == "pending_worker":
-                        st.markdown(
-                            '<div style="background:#fff3cd;border:1px solid #ffc107;'
-                            'border-radius:4px;padding:4px 10px;margin-bottom:6px;">'
-                            '<span style="color:#856404;font-weight:600;">'
-                            '⏳ Waiting for Worker</span></div>',
-                            unsafe_allow_html=True,
-                        )
-                    elif status == "ready_to_invoice":
+                    if status == "ready_to_invoice":
                         st.markdown(
                             '<div style="background:#d1e7dd;border:1px solid #198754;'
                             'border-radius:4px;padding:4px 10px;margin-bottom:6px;">'
@@ -578,159 +570,101 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         else:
                             st.warning("PDF not available.")
 
-                    # ── Status-specific action area ───────────────────────
-                    if status == "validated":
-                        st.markdown("---")
-                        if st.button("📤 Send to Worker", key=f"send_worker_{cid}", type="primary", width='stretch'):
-                            dm.update_client_invoice(cid, {
-                                "service_type": svc,
-                                "status"      : "pending_worker",
-                            })
-                            st.success("Sent to worker.")
-                            st.rerun()
+                    # ── Job details form + Generate Invoice ───────────────
+                    _extra_options = {
+                        "Quality Inspection": "quality_inspection",
+                        "Pallet Cleaning"   : "pallet_cleaning",
+                        "Repacking"         : "repacking",
+                        "Re-Inspection"     : "re_inspection",
+                        "Overtime"          : "overtime",
+                    }
+                    _TR_OPTS   = ["Hardware & Installation", "Installation Only"]
+                    _TR_TO_KEY = {"Hardware & Installation": "hardware_installation",
+                                  "Installation Only"      : "installation_only"}
+                    _TR_TO_LBL = {"hardware_installation": "Hardware & Installation",
+                                  "installation_only"    : "Installation Only"}
 
-                    elif status == "ready_to_invoice":
-                        st.markdown("---")
-                        _we_key = f"worker_edit_{cid}"
-                        _extra_options = {
-                            "Quality Inspection": "quality_inspection",
-                            "Pallet Cleaning"   : "pallet_cleaning",
-                            "Repacking"         : "repacking",
-                            "Re-Inspection"     : "re_inspection",
-                            "Overtime"          : "overtime",
-                        }
-                        _TR_OPTS   = ["Hardware & Installation", "Installation Only"]
-                        _TR_TO_KEY = {"Hardware & Installation": "hardware_installation",
-                                      "Installation Only"      : "installation_only"}
-                        _TR_TO_LBL = {"hardware_installation": "Hardware & Installation",
-                                      "installation_only"    : "Installation Only"}
+                    st.markdown("---")
+                    st.caption("Job Details")
 
-                        if st.session_state.get(_we_key):
-                            # ── Edit mode ──────────────────────────────────
-                            st.caption("Edit worker submission:")
-                            _cbp = bool(dm.get_rates_for_client(ci.get("client_name", "")).get("charged_by_pallet", True))
-                            if _cbp:
-                                _ea, _eb, _ec = st.columns(3)
-                                _new_pal = _ea.number_input("Pallets",         min_value=1, step=1, value=int(ci.get("pallet_count", 1)),    key=f"we_pal_{cid}")
-                                _new_dmg = _eb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0)), key=f"we_dmg_{cid}")
-                                _new_brk = _ec.number_input("Broken Pallets",  min_value=0, step=1, value=int(ci.get("broken_pallets", 0)),  key=f"we_brk_{cid}")
-                            else:
-                                _new_pal = 1
-                                _eb, _ec = st.columns(2)
-                                _new_dmg = _eb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0)), key=f"we_dmg_{cid}")
-                                _new_brk = _ec.number_input("Broken Pallets",  min_value=0, step=1, value=int(ci.get("broken_pallets", 0)),  key=f"we_brk_{cid}")
+                    _cbp = bool(dm.get_rates_for_client(ci.get("client_name", "")).get("charged_by_pallet", True))
+                    if _cbp:
+                        _pa, _pb, _pc = st.columns(3)
+                        _pal = _pa.number_input("Total Pallets",   min_value=1, step=1, value=int(ci.get("pallet_count", 1) or 1), key=f"val_pal_{cid}")
+                        _dmg = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
+                        _brk = _pc.number_input("Broken Pallets",  min_value=0, step=1, value=int(ci.get("broken_pallets", 0) or 0), key=f"val_brk_{cid}")
+                    else:
+                        st.info("Billing is per truck — no pallet count required.")
+                        _pal = 1
+                        _pb, _pc = st.columns(2)
+                        _dmg = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
+                        _brk = _pc.number_input("Broken Pallets",  min_value=0, step=1, value=int(ci.get("broken_pallets", 0) or 0), key=f"val_brk_{cid}")
 
-                            _cur_extras = ci.get("extra_charges", [])
-                            _new_extras: list[str] = []
-                            _ex_cols = st.columns(len(_extra_options))
-                            for _col, (_lbl, _ekey) in zip(_ex_cols, _extra_options.items()):
-                                if _col.checkbox(_lbl, value=(_ekey in _cur_extras), key=f"we_ex_{_ekey}_{cid}"):
-                                    _new_extras.append(_ekey)
+                    _cur_extras = ci.get("extra_charges", [])
+                    _new_extras: list[str] = []
+                    _ex_cols = st.columns(len(_extra_options))
+                    for _col, (_lbl, _ekey) in zip(_ex_cols, _extra_options.items()):
+                        if _col.checkbox(_lbl, value=(_ekey in _cur_extras), key=f"val_ex_{_ekey}_{cid}"):
+                            _new_extras.append(_ekey)
 
-                            _stored_tr = ci.get("temp_recorder", "hardware_installation")
-                            if _stored_tr is True:
-                                _stored_tr = "hardware_installation"
-                            _tr_sel = st.radio(
-                                "Temperature Recorder",
-                                options=_TR_OPTS,
-                                index=_TR_OPTS.index(_TR_TO_LBL.get(_stored_tr, "Hardware & Installation")),
-                                horizontal=True,
-                                key=f"we_tr_{cid}",
-                            )
-                            _new_tr    = _TR_TO_KEY[_tr_sel]
-                            _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"we_notes_{cid}")
+                    _stored_tr = ci.get("temp_recorder", "hardware_installation")
+                    if _stored_tr is True:
+                        _stored_tr = "hardware_installation"
+                    _tr_default = _TR_TO_LBL.get(_stored_tr, "Hardware & Installation") if _stored_tr else "Hardware & Installation"
+                    _tr_sel = st.radio(
+                        "Temperature Recorder",
+                        options=_TR_OPTS,
+                        index=_TR_OPTS.index(_tr_default),
+                        horizontal=True,
+                        key=f"val_tr_{cid}",
+                    )
+                    _new_tr    = _TR_TO_KEY[_tr_sel]
+                    _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
 
-                            _sv1, _sv2 = st.columns(2)
-                            if _sv1.button("💾 Save", key=f"we_save_{cid}", type="primary", width="stretch"):
-                                dm.update_client_invoice(cid, {
-                                    "pallet_count"   : int(_new_pal),
-                                    "damaged_pallets": int(_new_dmg),
-                                    "broken_pallets" : int(_new_brk),
-                                    "extra_charges"  : _new_extras,
-                                    "temp_recorder"  : _new_tr,
-                                    "worker_notes"   : _new_notes.strip(),
-                                })
-                                st.session_state.pop(_we_key, None)
-                                st.rerun()
-                            if _sv2.button("✗ Cancel", key=f"we_cancel_{cid}", width="stretch"):
-                                st.session_state.pop(_we_key, None)
-                                st.rerun()
-
-                        else:
-                            # ── View mode ──────────────────────────────────
-                            st.caption("Worker submitted:")
-                            w1, w2, w3 = st.columns(3)
-                            w1.metric("Pallets",         ci.get("pallet_count", 0))
-                            w2.metric("Damaged Pallets", ci.get("damaged_pallets", 0))
-                            w3.metric("Broken Pallets",  ci.get("broken_pallets", 0))
-
-                            _extras = ci.get("extra_charges", [])
-                            if _extras:
-                                st.caption("Extra: " + ", ".join(e.replace("_", " ").title() for e in _extras))
-                            _stored_tr_v = ci.get("temp_recorder", "")
-                            if _stored_tr_v is True:
-                                _stored_tr_v = "hardware_installation"
-                            if _stored_tr_v:
-                                st.caption(f"🌡 {_TR_TO_LBL.get(_stored_tr_v, _stored_tr_v)}")
-                            if ci.get("worker_notes"):
-                                st.caption(f"Notes: {ci['worker_notes']}")
-
-                            act_e, act1, act2 = st.columns(3)
-                            if act_e.button("✏️ Edit", key=f"we_editbtn_{cid}", width="stretch"):
-                                st.session_state[_we_key] = True
-                                st.rerun()
-                            if act1.button("↩ Send back to Worker", key=f"send_back_{cid}", width='stretch'):
-                                dm.update_client_invoice(cid, {
-                                    "status"         : "pending_worker",
-                                    "pallet_count"   : 0,
-                                    "damaged_pallets": 0,
-                                    "broken_pallets" : 0,
-                                    "extra_charges"  : [],
-                                    "worker_notes"   : "",
-                                    "photo_paths"    : [],
-                                    "temp_recorder"  : False,
-                                })
-                                st.info("Invoice sent back to worker.")
-                                st.rerun()
-                            if act2.button("📤 Send to Accounting", key=f"gen_{cid}", type="primary", width='stretch'):
-                                inv_id = _generate_unique_invoice_id(dm)
-                                charges = calculate_charges(
-                                    dm=dm,
-                                    service_type=svc,
-                                    pallet_count=int(ci.get("pallet_count", 1)),
-                                    temp_recorder=ci.get("temp_recorder", "hardware_installation"),
-                                    extra_charges=ci.get("extra_charges", []),
-                                    damaged_pallets=int(ci.get("damaged_pallets", 0)),
-                                    broken_pallets=int(ci.get("broken_pallets", 0)),
-                                    client_name=ci.get("client_name", ""),
-                                )
-                                client_rates   = dm.get_rates_for_client(ci.get("client_name", ""))
-                                billing_addr   = dm.get_client_address(ci.get("client_name", ""))
-                                dm.update_client_invoice(cid, {
-                                    "quickbooks_invoice_number": inv_id,
-                                    "service_type"    : svc,
-                                    "temp_recorder"   : ci.get("temp_recorder", "hardware_installation"),
-                                    "line_items"      : charges["line_items"],
-                                    "subtotal"        : charges["subtotal"],
-                                    "total"           : charges["total"],
-                                    "net_days"        : int(client_rates.get("net_days", 30)),
-                                    "billing_address" : billing_addr,
-                                    "status"          : "invoiced",
-                                    "invoice_date"    : datetime.utcnow().date().isoformat(),
-                                })
-                                if prov.get("email_intake_id"):
-                                    dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
-                                if prov.get("pdf_local_path"):
-                                    _move_to_processed(prov["pdf_local_path"])
-                                ci_updated = dm.get_client_invoice_by_id(cid)
-                                if ci_updated:
-                                    try:
-                                        _pdf_bytes = _generate_pdf(ci_updated, prov.get("pdf_local_path"))
-                                        _upload_pdf_bytes(f"{inv_id}-invoice.pdf", _pdf_bytes)
-                                    except Exception as _e:
-                                        logger.warning("Could not upload generated invoice PDF: %s", _e)
-                                st.success(f"Invoice #{inv_id} generated! Total: ${charges['total']:,.2f}")
-                                st.rerun()
+                    if st.button("📤 Send to Accounting", key=f"gen_{cid}", type="primary", width='stretch'):
+                        inv_id  = _generate_unique_invoice_id(dm)
+                        charges = calculate_charges(
+                            dm=dm,
+                            service_type=svc,
+                            pallet_count=int(_pal),
+                            temp_recorder=_new_tr,
+                            extra_charges=_new_extras,
+                            damaged_pallets=int(_dmg),
+                            broken_pallets=int(_brk),
+                            client_name=ci.get("client_name", ""),
+                        )
+                        client_rates = dm.get_rates_for_client(ci.get("client_name", ""))
+                        billing_addr = dm.get_client_address(ci.get("client_name", ""))
+                        dm.update_client_invoice(cid, {
+                            "quickbooks_invoice_number": inv_id,
+                            "service_type"    : svc,
+                            "pallet_count"    : int(_pal),
+                            "damaged_pallets" : int(_dmg),
+                            "broken_pallets"  : int(_brk),
+                            "extra_charges"   : _new_extras,
+                            "temp_recorder"   : _new_tr,
+                            "worker_notes"    : _new_notes.strip(),
+                            "line_items"      : charges["line_items"],
+                            "subtotal"        : charges["subtotal"],
+                            "total"           : charges["total"],
+                            "net_days"        : int(client_rates.get("net_days", 30)),
+                            "billing_address" : billing_addr,
+                            "status"          : "invoiced",
+                            "invoice_date"    : datetime.utcnow().date().isoformat(),
+                        })
+                        if prov.get("email_intake_id"):
+                            dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
+                        if prov.get("pdf_local_path"):
+                            _move_to_processed(prov["pdf_local_path"])
+                        ci_updated = dm.get_client_invoice_by_id(cid)
+                        if ci_updated:
+                            try:
+                                _pdf_bytes = _generate_pdf(ci_updated, prov.get("pdf_local_path"))
+                                _upload_pdf_bytes(f"{inv_id}-invoice.pdf", _pdf_bytes)
+                            except Exception as _e:
+                                logger.warning("Could not upload generated invoice PDF: %s", _e)
+                        st.success(f"Invoice #{inv_id} generated! Total: ${charges['total']:,.2f}")
+                        st.rerun()
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 3 — SENT TO ACCOUNTING
