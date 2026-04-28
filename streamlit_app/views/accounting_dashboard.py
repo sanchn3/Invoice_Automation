@@ -91,7 +91,7 @@ def _colored_button(container, label: str, key: str, color: str, **kwargs) -> bo
 
 
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
-    st.title("🧾 Accounting Dashboard")
+    st.title("🧾 Accounting")
 
     # Fetch once per render — reused across all three tabs.
     client_invoices   = dm.get_client_invoices()
@@ -243,27 +243,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 dm.update_client_invoice(cid, {"ready_for_export": True})
                                 st.rerun()
 
-        st.markdown("---")
-        st.subheader("Exported Invoices")
-        exported = sorted(
-            [ci for ci in client_invoices if ci.get("quickbooks_exported")],
-            key=lambda x: x.get("created_at", ""),
-            reverse=True,
-        )
-        if not exported:
-            st.caption("No invoices exported yet.")
-        else:
-            rows = [
-                {
-                    "QB #"   : ci.get("quickbooks_invoice_number", "—"),
-                    "Date"   : ci.get("invoice_date", "—"),
-                    "Client" : ci.get("client_name", "—"),
-                    "Total"  : f"${ci.get('total', 0):,.2f}",
-                    "Net Days": str(ci.get("net_days", "—")),
-                }
-                for ci in exported
-            ]
-            st.dataframe(rows, use_container_width=True, hide_index=True)
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 2 — IMPORT TO QUICKBOOKS

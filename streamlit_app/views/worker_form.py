@@ -13,7 +13,7 @@ from utils.pdf_storage import get_pdf_bytes, upload_photo as _upload_photo
 
 
 def render(dm: DataManager, alert_manager: AlertManager) -> None:
-    st.title("📋 Worker Job Form")
+    st.title("📋 Operator")
     st.caption("Fill in the details after loading is complete.")
     st.markdown("---")
 
