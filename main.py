@@ -20,6 +20,7 @@ from data_manager import DataManager
 from email_pipeline.outlook_listener import poll_inbox
 from alerting.alert_manager import AlertManager
 from scheduler.reconciliation import check_stuck_invoices
+from scheduler.supabase_sync import sync_invoices_to_supabase
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 LOGS_DIR.mkdir(exist_ok=True)
@@ -74,6 +75,19 @@ def main() -> None:
         hours=1,
         id="reconciliation",
         name="Stuck Invoice Checker",
+        replace_existing=True,
+    )
+
+    # Sync processed invoices to Supabase every Sunday at 05:00 Central
+    scheduler.add_job(
+        func=lambda: sync_invoices_to_supabase(dm),
+        trigger="cron",
+        day_of_week="sun",
+        hour=5,
+        minute=0,
+        timezone="America/Chicago",
+        id="supabase_sync",
+        name="Weekly Supabase Invoice Sync",
         replace_existing=True,
     )
 

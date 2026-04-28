@@ -158,4 +158,12 @@ def stamp_pdf(pdf_path: str | Path, received_date: date) -> str:
         tmp.unlink(missing_ok=True)
         raise
 
+    # Upload stamped PDF to Supabase Storage (overwrites the pre-stamp version)
+    try:
+        from utils.pdf_storage import upload_pdf
+        upload_pdf(str(pdf_path))
+    except Exception as _e:
+        import logging as _logging
+        _logging.getLogger(__name__).error("stamp_pdf: Supabase upload failed: %s", _e)
+
     return str(pdf_path)

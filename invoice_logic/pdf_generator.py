@@ -6,11 +6,14 @@ Returns PDF as bytes so it can be streamed directly to a Streamlit download butt
 or written to disk.
 """
 
+import logging
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
 from config import PHOTOS_DIR
+
+logger = logging.getLogger(__name__)
 LOGO_PATH = str(PHOTOS_DIR / "logo_smaller_2.jpg")
 
 from PIL import Image, ImageDraw
@@ -65,6 +68,76 @@ def _fmt_date(iso_date: str) -> str:
         return datetime.fromisoformat(iso_date).strftime("%m/%d/%Y")
     except Exception:
         return iso_date
+
+
+def _photo_page_bytes(photos: list[bytes]) -> bytes | None:
+    """
+    Render worker photos onto PDF pages in a 2×2 grid (up to 4 per page).
+    Title + rule sit inside the top margin. Returns PDF bytes, or None if all photos fail.
+    """
+    if not photos:
+        return None
+
+    buf  = BytesIO()
+    W, H = letter
+    c    = canvas.Canvas(buf, pagesize=letter)
+
+    margin     = 0.50 * inch
+    title_h    = 0.45 * inch   # vertical space reserved for heading + rule
+    per_page   = 4
+    cols, rows = 2, 2
+    pad        = 0.12 * inch
+    cell_w     = (W - 2 * margin) / cols
+    cell_h     = (H - 2 * margin - title_h) / rows
+
+    any_drawn = False
+
+    for idx, photo_bytes in enumerate(photos):
+        if idx % per_page == 0:
+            if idx > 0:
+                c.showPage()
+            # Heading — drawn just below the top margin
+            title_y = H - margin - 0.22 * inch
+            c.setFillColor(BLUE)
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(margin, title_y, "Worker Photos")
+            rule_y = title_y - 0.14 * inch
+            c.setStrokeColor(BLUE)
+            c.setLineWidth(1)
+            c.line(margin, rule_y, W - margin, rule_y)
+
+        pos  = idx % per_page
+        col  = pos % cols
+        row  = pos // cols
+        cx   = margin + col * cell_w
+        # Grid starts below the title area
+        cy   = H - margin - title_h - (row + 1) * cell_h
+
+        try:
+            img    = Image.open(BytesIO(photo_bytes))
+            img_w, img_h = img.size
+            scale  = min((cell_w - 2 * pad) / img_w, (cell_h - 2 * pad) / img_h)
+            draw_w = img_w * scale
+            draw_h = img_h * scale
+            draw_x = cx + pad + ((cell_w - 2 * pad) - draw_w) / 2
+            draw_y = cy + pad + ((cell_h - 2 * pad) - draw_h) / 2
+
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            rgb_buf = BytesIO()
+            img.save(rgb_buf, format="JPEG", quality=85)
+            rgb_buf.seek(0)
+            c.drawImage(ImageReader(rgb_buf), draw_x, draw_y, width=draw_w, height=draw_h)
+            any_drawn = True
+        except Exception as e:
+            logger.warning("_photo_page_bytes: skipping photo %d: %s", idx, e)
+
+    if not any_drawn:
+        return None
+
+    c.save()
+    buf.seek(0)
+    return buf.read()
 
 
 def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
@@ -371,9 +444,44 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     buffer.seek(0)
     invoice_bytes = buffer.read()
 
-    if provider_pdf_path:
-        return merge_with_provider_pdf(invoice_bytes, provider_pdf_path)
-    return invoice_bytes
+    if not provider_pdf_path:
+        return invoice_bytes
+
+    writer = PdfWriter()
+    for page in PdfReader(BytesIO(invoice_bytes)).pages:
+        writer.add_page(page)
+
+    try:
+        for page in PdfReader(str(provider_pdf_path)).pages:
+            writer.add_page(page)
+    except Exception as e:
+        logger.warning("generate_pdf: could not append provider PDF '%s': %s", provider_pdf_path, e)
+
+    out = BytesIO()
+    writer.write(out)
+    out.seek(0)
+    return out.read()
+
+
+def append_photos_to_pdf(pdf_bytes: bytes, photo_bytes_list: list[bytes]) -> bytes:
+    """
+    Append worker photo pages to any existing PDF (given as bytes).
+    Returns the combined PDF, or the original bytes unchanged if photos cannot be processed.
+    """
+    if not photo_bytes_list:
+        return pdf_bytes
+    photo_pdf = _photo_page_bytes(photo_bytes_list)
+    if not photo_pdf:
+        return pdf_bytes
+    writer = PdfWriter()
+    for page in PdfReader(BytesIO(pdf_bytes)).pages:
+        writer.add_page(page)
+    for page in PdfReader(BytesIO(photo_pdf)).pages:
+        writer.add_page(page)
+    out = BytesIO()
+    writer.write(out)
+    out.seek(0)
+    return out.read()
 
 
 def merge_with_provider_pdf(invoice_bytes: bytes, provider_pdf_path: str) -> bytes:

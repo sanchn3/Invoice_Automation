@@ -25,7 +25,7 @@ def _canonical_client(name: str) -> str:
 
 
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
-    st.title("📊 Lead Dashboard")
+    st.title("📊 Lead")
 
     tab_report, tab_rates, tab_settings = st.tabs([
         "📊 Reports",

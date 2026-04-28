@@ -14,6 +14,7 @@ from data_manager import DataManager
 from parsing.pdf_parser import parse_pdf
 from parsing.claude_parser import parse_with_claude
 from alerting.alert_manager import AlertManager
+from utils.pdf_storage import upload_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,7 @@ def save_pdf_attachment(message, email_log_id: str, dm: DataManager) -> str | No
                 "pdf_filename"  : local_name,
                 "pdf_local_path": pdf_path,
             })
+            upload_pdf(pdf_path)
             logger.info("Saved PDF for pending review: %s", local_path)
             return pdf_path
     except Exception as e:
@@ -214,6 +216,7 @@ def handle_attachment(
             attachment.save(location=str(PDFS_DIR), custom_name=local_name)
             pdf_path     = str(local_path)
             pdf_filename = local_name
+            upload_pdf(pdf_path)
             logger.info("Saved attachment: %s", local_path)
             break  # only process the first PDF
 

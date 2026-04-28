@@ -1,0 +1,50 @@
+services:
+  # ── Streamlit web app ────────────────────────────────────────────────────
+  - type: web
+    name: inco-staff-portal
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run streamlit_app/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: MS_CLIENT_ID
+        sync: false
+      - key: MS_CLIENT_SECRET
+        sync: false
+      - key: MS_TENANT_ID
+        sync: false
+      - key: WORKER_EMAIL
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+
+  # ── Background email poller ───────────────────────────────────────────────
+  - type: worker
+    name: inco-email-poller
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: MS_CLIENT_ID
+        sync: false
+      - key: MS_CLIENT_SECRET
+        sync: false
+      - key: MS_TENANT_ID
+        sync: false
+      - key: WORKER_EMAIL
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false

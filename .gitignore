@@ -1,5 +1,6 @@
 # Secrets
 .env
+create_users.py
 
 # Virtual environment
 venv/
@@ -13,9 +14,11 @@ __pycache__/
 pdfs/
 exports/
 logs/
+photos/
 
 # Runtime pipeline data (live invoice state — not for version control)
 data/
+!data/users.json
 
 # O365 token cache
 o365_token.txt
