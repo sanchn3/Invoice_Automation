@@ -625,7 +625,83 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
                     _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
 
-                    if st.button("📤 Send to Accounting", key=f"gen_{cid}", type="primary", width='stretch'):
+                    # ── Save / Send buttons ───────────────────────────────────
+                    _save_pdf_key = f"save_pdf_{cid}"
+                    _save_ok_key  = f"save_ok_{cid}"
+                    _btn1, _btn2  = st.columns([1, 2])
+
+                    if _btn1.button("💾 Save", key=f"savebtn_{cid}", width='stretch'):
+                        # 1. Persist all form fields — no status change, no QB number
+                        dm.update_client_invoice(cid, {
+                            "pallet_count"     : int(_pal),
+                            "damaged_pallets"  : int(_dmg),
+                            "broken_pallets"   : int(_brk),
+                            "temp_recorder"    : _new_tr,
+                            "producto_caliente": _producto_caliente,
+                            "temp_f1"          : _temp1.strip(),
+                            "temp_f2"          : _temp2.strip(),
+                            "temp_f3"          : _temp3.strip(),
+                            "worker_notes"     : _new_notes.strip(),
+                        })
+                        # 2. Calculate charges so the PDF has complete line items
+                        _sc = calculate_charges(
+                            dm=dm,
+                            service_type=svc,
+                            pallet_count=int(_pal),
+                            temp_recorder=_new_tr,
+                            extra_charges=_new_extras,
+                            damaged_pallets=int(_dmg),
+                            broken_pallets=int(_brk),
+                            client_name=ci.get("client_name", ""),
+                        )
+                        # 3. Build a full invoice dict for PDF generation
+                        _ci_pdf = {
+                            **ci,
+                            "service_type"     : svc,
+                            "pallet_count"     : int(_pal),
+                            "damaged_pallets"  : int(_dmg),
+                            "broken_pallets"   : int(_brk),
+                            "temp_recorder"    : _new_tr,
+                            "producto_caliente": _producto_caliente,
+                            "temp_f1"          : _temp1.strip(),
+                            "temp_f2"          : _temp2.strip(),
+                            "temp_f3"          : _temp3.strip(),
+                            "worker_notes"     : _new_notes.strip(),
+                            "line_items"       : _sc["line_items"],
+                            "subtotal"         : _sc["subtotal"],
+                            "total"            : _sc["total"],
+                        }
+                        # 4. Generate PDF — temperature data rendered bottom-right
+                        _save_pdf_bytes = _generate_pdf(_ci_pdf, prov.get("pdf_local_path"))
+                        # 5. Re-upload if a QB invoice number already exists
+                        _save_qb = ci.get("quickbooks_invoice_number")
+                        if _save_qb:
+                            try:
+                                _upload_pdf_bytes(f"{_save_qb}-invoice.pdf", _save_pdf_bytes)
+                            except Exception as _ue:
+                                logger.warning("PDF re-upload on save failed: %s", _ue)
+                        _pdf_stem = _save_qb or cid
+                        st.session_state[_save_pdf_key] = (_save_pdf_bytes, _pdf_stem)
+                        st.session_state[_save_ok_key]  = True
+                        st.rerun()
+
+                    # ── Download row (visible after Save) ─────────────────────
+                    if st.session_state.get(_save_ok_key):
+                        _saved_bytes, _saved_stem = st.session_state.get(
+                            _save_pdf_key, (None, "invoice")
+                        )
+                        _dl1, _dl2 = st.columns([2, 1])
+                        _dl1.success("Temperature data saved and mapped to PDF.")
+                        if _saved_bytes:
+                            _dl2.download_button(
+                                "⬇ Download PDF",
+                                data=_saved_bytes,
+                                file_name=f"{_saved_stem}-invoice.pdf",
+                                mime="application/pdf",
+                                key=f"dl_saved_{cid}",
+                            )
+
+                    if _btn2.button("📤 Send to Accounting", key=f"gen_{cid}", type="primary", width='stretch'):
                         inv_id  = _generate_unique_invoice_id(dm)
                         charges = calculate_charges(
                             dm=dm,
@@ -671,6 +747,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 _upload_pdf_bytes(f"{inv_id}-invoice.pdf", _pdf_bytes)
                             except Exception as _e:
                                 logger.warning("Could not upload generated invoice PDF: %s", _e)
+                        st.session_state.pop(_save_pdf_key, None)
+                        st.session_state.pop(_save_ok_key, None)
                         st.success(f"Invoice #{inv_id} generated! Total: ${charges['total']:,.2f}")
                         st.rerun()
 
