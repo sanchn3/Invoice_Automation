@@ -623,7 +623,27 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         if not processed:
             st.info("No processed invoices yet.")
         else:
-            st.caption(f"{len(processed)} invoice(s)")
+            # ── Filters ───────────────────────────────────────────────────────
+            _all_clients = sorted({ci.get("client_name", "") for ci in processed if ci.get("client_name")})
+            _all_dates   = sorted({ci.get("invoice_date", "")[:10] for ci in processed if ci.get("invoice_date")}, reverse=True)
+
+            _fc1, _fc2, _fc3 = st.columns(3)
+            _f_client = _fc1.selectbox("Client", ["All"] + _all_clients, key="lead_proc_client")
+            _f_date   = _fc2.selectbox("Date",   ["All"] + _all_dates,   key="lead_proc_date")
+            _f_paid   = _fc3.selectbox("Paid",   ["All", "Paid", "Unpaid"], key="lead_proc_paid")
+
+            filtered = [
+                ci for ci in processed
+                if (_f_client == "All" or ci.get("client_name") == _f_client)
+                and (_f_date  == "All" or ci.get("invoice_date", "")[:10] == _f_date)
+                and (
+                    _f_paid == "All"
+                    or (_f_paid == "Paid"   and ci.get("paid"))
+                    or (_f_paid == "Unpaid" and not ci.get("paid"))
+                )
+            ]
+
+            st.caption(f"{len(filtered)} of {len(processed)} invoice(s)")
 
             h1, h2, h3, h4, h5, h6, h7, h8 = st.columns(
                 [1.2, 1.8, 1, 1, 1.2, 1.2, 0.8, 0.9]
@@ -638,7 +658,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             h8.markdown("**Paid**")
             st.divider()
 
-            for ci in processed:
+            for ci in filtered:
                 cid = ci["id"]
                 qb  = ci.get("quickbooks_invoice_number", "—")
 
@@ -694,8 +714,4 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     c6.write("❌")
 
                 c7.write("✅" if emailed else "❌")
-
-                paid_label = "✅ Paid" if paid else "Mark Paid"
-                if c8.button(paid_label, key=f"lead_paid_{cid}", width="stretch"):
-                    dm.update_client_invoice(cid, {"paid": not paid})
-                    st.rerun()
+                c8.write("✅" if paid else "❌")
