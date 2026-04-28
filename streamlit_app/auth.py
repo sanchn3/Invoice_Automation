@@ -19,8 +19,6 @@ import os
 import secrets
 from pathlib import Path
 
-import streamlit as st
-
 _USERS_FILE = Path(__file__).parent.parent / "data" / "users.json"
 
 ROLE_LABELS = {
@@ -78,18 +76,22 @@ def create_user(username: str, password: str, role: str) -> None:
 # ── Session state helpers ─────────────────────────────────────────────────────
 
 def is_authenticated() -> bool:
+    import streamlit as st
     return bool(st.session_state.get("_auth_role"))
 
 
 def current_role() -> str | None:
+    import streamlit as st
     return st.session_state.get("_auth_role")
 
 
 def login(user: dict) -> None:
+    import streamlit as st
     st.session_state["_auth_role"]     = user["role"]
     st.session_state["_auth_username"] = user["username"]
 
 
 def logout() -> None:
+    import streamlit as st
     for key in ["_auth_role", "_auth_username"]:
         st.session_state.pop(key, None)

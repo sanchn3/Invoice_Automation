@@ -18,6 +18,7 @@ photos/
 
 # Runtime pipeline data (live invoice state — not for version control)
 data/
+!data/users.json
 
 # O365 token cache
 o365_token.txt
