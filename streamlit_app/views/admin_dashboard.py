@@ -580,10 +580,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     st.markdown("---")
                     st.caption("Job Details")
 
-                    _cbp = bool(dm.get_rates_for_client(ci.get("client_name", "")).get("charged_by_pallet", True))
+                    _cl_rates  = dm.get_rates_for_client(ci.get("client_name", ""))
+                    _cbp       = bool(_cl_rates.get("charged_by_pallet", True))
+                    _fixed_pal = int(_cl_rates.get("fixed_pallet_count", 0) or 0)
                     if _cbp:
                         _pa, _pb, _pc = st.columns(3)
-                        _pal = _pa.number_input("Total Pallets",   min_value=1, step=1, value=int(ci.get("pallet_count", 1) or 1), key=f"val_pal_{cid}")
+                        _pal_default = _fixed_pal if _fixed_pal > 0 else int(ci.get("pallet_count", 1) or 1)
+                        _pal_label   = f"Total Pallets (fixed: {_fixed_pal})" if _fixed_pal > 0 else "Total Pallets"
+                        _pal = _pa.number_input(_pal_label, min_value=1, step=1, value=_pal_default, key=f"val_pal_{cid}")
                         _dmg = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
                         _brk = _pc.number_input("Broken Pallets",  min_value=0, step=1, value=int(ci.get("broken_pallets", 0) or 0), key=f"val_brk_{cid}")
                     else:
