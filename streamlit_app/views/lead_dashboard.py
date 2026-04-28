@@ -6,10 +6,41 @@ Lead dashboard: Reports, Rate Card editor, and Settings.
 
 import streamlit as st
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
+from invoice_logic.pdf_generator import generate_pdf as _generate_pdf
+from invoice_logic.iif_exporter import build_iif_content
+
+
+@st.cache_data(show_spinner=False)
+def _cached_pdf(
+    ci_id: str,
+    qb_num: str,
+    total: float,
+    provider_pdf_path: str | None,
+    invoice_date: str,
+    due_date: str,
+    po_number: str,
+    _ci: dict,
+) -> bytes:
+    return _generate_pdf(_ci, provider_pdf_path)
+
+
+def _pdf_args(ci: dict, prov: dict | None) -> tuple:
+    _pdf_path = (prov or {}).get("pdf_local_path", "")
+    return (
+        ci["id"],
+        ci.get("quickbooks_invoice_number", ""),
+        float(ci.get("total", 0)),
+        _pdf_path if _pdf_path and Path(_pdf_path).exists() else None,
+        ci.get("invoice_date", ""),
+        ci.get("due_date", ""),
+        ci.get("po_number", ""),
+        ci,
+    )
 
 # Canonical client-name aliases (must stay in sync with admin_dashboard.py)
 _CLIENT_ALIASES: dict[str, str] = {
@@ -27,10 +58,11 @@ def _canonical_client(name: str) -> str:
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("📊 Lead")
 
-    tab_report, tab_rates, tab_settings = st.tabs([
+    tab_report, tab_rates, tab_settings, tab_processed = st.tabs([
         "📊 Reports",
         "💲 Rate Card",
         "⚙️ Settings",
+        "📁 Processed Invoices",
     ])
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -564,3 +596,106 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
             st.success("All pipeline data cleared. The dashboard will now show a fresh state.")
             st.rerun()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAB 4 — PROCESSED INVOICES
+    # ──────────────────────────────────────────────────────────────────────────
+    with tab_processed:
+        st.subheader("Processed Invoices")
+
+        all_ci_proc   = dm.get_client_invoices()
+        prov_invs_proc = dm.get_provider_invoices()
+        prov_by_id_proc = {pi["id"]: pi for pi in prov_invs_proc}
+
+        processed = sorted(
+            [
+                ci for ci in all_ci_proc
+                if ci.get("ready_for_export")
+                or ci.get("ready_to_email")
+                or ci.get("quickbooks_exported")
+                or ci.get("emailed")
+                or ci.get("paid")
+            ],
+            key=lambda x: x.get("invoice_date", x.get("created_at", "")),
+            reverse=True,
+        )
+
+        if not processed:
+            st.info("No processed invoices yet.")
+        else:
+            st.caption(f"{len(processed)} invoice(s)")
+
+            h1, h2, h3, h4, h5, h6, h7, h8 = st.columns(
+                [1.2, 1.8, 1, 1, 1.2, 1.2, 0.8, 0.9]
+            )
+            h1.markdown("**Invoice #**")
+            h2.markdown("**Client**")
+            h3.markdown("**Date**")
+            h4.markdown("**Due Date**")
+            h5.markdown("**Reviewed**")
+            h6.markdown("**QB Export**")
+            h7.markdown("**Emailed**")
+            h8.markdown("**Paid**")
+            st.divider()
+
+            for ci in processed:
+                cid = ci["id"]
+                qb  = ci.get("quickbooks_invoice_number", "—")
+
+                due = ci.get("due_date", "").strip()
+                if not due:
+                    try:
+                        due = (
+                            datetime.fromisoformat(ci.get("invoice_date", ""))
+                            + timedelta(days=int(ci.get("net_days", 30)))
+                        ).date().isoformat()
+                    except Exception:
+                        due = "—"
+
+                reviewed = bool(
+                    ci.get("ready_for_export")
+                    or ci.get("ready_to_email")
+                    or ci.get("quickbooks_exported")
+                    or ci.get("emailed")
+                )
+                exported = bool(ci.get("quickbooks_exported"))
+                emailed  = bool(ci.get("emailed"))
+                paid     = bool(ci.get("paid"))
+
+                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(
+                    [1.2, 1.8, 1, 1, 1.2, 1.2, 0.8, 0.9]
+                )
+                c1.write(f"QB #{qb}")
+                c2.write(ci.get("client_name", "—"))
+                c3.write(ci.get("invoice_date", "—"))
+                c4.write(due)
+
+                prov_proc = prov_by_id_proc.get(ci.get("provider_invoice_id", ""), {})
+                if reviewed:
+                    c5.download_button(
+                        "✅ PDF",
+                        data=_cached_pdf(*_pdf_args(ci, prov_proc)),
+                        file_name=f"{qb}-invoice.pdf",
+                        mime="application/pdf",
+                        key=f"lead_proc_pdf_{cid}",
+                    )
+                else:
+                    c5.write("❌")
+
+                if exported:
+                    c6.download_button(
+                        "✅ IIF",
+                        data=build_iif_content(ci),
+                        file_name=f"{qb}-export.iif",
+                        mime="text/plain",
+                        key=f"lead_proc_iif_{cid}",
+                    )
+                else:
+                    c6.write("❌")
+
+                c7.write("✅" if emailed else "❌")
+
+                paid_label = "✅ Paid" if paid else "Mark Paid"
+                if c8.button(paid_label, key=f"lead_paid_{cid}", width="stretch"):
+                    dm.update_client_invoice(cid, {"paid": not paid})
+                    st.rerun()
