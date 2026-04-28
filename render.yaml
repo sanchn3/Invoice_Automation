@@ -7,20 +7,20 @@ services:
     startCommand: streamlit run streamlit_app/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     envVars:
       - key: SUPABASE_URL
-        sync: false          # set manually in Render dashboard
+        sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false          # set manually in Render dashboard
-      - key: OPENAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: INCO_O365_CLIENT_ID
+      - key: MS_CLIENT_ID
         sync: false
-      - key: INCO_O365_CLIENT_SECRET
+      - key: MS_CLIENT_SECRET
         sync: false
-      - key: INCO_O365_TENANT_ID
+      - key: MS_TENANT_ID
         sync: false
-      - key: ALERT_EMAIL_TO
+      - key: WORKER_EMAIL
+        sync: false
+      - key: ADMIN_EMAIL
         sync: false
 
   # ── Background email poller ───────────────────────────────────────────────
@@ -34,15 +34,15 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: OPENAI_API_KEY
-        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: INCO_O365_CLIENT_ID
+      - key: MS_CLIENT_ID
         sync: false
-      - key: INCO_O365_CLIENT_SECRET
+      - key: MS_CLIENT_SECRET
         sync: false
-      - key: INCO_O365_TENANT_ID
+      - key: MS_TENANT_ID
         sync: false
-      - key: ALERT_EMAIL_TO
+      - key: WORKER_EMAIL
+        sync: false
+      - key: ADMIN_EMAIL
         sync: false
