@@ -397,6 +397,62 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     t_y = _total_row(t_y, "Tax (0%)", "$0.00")
     _total_row(t_y, "TOTAL DUE", f"${total:,.2f}", highlight=True)
 
+    # ── TEMPERATURE RECORD (lower-right, same level as totals) ───────────────
+    _temp_f1           = invoice.get("temp_f1", "").strip()
+    _temp_f2           = invoice.get("temp_f2", "").strip()
+    _temp_f3           = invoice.get("temp_f3", "").strip()
+    _producto_caliente = bool(invoice.get("producto_caliente", False))
+    _worker_notes      = invoice.get("worker_notes", "").strip()
+
+    _temps = [t for t in [_temp_f1, _temp_f2, _temp_f3] if t]
+
+    if _temps or _producto_caliente or _worker_notes:
+        from reportlab.lib.utils import simpleSplit
+
+        _sec_x  = tot_x
+        _sec_w  = tot_w
+        _sec_y  = row_top
+        _line_g = 0.185 * inch
+
+        # Section heading
+        c.setFillColor(BLUE)
+        c.setFont("Helvetica-Bold", 7.5)
+        c.drawString(_sec_x, _sec_y - 0.16 * inch, "TEMPERATURE RECORD")
+        c.setStrokeColor(BLUE)
+        c.setLineWidth(0.5)
+        c.line(_sec_x, _sec_y - 0.24 * inch, _sec_x + _sec_w, _sec_y - 0.24 * inch)
+
+        _item_y = _sec_y - 0.42 * inch
+
+        # Temperature values
+        for _i, _t in enumerate(_temps, 1):
+            c.setFillColor(LABEL_GRAY)
+            c.setFont("Helvetica", 7)
+            c.drawString(_sec_x, _item_y, f"Temp {_i}:")
+            c.setFillColor(DARK)
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(_sec_x + 0.55 * inch, _item_y, f"{_t} \u00b0F")
+            _item_y -= _line_g
+
+        # Producto Caliente (only if checked)
+        if _producto_caliente:
+            c.setFillColor(DARK)
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(_sec_x, _item_y, "Producto Caliente")
+            _item_y -= _line_g
+
+        # Notes (only if present)
+        if _worker_notes:
+            c.setFillColor(LABEL_GRAY)
+            c.setFont("Helvetica", 7)
+            c.drawString(_sec_x, _item_y, "Notes:")
+            _item_y -= _line_g * 0.8
+            c.setFillColor(DARK)
+            c.setFont("Helvetica", 8)
+            for _nl in simpleSplit(_worker_notes, "Helvetica", 8, _sec_w - 0.10 * inch)[:4]:
+                c.drawString(_sec_x, _item_y, _nl)
+                _item_y -= _line_g * 0.85
+
     # ── PAYMENT METHODS ───────────────────────────────────────────────────────
     pay_top = t_y - (tot_h + 0.25 * inch)
     pay_h   = 0.35 * inch
