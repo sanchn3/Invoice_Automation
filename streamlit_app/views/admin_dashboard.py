@@ -653,60 +653,38 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             "temp_f3"          : _temp3.strip(),
                             "worker_notes"     : _new_notes.strip(),
                         })
-                        # 2. Calculate charges so the PDF has complete line items
-                        _sc = calculate_charges(
-                            dm=dm,
-                            service_type=svc,
-                            pallet_count=int(_pal),
-                            temp_recorder=_new_tr,
-                            extra_charges=_new_extras,
-                            damaged_pallets=int(_dmg),
-                            broken_pallets=int(_brk),
-                            client_name=ci.get("client_name", ""),
-                        )
-                        # 3. Build a full invoice dict for PDF generation
-                        _ci_pdf = {
-                            **ci,
-                            "service_type"     : svc,
-                            "pallet_count"     : int(_pal),
-                            "damaged_pallets"  : int(_dmg),
-                            "broken_pallets"   : int(_brk),
-                            "temp_recorder"    : _new_tr,
-                            "producto_caliente": _producto_caliente,
-                            "temp_f1"          : _temp1.strip(),
-                            "temp_f2"          : _temp2.strip(),
-                            "temp_f3"          : _temp3.strip(),
-                            "worker_notes"     : _new_notes.strip(),
-                            "line_items"       : _sc["line_items"],
-                            "subtotal"         : _sc["subtotal"],
-                            "total"            : _sc["total"],
-                        }
-                        # 4. Generate PDF — temperature data rendered bottom-right
-                        _save_pdf_bytes = _generate_pdf(_ci_pdf, prov.get("pdf_local_path"))
-                        # 5. Re-upload if a QB invoice number already exists
-                        _save_qb = ci.get("quickbooks_invoice_number")
-                        if _save_qb:
-                            try:
-                                _upload_pdf_bytes(f"{_save_qb}-invoice.pdf", _save_pdf_bytes)
-                            except Exception as _ue:
-                                logger.warning("PDF re-upload on save failed: %s", _ue)
-                        _pdf_stem = _save_qb or cid
-                        st.session_state[_save_pdf_key] = (_save_pdf_bytes, _pdf_stem)
-                        st.session_state[_save_ok_key]  = True
+                        # 2. Stamp temperature data onto the provider PDF (lower-right)
+                        _prov_path = prov.get("pdf_local_path", "")
+                        _stamped_bytes = None
+                        if _prov_path:
+                            _raw = _get_pdf_bytes(_prov_path)
+                            if _raw:
+                                try:
+                                    from invoice_logic.stamp_pdf import stamp_temperature as _stamp_temp
+                                    _stamped_bytes = _stamp_temp(
+                                        _raw,
+                                        [_temp1.strip(), _temp2.strip(), _temp3.strip()],
+                                        _producto_caliente,
+                                    )
+                                except Exception as _se:
+                                    logger.warning("Temperature stamp failed: %s", _se)
+                        if _stamped_bytes:
+                            st.session_state[_save_pdf_key] = (_stamped_bytes, cid)
+                        st.session_state[_save_ok_key] = True
                         st.rerun()
 
                     # ── Download row (visible after Save) ─────────────────────
                     if st.session_state.get(_save_ok_key):
                         _saved_bytes, _saved_stem = st.session_state.get(
-                            _save_pdf_key, (None, "invoice")
+                            _save_pdf_key, (None, None)
                         )
                         _dl1, _dl2 = st.columns([2, 1])
-                        _dl1.success("Temperature data saved and mapped to PDF.")
+                        _dl1.success("Temperature data saved. Click 📄 PDF to review.")
                         if _saved_bytes:
                             _dl2.download_button(
-                                "⬇ Download PDF",
+                                "⬇ Download",
                                 data=_saved_bytes,
-                                file_name=f"{_saved_stem}-invoice.pdf",
+                                file_name=f"{_saved_stem}-stamped.pdf",
                                 mime="application/pdf",
                                 key=f"dl_saved_{cid}",
                             )

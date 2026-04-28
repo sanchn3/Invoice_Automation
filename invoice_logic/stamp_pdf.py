@@ -167,3 +167,109 @@ def stamp_pdf(pdf_path: str | Path, received_date: date) -> str:
         _logging.getLogger(__name__).error("stamp_pdf: Supabase upload failed: %s", _e)
 
     return str(pdf_path)
+
+
+def stamp_temperature(
+    pdf_bytes: bytes,
+    temps: list[str],
+    producto_caliente: bool,
+) -> bytes:
+    """
+    Overlay a TEMPERATURE RECORD block onto the lower-right corner of the
+    first page of a provider PDF.
+
+    Parameters
+    ----------
+    pdf_bytes         : raw bytes of the original provider PDF
+    temps             : list of up to 3 temperature strings (empty strings ignored)
+    producto_caliente : whether to show the 'Producto Caliente' label
+
+    Returns
+    -------
+    bytes — the modified PDF with the temperature overlay on page 1.
+    """
+    from reportlab.lib import colors as rl_colors
+    from reportlab.lib.units import inch
+
+    BLUE       = rl_colors.HexColor("#1F5096")
+    DARK       = rl_colors.HexColor("#1A1A1A")
+    LABEL_GRAY = rl_colors.HexColor("#888888")
+    BG         = rl_colors.HexColor("#F2F2F2")
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    page0  = reader.pages[0]
+    page_w = float(page0.mediabox.width)
+    page_h = float(page0.mediabox.height)
+
+    filled_temps = [t for t in temps if t and t.strip()]
+    n_items      = len(filled_temps) + (1 if producto_caliente else 0)
+
+    if n_items == 0:
+        return pdf_bytes  # nothing to stamp
+
+    # ── Layout ────────────────────────────────────────────────────────────────
+    margin   = 0.45 * inch
+    box_w    = 1.85 * inch
+    line_g   = 0.165 * inch
+    head_h   = 0.38 * inch          # space for heading + rule
+    pad      = 0.12 * inch          # top/bottom internal padding
+    box_h    = pad + head_h + n_items * line_g + pad
+
+    sec_x = page_w - margin - box_w  # left edge of the block
+    sec_y = margin + box_h            # top edge of the block (ReportLab y up)
+
+    # ── Overlay canvas ────────────────────────────────────────────────────────
+    overlay_buf = io.BytesIO()
+    c = rl_canvas.Canvas(overlay_buf, pagesize=(page_w, page_h))
+
+    # Background box
+    c.setFillColor(BG)
+    c.setStrokeColor(BLUE)
+    c.setLineWidth(0.7)
+    c.roundRect(sec_x - 0.06 * inch, margin,
+                box_w + 0.12 * inch, box_h, 4, fill=1, stroke=1)
+
+    # Heading
+    c.setFillColor(BLUE)
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(sec_x, sec_y - 0.17 * inch, "TEMPERATURE RECORD")
+
+    # Rule under heading
+    c.setStrokeColor(BLUE)
+    c.setLineWidth(0.5)
+    c.line(sec_x, sec_y - 0.24 * inch, sec_x + box_w, sec_y - 0.24 * inch)
+
+    item_y = sec_y - head_h
+
+    # Temperature rows
+    for i, t in enumerate(filled_temps, 1):
+        c.setFillColor(LABEL_GRAY)
+        c.setFont("Helvetica", 6.5)
+        c.drawString(sec_x, item_y, f"Temp {i}:")
+        c.setFillColor(DARK)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(sec_x + 0.50 * inch, item_y, f"{t} \u00b0F")
+        item_y -= line_g
+
+    # Producto Caliente (only when active)
+    if producto_caliente:
+        c.setFillColor(DARK)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(sec_x, item_y, "Producto Caliente")
+
+    c.save()
+
+    # ── Merge overlay onto page 0 only ────────────────────────────────────────
+    overlay_buf.seek(0)
+    overlay_page = PdfReader(overlay_buf).pages[0]
+
+    writer = PdfWriter()
+    for i, page in enumerate(reader.pages):
+        if i == 0:
+            page.merge_page(overlay_page)
+        writer.add_page(page)
+
+    out = io.BytesIO()
+    writer.write(out)
+    out.seek(0)
+    return out.read()
