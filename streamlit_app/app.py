@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -26,7 +27,45 @@ def get_alert_manager() -> AlertManager:
     return AlertManager()
 
 
-# ── Auth gate ─────────────────────────────────────────────────────────────────
+# Flask role names → Streamlit role names
+_FLASK_ROLE_MAP = {
+    "administrator": "admin",
+    "lead":          "lead",
+    "accounting":    "accounting",
+    "operator":      "operator",
+}
+
+
+def _validate_flask_token(token: str) -> dict | None:
+    """Validate a URLSafeTimedSerializer token issued by the Flask /api/login endpoint."""
+    secret = os.environ.get("SECRET_KEY", "")
+    if not secret:
+        return None
+    try:
+        from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+        s    = URLSafeTimedSerializer(secret)
+        data = s.loads(token, max_age=300)   # expires after 5 minutes
+        role = _FLASK_ROLE_MAP.get(data.get("role", ""))
+        if not role:
+            return None
+        return {"username": data["role"], "role": role}
+    except Exception:
+        return None
+
+
+# ── Token auto-login (from HTML login page) ───────────────────────────────────
+
+if not auth.is_authenticated():
+    token = st.query_params.get("token")
+    if token:
+        user = _validate_flask_token(token)
+        if user:
+            auth.login(user)
+            st.query_params.clear()
+            st.rerun()
+
+
+# ── Auth gate (fallback manual login) ────────────────────────────────────────
 
 if not auth.is_authenticated():
     st.markdown(
@@ -39,8 +78,8 @@ if not auth.is_authenticated():
     col_l, col_c, col_r = st.columns([1, 1, 1])
     with col_c:
         with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
+            username  = st.text_input("Username")
+            password  = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
 
         if submitted:

@@ -10,3 +10,4 @@ streamlit-pdf-viewer>=0.0.12
 pypdf>=4.0.0
 plyer>=2.1.0
 httpx>=0.26.0
+itsdangerous>=2.1.0
