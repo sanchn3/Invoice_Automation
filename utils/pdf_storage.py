@@ -134,36 +134,25 @@ def move_to_processed(pdf_local_path: str) -> bool:
     return True
 
 
-def upload_photo(job_id: str, filename: str, photo_bytes: bytes) -> str | None:
+def overwrite_provider_pdf(pdf_local_path: str, pdf_bytes: bytes) -> None:
     """
-    Upload a worker photo to 'unprocessed-invoices' under photos/{job_id}/{filename}.
-    Returns the storage key on success, None on failure.
+    Replace the provider PDF with new bytes (e.g. after baking in worker photos).
+    Overwrites the local file (if it exists) and re-uploads to 'unprocessed-invoices'.
     """
-    key          = f"photos/{job_id}/{filename}"
-    content_type = "image/png" if filename.lower().endswith(".png") else "image/jpeg"
-    url          = f"{_base()}/storage/v1/object/{_BUCKET_UNPROCESSED}/{key}"
-    headers      = {**_auth_headers(), "Content-Type": content_type, "x-upsert": "true"}
+    path = Path(pdf_local_path)
+    if path.exists():
+        path.write_bytes(pdf_bytes)
+    key     = path.name
+    url     = f"{_base()}/storage/v1/object/{_BUCKET_UNPROCESSED}/{key}"
+    headers = {**_auth_headers(), "Content-Type": "application/pdf", "x-upsert": "true"}
     try:
-        resp = httpx.put(url, headers=headers, content=photo_bytes, timeout=60)
+        resp = httpx.put(url, headers=headers, content=pdf_bytes, timeout=60)
         if resp.status_code in (200, 201):
-            logger.info("pdf_storage: uploaded photo → %s/%s", _BUCKET_UNPROCESSED, key)
-            return key
-        logger.error("pdf_storage.upload_photo HTTP %d: %s", resp.status_code, resp.text)
-        return None
+            logger.info("pdf_storage: overwritten provider PDF %s", key)
+        else:
+            logger.error("pdf_storage.overwrite_provider_pdf HTTP %d: %s", resp.status_code, resp.text)
     except Exception as e:
-        logger.error("pdf_storage.upload_photo exception: %s", e)
-        return None
-
-
-def download_photo(key: str) -> bytes | None:
-    """
-    Download a worker photo by storage key.
-    Checks unprocessed bucket first, then processed (in case the job was invoiced).
-    """
-    data = _download(key, _BUCKET_UNPROCESSED)
-    if data is not None:
-        return data
-    return _download(key, _BUCKET_PROCESSED)
+        logger.error("pdf_storage.overwrite_provider_pdf exception: %s", e)
 
 
 def upload_pdf_bytes(key: str, pdf_bytes: bytes) -> bool:

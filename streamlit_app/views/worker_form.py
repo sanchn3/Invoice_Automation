@@ -9,7 +9,8 @@ import streamlit as st
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
-from utils.pdf_storage import get_pdf_bytes, upload_photo as _upload_photo
+from invoice_logic.pdf_generator import append_photos_to_pdf as _append_photos
+from utils.pdf_storage import get_pdf_bytes, overwrite_provider_pdf as _overwrite_provider_pdf
 
 
 def render(dm: DataManager, alert_manager: AlertManager) -> None:
@@ -137,14 +138,15 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
             st.error("Pallet count must be at least 1.")
             return
 
-        # Upload photos to Supabase (keys stored; no local files written)
-        photo_paths: list[str] = []
-        if uploaded_photos:
-            for photo in uploaded_photos:
-                safe_name = photo.name.replace(" ", "_")
-                key = _upload_photo(job_id, safe_name, photo.getvalue())
-                if key:
-                    photo_paths.append(key)
+        # Bake photos into the provider PDF in memory (no separate photo storage)
+        if uploaded_photos and provider_inv:
+            _pdf_path = provider_inv.get("pdf_local_path", "")
+            if _pdf_path:
+                _existing = get_pdf_bytes(_pdf_path)
+                if _existing:
+                    _photo_data = [p.getvalue() for p in uploaded_photos]
+                    _combined   = _append_photos(_existing, _photo_data)
+                    _overwrite_provider_pdf(_pdf_path, _combined)
 
         # Update client invoice
         dm.update_client_invoice(job_id, {
@@ -154,7 +156,6 @@ def render(dm: DataManager, alert_manager: AlertManager) -> None:
             "extra_charges"  : selected_extras,
             "temp_recorder"  : temp_recorder,
             "worker_notes"   : worker_notes,
-            "photo_paths"    : photo_paths,
             "status"         : "ready_to_invoice",
         })
 
