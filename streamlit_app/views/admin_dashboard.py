@@ -618,7 +618,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         horizontal=True,
                         key=f"val_tr_{cid}",
                     )
-                    _new_tr    = _TR_TO_KEY[_tr_sel]
+                    _new_tr = _TR_TO_KEY[_tr_sel]
+
+                    st.caption("Temperature Input")
+                    _producto_caliente = st.checkbox(
+                        "Producto Caliente",
+                        value=bool(ci.get("producto_caliente", False)),
+                        key=f"val_pc_{cid}",
+                    )
+                    _t1, _t2, _t3 = st.columns(3)
+                    _temp1 = _t1.text_input("Temperature 1 (°F)", value=ci.get("temp_f1", ""), key=f"val_t1_{cid}")
+                    _temp2 = _t2.text_input("Temperature 2 (°F)", value=ci.get("temp_f2", ""), key=f"val_t2_{cid}")
+                    _temp3 = _t3.text_input("Temperature 3 (°F)", value=ci.get("temp_f3", ""), key=f"val_t3_{cid}")
+
                     _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
 
                     if st.button("📤 Send to Accounting", key=f"gen_{cid}", type="primary", width='stretch'):
@@ -642,8 +654,12 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             "damaged_pallets" : int(_dmg),
                             "broken_pallets"  : int(_brk),
                             "extra_charges"   : _new_extras,
-                            "temp_recorder"   : _new_tr,
-                            "worker_notes"    : _new_notes.strip(),
+                            "temp_recorder"      : _new_tr,
+                            "producto_caliente"  : _producto_caliente,
+                            "temp_f1"            : _temp1.strip(),
+                            "temp_f2"            : _temp2.strip(),
+                            "temp_f3"            : _temp3.strip(),
+                            "worker_notes"       : _new_notes.strip(),
                             "line_items"      : charges["line_items"],
                             "subtotal"        : charges["subtotal"],
                             "total"           : charges["total"],
