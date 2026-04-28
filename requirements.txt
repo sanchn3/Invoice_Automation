@@ -11,3 +11,4 @@ pypdf>=4.0.0
 plyer>=2.1.0
 httpx>=0.26.0
 itsdangerous>=2.1.0
+streamlit-cookies-manager>=0.2.0
