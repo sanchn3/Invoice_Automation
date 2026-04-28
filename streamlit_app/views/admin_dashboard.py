@@ -654,9 +654,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             "worker_notes"     : _new_notes.strip(),
                         })
                         # 2. Stamp temperature data onto the provider PDF (lower-right)
+                        #    Only applied when at least one field is filled.
+                        _has_temp_data = (
+                            bool(_temp1.strip() or _temp2.strip() or _temp3.strip())
+                            or _producto_caliente
+                        )
                         _prov_path = prov.get("pdf_local_path", "")
                         _stamped_bytes = None
-                        if _prov_path:
+                        if _has_temp_data and _prov_path:
                             _raw = _get_pdf_bytes(_prov_path)
                             if _raw:
                                 try:
