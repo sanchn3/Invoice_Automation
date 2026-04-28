@@ -531,11 +531,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.caption(f"🌡 {_TR_TO_LBL.get(_stored, _stored)}")
 
                     with r2c:
-                        _pdf_path   = prov.get("pdf_local_path", "")
-                        _pdf_exists = bool(_pdf_path)
-                        _pdf_key    = f"approve_pdf_{cid}"
-                        _pdf_label  = "📄 Hide" if st.session_state.get(_pdf_key) else "📄 PDF"
-                        if _pdf_exists:
+                        _pdf_path     = prov.get("pdf_local_path", "")
+                        _pdf_exists   = bool(_pdf_path)
+                        _pdf_key      = f"approve_pdf_{cid}"
+                        _save_pdf_key = f"save_pdf_{cid}"
+                        _has_saved    = bool(st.session_state.get(_save_pdf_key))
+                        _pdf_label    = "📄 Hide" if st.session_state.get(_pdf_key) else "📄 PDF"
+                        if _pdf_exists or _has_saved:
                             if st.button(_pdf_label, key=f"pdf_{cid}", width='stretch'):
                                 st.session_state[_pdf_key] = not st.session_state.get(_pdf_key, False)
                                 st.rerun()
@@ -562,11 +564,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.rerun()
 
                     # ── Inline PDF viewer ─────────────────────────────────
-                    if st.session_state.get(f"approve_pdf_{cid}") and _pdf_exists:
+                    if st.session_state.get(f"approve_pdf_{cid}"):
                         from streamlit_pdf_viewer import pdf_viewer
-                        _b = _get_pdf_bytes(_pdf_path)
-                        if _b:
-                            pdf_viewer(_b, key=f"approve_pdfview_{cid}")
+                        _saved = st.session_state.get(f"save_pdf_{cid}")
+                        if _saved:
+                            # Show the generated invoice PDF (includes saved temperature data)
+                            pdf_viewer(_saved[0], key=f"approve_pdfview_{cid}")
+                        elif _pdf_exists:
+                            # Fall back to original provider PDF before Save is used
+                            _b = _get_pdf_bytes(_pdf_path)
+                            if _b:
+                                pdf_viewer(_b, key=f"approve_pdfview_{cid}")
+                            else:
+                                st.warning("PDF not available.")
                         else:
                             st.warning("PDF not available.")
 
