@@ -3,6 +3,7 @@ services:
   - type: web
     name: inco-staff-portal
     runtime: python
+    branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run streamlit_app/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     envVars:
@@ -29,6 +30,7 @@ services:
   - type: worker
     name: inco-email-poller
     runtime: python
+    branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     envVars:
