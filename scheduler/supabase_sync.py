@@ -22,6 +22,22 @@ logger = logging.getLogger(__name__)
 _BATCH_SIZE = 100
 
 
+def patch_invoice_paid(local_id: str) -> None:
+    """Immediately mark a single invoice as paid in Supabase via a PATCH request."""
+    endpoint = f"{_base_url()}/rest/v1/invoices?local_id=eq.{local_id}"
+    headers  = _headers()
+    payload  = {
+        "paid"      : True,
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+    with httpx.Client(timeout=15) as client:
+        resp = client.patch(endpoint, headers=headers, content=json.dumps(payload))
+        if resp.status_code not in (200, 204):
+            raise RuntimeError(
+                f"Supabase PATCH failed (HTTP {resp.status_code}): {resp.text}"
+            )
+
+
 def _base_url() -> str:
     url = os.environ.get("SUPABASE_URL", "").rstrip("/")
     if not url:

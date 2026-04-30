@@ -6,10 +6,41 @@ Lead dashboard: Reports, Rate Card editor, and Settings.
 
 import streamlit as st
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
+from invoice_logic.pdf_generator import generate_pdf as _generate_pdf
+from invoice_logic.iif_exporter import build_iif_content
+
+
+@st.cache_data(show_spinner=False)
+def _cached_pdf(
+    ci_id: str,
+    qb_num: str,
+    total: float,
+    provider_pdf_path: str | None,
+    invoice_date: str,
+    due_date: str,
+    po_number: str,
+    _ci: dict,
+) -> bytes:
+    return _generate_pdf(_ci, provider_pdf_path)
+
+
+def _pdf_args(ci: dict, prov: dict | None) -> tuple:
+    _pdf_path = (prov or {}).get("pdf_local_path", "")
+    return (
+        ci["id"],
+        ci.get("quickbooks_invoice_number", ""),
+        float(ci.get("total", 0)),
+        _pdf_path if _pdf_path and Path(_pdf_path).exists() else None,
+        ci.get("invoice_date", ""),
+        ci.get("due_date", ""),
+        ci.get("po_number", ""),
+        ci,
+    )
 
 # Canonical client-name aliases (must stay in sync with admin_dashboard.py)
 _CLIENT_ALIASES: dict[str, str] = {
@@ -27,10 +58,11 @@ def _canonical_client(name: str) -> str:
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("📊 Lead")
 
-    tab_report, tab_rates, tab_settings = st.tabs([
+    tab_report, tab_rates, tab_settings, tab_processed = st.tabs([
         "📊 Reports",
         "💲 Rate Card",
         "⚙️ Settings",
+        "📁 Processed Invoices",
     ])
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -242,6 +274,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         if new_val != default_val:
                             new_overrides[key] = new_val
 
+                    st.markdown("---")
+                    st.caption("Pallet Override")
+                    _fixed_pal = st.number_input(
+                        "Fixed Pallet Count",
+                        min_value=0,
+                        step=1,
+                        value=int(crates.get("fixed_pallet_count", 0) or 0),
+                        key=f"cr_{cname}_fixed_pal",
+                        help="When > 0, this count is always pre-filled for this client's invoices. Set to 0 to disable.",
+                    )
+                    if _fixed_pal > 0:
+                        new_overrides["fixed_pallet_count"] = int(_fixed_pal)
+
                     btn_col1, btn_col2 = st.columns(2)
                     if btn_col1.button("💾 Save", key=f"save_cr_{cname}", type="primary"):
                         dm.set_client_rates(cname, new_overrides)
@@ -415,6 +460,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 if new_val != default_val:
                     new_client_overrides[key] = new_val
 
+            st.markdown("---")
+            st.caption("Pallet Override")
+            _new_fixed_pal = st.number_input(
+                "Fixed Pallet Count",
+                min_value=0,
+                step=1,
+                value=0,
+                key="new_cr_fixed_pal",
+                help="When > 0, this count is always pre-filled for this client's invoices. Set to 0 to disable.",
+            )
+            if _new_fixed_pal > 0:
+                new_client_overrides["fixed_pallet_count"] = int(_new_fixed_pal)
+
             if st.button("💾 Save Client Rates", type="primary", key="save_new_client"):
                 dm.set_client_rates(new_client_name.strip().upper(), new_client_overrides)
                 st.success(f"Custom rates saved for {new_client_name.strip().upper()}.")
@@ -440,58 +498,77 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         if not client_names:
             st.info("No client data found.")
         else:
-            selected_client = st.selectbox(
-                "Select client", options=client_names, key="mgmt_client_sel"
+            selected_clients = st.multiselect(
+                "Select client(s)",
+                options=client_names,
+                key="mgmt_client_sel",
+                placeholder="Choose one or more clients...",
             )
-            client_records = [
-                ci for ci in all_ci
-                if ci.get("client_name", "").strip() == selected_client
-            ]
-            st.caption(f"{len(client_records)} invoice record(s) for **{selected_client}**")
 
-            if client_records:
-                _prov_by_id = {pi["id"]: pi for pi in dm.get_provider_invoices()}
-                rows = []
-                for ci in client_records:
-                    qb_num = ci.get("quickbooks_invoice_number")
-                    if not qb_num and ci.get("provider_invoice_id"):
-                        prov  = _prov_by_id.get(ci["provider_invoice_id"])
-                        qb_num = prov.get("invoice_number") if prov else None
-                    rows.append({
-                        "Invoice #" : qb_num or "—",
-                        "Date"      : ci.get("invoice_date", "—"),
-                        "Status"    : ci.get("status", "—"),
-                        "Total"     : f"${ci.get('total', 0):,.2f}",
-                    })
-                st.dataframe(rows, use_container_width=True, hide_index=True)
-
-            _del_confirm_key = f"confirm_del_client_{selected_client}"
-            if st.session_state.get(_del_confirm_key):
-                st.warning(f"Delete ALL {len(client_records)} record(s) for **{selected_client}**? This cannot be undone.")
-                c1, c2 = st.columns(2)
-                if c1.button("✅ Yes, delete", key=f"del_client_yes_{selected_client}", type="primary", width='stretch'):
-                    for ci in client_records:
-                        prov_id = ci.get("provider_invoice_id")
-                        if prov_id:
-                            prov = dm.get_provider_invoice_by_id(prov_id)
-                            if prov and prov.get("email_intake_id"):
-                                try:
-                                    dm.update_email_log(prov["email_intake_id"], {"status": "rejected"})
-                                except KeyError:
-                                    pass
-                            dm.delete_provider_invoice(prov_id)
-                        dm.delete_client_invoice(ci["id"])
-                    dm.delete_client_rates(selected_client)
-                    st.session_state.pop(_del_confirm_key, None)
-                    st.success(f"All records for {selected_client} deleted.")
-                    st.rerun()
-                if c2.button("✗ Cancel", key=f"del_client_no_{selected_client}", width='stretch'):
-                    st.session_state.pop(_del_confirm_key, None)
-                    st.rerun()
+            if not selected_clients:
+                st.info("Select one or more clients above to view and manage their records.")
             else:
-                if st.button(f"🗑 Delete all records for {selected_client}", type="primary", key=f"del_client_{selected_client}"):
-                    st.session_state[_del_confirm_key] = True
-                    st.rerun()
+                _selected_set = set(selected_clients)
+                client_records = [
+                    ci for ci in all_ci
+                    if ci.get("client_name", "").strip() in _selected_set
+                ]
+                _label_str = ", ".join(f"**{c}**" for c in selected_clients)
+                st.caption(f"{len(client_records)} invoice record(s) for {_label_str}")
+
+                if client_records:
+                    _prov_by_id = {pi["id"]: pi for pi in dm.get_provider_invoices()}
+                    rows = []
+                    for ci in client_records:
+                        qb_num = ci.get("quickbooks_invoice_number")
+                        if not qb_num and ci.get("provider_invoice_id"):
+                            prov   = _prov_by_id.get(ci["provider_invoice_id"])
+                            qb_num = prov.get("invoice_number") if prov else None
+                        rows.append({
+                            "Client"    : ci.get("client_name", "—"),
+                            "Invoice #" : qb_num or "—",
+                            "Date"      : ci.get("invoice_date", "—"),
+                            "Status"    : ci.get("status", "—"),
+                            "Total"     : f"${ci.get('total', 0):,.2f}",
+                        })
+                    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+                _del_confirm_key = "confirm_del_clients_multi"
+                _btn_label = (
+                    f"🗑 Delete all records for {selected_clients[0]}"
+                    if len(selected_clients) == 1
+                    else f"🗑 Delete all records for {len(selected_clients)} clients"
+                )
+                if st.session_state.get(_del_confirm_key):
+                    st.warning(
+                        f"Delete ALL {len(client_records)} record(s) for "
+                        f"{len(selected_clients)} client(s)? This cannot be undone."
+                    )
+                    c1, c2 = st.columns(2)
+                    if c1.button("✅ Yes, delete", key="del_clients_yes", type="primary", width='stretch'):
+                        for ci in client_records:
+                            prov_id = ci.get("provider_invoice_id")
+                            if prov_id:
+                                prov = dm.get_provider_invoice_by_id(prov_id)
+                                if prov and prov.get("email_intake_id"):
+                                    try:
+                                        dm.update_email_log(prov["email_intake_id"], {"status": "rejected"})
+                                    except KeyError:
+                                        pass
+                                dm.delete_provider_invoice(prov_id)
+                            dm.delete_client_invoice(ci["id"])
+                        for sc in selected_clients:
+                            dm.delete_client_rates(sc)
+                        st.session_state.pop(_del_confirm_key, None)
+                        st.success(f"All records for {len(selected_clients)} client(s) deleted.")
+                        st.rerun()
+                    if c2.button("✗ Cancel", key="del_clients_no", width='stretch'):
+                        st.session_state.pop(_del_confirm_key, None)
+                        st.rerun()
+                else:
+                    if st.button(_btn_label, type="primary", key="del_clients_btn"):
+                        st.session_state[_del_confirm_key] = True
+                        st.rerun()
 
         st.markdown("---")
 
@@ -519,3 +596,122 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
             st.success("All pipeline data cleared. The dashboard will now show a fresh state.")
             st.rerun()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAB 4 — PROCESSED INVOICES
+    # ──────────────────────────────────────────────────────────────────────────
+    with tab_processed:
+        st.subheader("Processed Invoices")
+
+        all_ci_proc   = dm.get_client_invoices()
+        prov_invs_proc = dm.get_provider_invoices()
+        prov_by_id_proc = {pi["id"]: pi for pi in prov_invs_proc}
+
+        processed = sorted(
+            [
+                ci for ci in all_ci_proc
+                if ci.get("ready_for_export")
+                or ci.get("ready_to_email")
+                or ci.get("quickbooks_exported")
+                or ci.get("emailed")
+                or ci.get("paid")
+            ],
+            key=lambda x: x.get("invoice_date", x.get("created_at", "")),
+            reverse=True,
+        )
+
+        if not processed:
+            st.info("No processed invoices yet.")
+        else:
+            # ── Filters ───────────────────────────────────────────────────────
+            _all_clients = sorted({ci.get("client_name", "") for ci in processed if ci.get("client_name")})
+            _all_dates   = sorted({ci.get("invoice_date", "")[:10] for ci in processed if ci.get("invoice_date")}, reverse=True)
+
+            _fc1, _fc2, _fc3 = st.columns(3)
+            _f_client = _fc1.selectbox("Client", ["All"] + _all_clients, key="lead_proc_client")
+            _f_date   = _fc2.selectbox("Date",   ["All"] + _all_dates,   key="lead_proc_date")
+            _f_paid   = _fc3.selectbox("Paid",   ["All", "Paid", "Unpaid"], key="lead_proc_paid")
+
+            filtered = [
+                ci for ci in processed
+                if (_f_client == "All" or ci.get("client_name") == _f_client)
+                and (_f_date  == "All" or ci.get("invoice_date", "")[:10] == _f_date)
+                and (
+                    _f_paid == "All"
+                    or (_f_paid == "Paid"   and ci.get("paid"))
+                    or (_f_paid == "Unpaid" and not ci.get("paid"))
+                )
+            ]
+
+            st.caption(f"{len(filtered)} of {len(processed)} invoice(s)")
+
+            h1, h2, h3, h4, h5, h6, h7, h8 = st.columns(
+                [1.2, 1.8, 1, 1, 1.2, 1.2, 0.8, 0.9]
+            )
+            h1.markdown("**Invoice #**")
+            h2.markdown("**Client**")
+            h3.markdown("**Date**")
+            h4.markdown("**Due Date**")
+            h5.markdown("**Reviewed**")
+            h6.markdown("**QB Export**")
+            h7.markdown("**Emailed**")
+            h8.markdown("**Paid**")
+            st.divider()
+
+            for ci in filtered:
+                cid = ci["id"]
+                qb  = ci.get("quickbooks_invoice_number", "—")
+
+                due = ci.get("due_date", "").strip()
+                if not due:
+                    try:
+                        due = (
+                            datetime.fromisoformat(ci.get("invoice_date", ""))
+                            + timedelta(days=int(ci.get("net_days", 30)))
+                        ).date().isoformat()
+                    except Exception:
+                        due = "—"
+
+                reviewed = bool(
+                    ci.get("ready_for_export")
+                    or ci.get("ready_to_email")
+                    or ci.get("quickbooks_exported")
+                    or ci.get("emailed")
+                )
+                exported = bool(ci.get("quickbooks_exported"))
+                emailed  = bool(ci.get("emailed"))
+                paid     = bool(ci.get("paid"))
+
+                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(
+                    [1.2, 1.8, 1, 1, 1.2, 1.2, 0.8, 0.9]
+                )
+                c1.write(f"QB #{qb}")
+                c2.write(ci.get("client_name", "—"))
+                c3.write(ci.get("invoice_date", "—"))
+                c4.write(due)
+
+                prov_proc = prov_by_id_proc.get(ci.get("provider_invoice_id", ""), {})
+                if reviewed:
+                    c5.download_button(
+                        "✅ PDF",
+                        data=_cached_pdf(*_pdf_args(ci, prov_proc)),
+                        file_name=f"{qb}-invoice.pdf",
+                        mime="application/pdf",
+                        key=f"lead_proc_pdf_{cid}",
+                    )
+                else:
+                    c5.write("❌")
+
+                if exported:
+                    c6.download_button(
+                        "✅ IIF",
+                        data=build_iif_content(ci),
+                        file_name=f"{qb}-export.iif",
+                        mime="text/plain",
+                        key=f"lead_proc_iif_{cid}",
+                    )
+                else:
+                    c6.write("❌")
+
+                c7.write("✅" if emailed else "❌")
+                c8.write("✅" if paid else "❌")

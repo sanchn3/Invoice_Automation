@@ -3,7 +3,11 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import streamlit as st
+from streamlit_cookies_manager import EncryptedCookieManager
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
@@ -16,6 +20,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ── Persistent cookie session ─────────────────────────────────────────────────
+
+_cookies = EncryptedCookieManager(
+    prefix="inco_",
+    password=os.environ.get("SECRET_KEY", "dev-fallback-key"),
+)
+if not _cookies.ready():
+    st.stop()
 
 # Shared instances (cached across reruns)
 @st.cache_resource
@@ -37,20 +50,49 @@ _FLASK_ROLE_MAP = {
 
 
 def _validate_flask_token(token: str) -> dict | None:
-    """Validate a URLSafeTimedSerializer token issued by the Flask /api/login endpoint."""
     secret = os.environ.get("SECRET_KEY", "")
     if not secret:
         return None
     try:
-        from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+        from itsdangerous import URLSafeTimedSerializer
         s    = URLSafeTimedSerializer(secret)
-        data = s.loads(token, max_age=300)   # expires after 5 minutes
+        data = s.loads(token, max_age=300)
         role = _FLASK_ROLE_MAP.get(data.get("role", ""))
         if not role:
             return None
         return {"username": data["role"], "role": role}
     except Exception:
         return None
+
+
+def _save_cookie(user: dict) -> None:
+    _cookies["role"]     = user["role"]
+    _cookies["username"] = user["username"]
+    _cookies.save()
+
+
+def _clear_cookie() -> None:
+    _cookies["role"]     = ""
+    _cookies["username"] = ""
+    _cookies.save()
+
+
+def _redirect_to_login() -> None:
+    import streamlit.components.v1 as components
+    components.html(
+        '<script>window.top.location.href = "https://incogrp.com/staff-login";</script>',
+        height=0,
+    )
+    st.stop()
+
+
+# ── Restore session from cookie on refresh ────────────────────────────────────
+
+if not auth.is_authenticated():
+    _saved_role = _cookies.get("role", "")
+    _saved_user = _cookies.get("username", "")
+    if _saved_role and _saved_user:
+        auth.login({"role": _saved_role, "username": _saved_user})
 
 
 # ── Token auto-login (from HTML login page) ───────────────────────────────────
@@ -61,35 +103,15 @@ if not auth.is_authenticated():
         user = _validate_flask_token(token)
         if user:
             auth.login(user)
+            _save_cookie(user)
             st.query_params.clear()
             st.rerun()
 
 
-# ── Auth gate (fallback manual login) ────────────────────────────────────────
+# ── Auth gate — redirect to HTML login page ───────────────────────────────────
 
 if not auth.is_authenticated():
-    st.markdown(
-        "<h2 style='text-align:center;margin-top:3rem;'>📦 INCO Staff Portal</h2>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("<p style='text-align:center;color:#888;'>Sign in to continue</p>", unsafe_allow_html=True)
-    st.markdown("---")
-
-    col_l, col_c, col_r = st.columns([1, 1, 1])
-    with col_c:
-        with st.form("login_form"):
-            username  = st.text_input("Username")
-            password  = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
-
-        if submitted:
-            user = auth.verify_login(username, password)
-            if user:
-                auth.login(user)
-                st.rerun()
-            else:
-                st.error("Invalid username or password.")
-    st.stop()
+    _redirect_to_login()
 
 
 # ── Authenticated: sidebar + routing ─────────────────────────────────────────
@@ -105,8 +127,9 @@ st.sidebar.markdown(f"**{auth.ROLE_LABELS.get(role, role)}**  \n`{username}`")
 st.sidebar.markdown("---")
 
 if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+    _clear_cookie()
     auth.logout()
-    st.rerun()
+    _redirect_to_login()
 
 st.sidebar.markdown("---")
 st.sidebar.caption("INCO Logistics • Invoice Automation v1.0")

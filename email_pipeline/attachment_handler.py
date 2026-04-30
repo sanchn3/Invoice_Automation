@@ -195,15 +195,20 @@ def handle_attachment(
     alert_manager: AlertManager,
 ) -> None:
     """
-    Extract the first PDF attachment from an O365 message, save it locally,
-    then run the parsing pipeline. Creates provider_invoice and client_invoice
-    records on success. Updates email_intake_log status throughout.
+    Extract ALL PDF attachments from an O365 message, save each locally,
+    and run the parsing pipeline for every PDF found. Emails with multiple
+    PDFs produce one provider_invoice + client_invoice per attachment.
+
+    The first PDF uses the existing email log entry. Each additional PDF
+    gets its own email log entry (message_id suffixed with __att_N) so
+    the deduplication check in outlook_listener continues to work correctly.
     """
     email_log = dm.get_email_log_by_id(email_log_id)
-    pdf_path: str | None     = None
-    pdf_filename: str | None = None
+    sender              = (email_log or {}).get("sender", "")
+    original_message_id = (email_log or {}).get("message_id", email_log_id)
 
-    # ── Save PDF attachment ───────────────────────────────────────────────────
+    # ── Download and collect all PDF attachments ──────────────────────────────
+    pdf_attachments: list[tuple[str, str]] = []  # (local_path, filename)
     try:
         message.attachments.download_attachments()
         for attachment in message.attachments:
@@ -211,14 +216,14 @@ def handle_attachment(
             if not name.lower().endswith(".pdf"):
                 continue
             short_id   = email_log_id.replace("-", "")[:12]
-            local_name = f"{short_id}_{name.replace(' ', '_')}"
+            att_idx    = len(pdf_attachments)
+            suffix     = f"_att{att_idx}" if att_idx > 0 else ""
+            local_name = f"{short_id}{suffix}_{name.replace(' ', '_')}"
             local_path = PDFS_DIR / local_name
             attachment.save(location=str(PDFS_DIR), custom_name=local_name)
-            pdf_path     = str(local_path)
-            pdf_filename = local_name
-            upload_pdf(pdf_path)
-            logger.info("Saved attachment: %s", local_path)
-            break  # only process the first PDF
+            upload_pdf(str(local_path))
+            pdf_attachments.append((str(local_path), local_name))
+            logger.info("Saved attachment %d: %s", att_idx, local_path)
 
     except Exception as e:
         logger.error("Failed to save attachment for email_log %s: %s", email_log_id, e)
@@ -232,23 +237,44 @@ def handle_attachment(
         )
         return
 
-    if not pdf_path:
+    if not pdf_attachments:
         dm.update_email_log(email_log_id, {
             "status"    : "pending_review",
             "error_text": "No PDF attachment found.",
         })
         return
 
-    dm.update_email_log(email_log_id, {
-        "pdf_filename"    : pdf_filename,
-        "pdf_local_path"  : pdf_path,
-        "attachment_count": 1,
-    })
+    # ── Process each PDF independently ───────────────────────────────────────
+    for i, (pdf_path, pdf_filename) in enumerate(pdf_attachments):
+        if i == 0:
+            # First PDF — use the original email log entry
+            log_id = email_log_id
+            dm.update_email_log(email_log_id, {
+                "pdf_filename"  : pdf_filename,
+                "pdf_local_path": pdf_path,
+            })
+        else:
+            # Additional PDFs — create a new email log entry linked to same email
+            now = datetime.utcnow().isoformat() + "Z"
+            extra_log = dm.add_email_log({
+                "received_at"    : now,
+                "sender"         : sender,
+                "subject"        : (email_log or {}).get("subject", ""),
+                "message_id"     : f"{original_message_id}__att_{i}",
+                "attachment_count": 1,
+                "pdf_filename"   : pdf_filename,
+                "pdf_local_path" : pdf_path,
+                "status"         : "received",
+                "error_text"     : None,
+            })
+            log_id = extra_log["id"]
+            logger.info(
+                "Created email log %s for attachment %d of message %s",
+                log_id, i, original_message_id,
+            )
 
-    _run_parsing_pipeline(
-        pdf_path, email_log_id,
-        (email_log or {}).get("sender", ""),
-        dm, alert_manager,
-        alert_on_unknown_provider=True,
-        alert_on_duplicate=True,
-    )
+        _run_parsing_pipeline(
+            pdf_path, log_id, sender, dm, alert_manager,
+            alert_on_unknown_provider=(i == 0),  # alert once per email
+            alert_on_duplicate=True,
+        )

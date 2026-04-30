@@ -13,6 +13,7 @@ from data_manager import DataManager
 from alerting.alert_manager import AlertManager
 from invoice_logic.iif_exporter import generate_iif, build_iif_content
 from invoice_logic.pdf_generator import generate_pdf
+from scheduler.supabase_sync import patch_invoice_paid
 
 
 @st.cache_data(show_spinner=False)
@@ -225,6 +226,23 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_qb:
         st.subheader("Export to QuickBooks")
 
+        # ── Pending download banner (persists after export until dismissed) ────
+        _iif_result = st.session_state.get("qb_export_result")
+        if _iif_result:
+            st.success(f"IIF generated — {_iif_result['count']} invoice(s) exported.")
+            _dl_col, _done_col = st.columns([3, 1])
+            _dl_col.download_button(
+                label    ="⬇ Download IIF File",
+                data     =_iif_result["content"],
+                file_name=_iif_result["filename"],
+                mime     ="text/plain",
+                key      ="iif_dl_btn",
+            )
+            if _done_col.button("✓ Dismiss", key="iif_dismiss", width="stretch"):
+                del st.session_state["qb_export_result"]
+                st.rerun()
+            st.markdown("---")
+
         exportable = [
             ci for ci in client_invoices
             if ci.get("ready_for_export") and not ci.get("ready_to_email")
@@ -290,13 +308,11 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         iif_path = generate_iif(selected_ids, dm)
                         with open(iif_path, "r", encoding="utf-8") as fh:
                             iif_content = fh.read()
-                        st.success(f"IIF file generated: {iif_path}")
-                        st.download_button(
-                            label    ="⬇ Download IIF File",
-                            data     =iif_content,
-                            file_name=iif_path.split("\\")[-1].split("/")[-1],
-                            mime     ="text/plain",
-                        )
+                        st.session_state["qb_export_result"] = {
+                            "content" : iif_content,
+                            "filename": Path(iif_path).name,
+                            "count"   : len(selected_ids),
+                        }
                         st.rerun()
                     except ValueError as e:
                         st.error(str(e))
@@ -454,11 +470,12 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         processed = sorted(
             [
                 ci for ci in client_invoices
-                if ci.get("ready_for_export")
-                or ci.get("ready_to_email")
-                or ci.get("quickbooks_exported")
-                or ci.get("emailed")
-                or ci.get("paid")
+                if (
+                    ci.get("ready_for_export")
+                    or ci.get("ready_to_email")
+                    or ci.get("quickbooks_exported")
+                    or ci.get("emailed")
+                ) and not ci.get("paid")
             ],
             key=lambda x: x.get("invoice_date", x.get("created_at", "")),
             reverse=True,
@@ -539,7 +556,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     c6.write("❌")
                 c7.write("✅" if emailed  else "❌")
 
-                paid_label = "✅ Paid" if paid else "Mark Paid"
-                if c8.button(paid_label, key=f"paid_{cid}", width="stretch"):
-                    dm.update_client_invoice(cid, {"paid": not paid})
+                if c8.button("Mark Paid", key=f"paid_{cid}", width="stretch"):
+                    dm.update_client_invoice(cid, {"paid": True})
+                    try:
+                        patch_invoice_paid(cid)
+                    except Exception as _e:
+                        st.warning(f"Local record updated, but Supabase sync failed: {_e}")
                     st.rerun()
