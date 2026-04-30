@@ -230,15 +230,15 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         _iif_result = st.session_state.get("qb_export_result")
         if _iif_result:
             st.success(f"IIF generated — {_iif_result['count']} invoice(s) exported.")
-            _dl_col, _done_col = st.columns([3, 1])
-            _dl_col.download_button(
-                label    ="⬇ Download IIF File",
-                data     =_iif_result["content"],
-                file_name=_iif_result["filename"],
-                mime     ="text/plain",
-                key      ="iif_dl_btn",
-            )
-            if _done_col.button("✓ Dismiss", key="iif_dismiss", width="stretch"):
+            for _iif_file in _iif_result.get("files", []):
+                st.download_button(
+                    label    =f"⬇ Download {_iif_file['qb_num']}.iif",
+                    data     =_iif_file["content"],
+                    file_name=_iif_file["filename"],
+                    mime     ="text/plain",
+                    key      =f"iif_dl_{_iif_file['qb_num']}",
+                )
+            if st.button("✓ Dismiss", key="iif_dismiss", width="stretch"):
                 del st.session_state["qb_export_result"]
                 st.rerun()
             st.markdown("---")
@@ -305,13 +305,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     type="primary",
                 ):
                     try:
-                        iif_path = generate_iif(selected_ids, dm)
-                        with open(iif_path, "r", encoding="utf-8") as fh:
-                            iif_content = fh.read()
+                        iif_files = generate_iif(selected_ids, dm)
                         st.session_state["qb_export_result"] = {
-                            "content" : iif_content,
-                            "filename": Path(iif_path).name,
-                            "count"   : len(selected_ids),
+                            "files": iif_files,
+                            "count": len(selected_ids),
                         }
                         st.rerun()
                     except ValueError as e:
@@ -410,7 +407,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         # Draft email
                         total_sum = sum(ci.get("total", 0) for ci in invoices)
                         inv_lines = "\n".join(
-                            f"  • QB #{ci.get('quickbooks_invoice_number','—')}"
+                            f"  • Invoice #{ci.get('quickbooks_invoice_number','—')}"
                             f" — ${ci.get('total', 0):,.2f}"
                             f" — {ci.get('invoice_date','—')}"
                             for ci in invoices

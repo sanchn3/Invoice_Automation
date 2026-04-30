@@ -92,15 +92,18 @@ def build_multi_iif_content(invoices: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def generate_iif(client_invoice_ids: list[str], dm: DataManager) -> str:
+def generate_iif(client_invoice_ids: list[str], dm: DataManager) -> list[dict]:
     """
-    Generate an IIF file for the given client invoice IDs.
+    Generate one IIF file per invoice for the given client invoice IDs.
 
     Raises ValueError if any invoice:
     - is already exported (quickbooks_exported=True)
     - is missing a quickbooks_invoice_number
 
-    Returns the path to the generated .iif file.
+    Returns a list of dicts with keys:
+        content  — IIF text
+        filename — filename used on disk (e.g. "10001_20260430_143022.iif")
+        qb_num   — QuickBooks invoice number (for display)
     """
     invoices_to_export: list[dict] = []
 
@@ -120,23 +123,32 @@ def generate_iif(client_invoice_ids: list[str], dm: DataManager) -> str:
             )
         invoices_to_export.append(inv)
 
-    content   = build_multi_iif_content(invoices_to_export)
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename  = EXPORTS_DIR / f"invoices_export_{timestamp}.iif"
-    filename.write_text(content, encoding="utf-8")
-    logger.info("IIF exported: %s (%d invoices)", filename, len(invoices_to_export))
 
-    # Mark as exported
+    results: list[dict] = []
+    for inv in invoices_to_export:
+        qb_num   = inv.get("quickbooks_invoice_number", inv["id"])
+        content  = build_iif_content(inv)
+        filename = EXPORTS_DIR / f"{qb_num}_{timestamp}.iif"
+        filename.write_text(content, encoding="utf-8")
+        logger.info("IIF exported: %s", filename)
+        results.append({
+            "content" : content,
+            "filename": filename.name,
+            "qb_num"  : qb_num,
+        })
+
+    # Mark all as exported
     for inv in invoices_to_export:
         dm.update_client_invoice(inv["id"], {
             "quickbooks_exported": True,
             "status"             : "exported_to_qb",
         })
-        # Also update the linked email log
         ci = dm.get_client_invoice_by_id(inv["id"])
         if ci and ci.get("provider_invoice_id"):
             pi = dm.get_provider_invoice_by_id(ci["provider_invoice_id"])
             if pi and pi.get("email_intake_id"):
                 dm.update_email_log(pi["email_intake_id"], {"status": "exported_to_qb"})
 
-    return str(filename)
+    return results
