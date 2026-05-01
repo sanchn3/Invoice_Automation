@@ -78,11 +78,7 @@ def _clear_cookie() -> None:
 
 
 def _redirect_to_login() -> None:
-    import streamlit.components.v1 as components
-    components.html(
-        '<script>window.top.location.href = "https://incogrp.com/staff-login";</script>',
-        height=0,
-    )
+    st.html('<script>window.location.replace("https://incogrp.com/staff-login");</script>')
     st.stop()
 
 
