@@ -5,6 +5,7 @@ Full admin dashboard with pipeline board, invoice approval,
 QuickBooks export, reporting, and rate card editor.
 """
 
+import json
 import logging
 import streamlit as st
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,7 @@ from utils.pdf_storage import (
     get_pdf_bytes as _get_pdf_bytes,
     move_to_processed as _move_to_processed,
     upload_pdf_bytes as _upload_pdf_bytes,
+    overwrite_provider_pdf as _overwrite_provider_pdf,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,18 +68,91 @@ def _is_stuck(log: dict) -> bool:
         return False
 
 
+_SUBMISSIONS_FILE = Path(__file__).parent.parent.parent / "data" / "operator_submissions.json"
+
+
+def _render_operation_photos() -> None:
+    """Display operator photo submissions in a table with inline photo viewer."""
+    st.subheader("📷 Operation Photos")
+
+    if not _SUBMISSIONS_FILE.exists():
+        st.info("No operator submissions yet.")
+        return
+
+    try:
+        submissions = json.loads(_SUBMISSIONS_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        st.error(f"Could not load submissions: {exc}")
+        return
+
+    if not submissions:
+        st.info("No operator submissions yet.")
+        return
+
+    submissions = sorted(submissions, key=lambda x: x.get("submitted_at", ""), reverse=True)
+
+    hc1, hc2, hc3, hc4 = st.columns([2, 1.2, 3, 1])
+    hc1.markdown("**Date / Time**")
+    hc2.markdown("**Lot #**")
+    hc3.markdown("**Notes**")
+    hc4.markdown("**Photos**")
+    st.markdown("---")
+
+    for sub in submissions:
+        submitted_at = sub.get("submitted_at", "")
+        lot_number   = sub.get("lot_number", "—")
+        notes        = sub.get("notes", "") or "—"
+        photo_paths  = sub.get("photo_paths", [])
+        n_photos     = len(photo_paths)
+
+        try:
+            dt = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+            date_str = dt.strftime("%Y-%m-%d  %H:%M")
+        except Exception:
+            date_str = submitted_at[:16] if submitted_at else "—"
+
+        rc1, rc2, rc3, rc4 = st.columns([2, 1.2, 3, 1])
+        rc1.write(date_str)
+        rc2.write(lot_number)
+        rc3.write(notes[:120] + ("…" if len(notes) > 120 else ""))
+        rc4.write(f"📷 {n_photos}" if n_photos else "—")
+
+        if n_photos:
+            with st.expander(f"View {n_photos} photo(s) — Lot {lot_number} — {date_str}"):
+                valid_paths = [p for p in photo_paths if Path(p).exists()]
+                missing     = n_photos - len(valid_paths)
+                if missing:
+                    st.warning(f"{missing} photo file(s) not found on disk.")
+                if valid_paths:
+                    chunk_size = 3
+                    for start in range(0, len(valid_paths), chunk_size):
+                        chunk    = valid_paths[start : start + chunk_size]
+                        img_cols = st.columns(len(chunk))
+                        for col, path in zip(img_cols, chunk):
+                            col.image(path, caption=Path(path).name, use_container_width=True)
+
+        st.markdown("---")
+
+
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("📦 Administrator")
 
-    # ── In / Out mode toggle ──────────────────────────────────────────────────
-    c_in, c_tog, c_out, _ = st.columns([0.4, 0.5, 0.5, 5])
-    c_in.markdown("**In**")
-    is_out = c_tog.toggle("In/Out", key="admin_mode_out", label_visibility="collapsed")
-    c_out.markdown("**Out**")
+    # ── Mode selector ─────────────────────────────────────────────────────────
+    mode = st.radio(
+        "Mode",
+        ["In", "Out", "📷 Operation Photos"],
+        horizontal=True,
+        key="admin_mode",
+        label_visibility="collapsed",
+    )
 
-    if is_out:
+    if mode == "Out":
         from streamlit_app.views import bol_dashboard
         bol_dashboard.render(dm)
+        return
+
+    if mode == "📷 Operation Photos":
+        _render_operation_photos()
         return
 
     # Fetch all data once per render — reused across all three tabs.
@@ -674,6 +749,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 except Exception as _se:
                                     logger.warning("Temperature stamp failed: %s", _se)
                         if _stamped_bytes:
+                            _overwrite_provider_pdf(_prov_path, _stamped_bytes)
                             st.session_state[_save_pdf_key] = (_stamped_bytes, cid)
                         st.session_state[_save_ok_key] = True
                         st.rerun()
