@@ -33,11 +33,18 @@ _STAMP_W_FRAC  = 0.42   # stamp width as fraction of PDF page width
 _MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
            "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
-# Windows font search order — first match wins
+# Font search order — Windows paths first, then Linux (Render/Ubuntu)
 _FONT_PATHS = [
-    "C:/Windows/Fonts/courbd.ttf",  # Courier New Bold  (preferred)
-    "C:/Windows/Fonts/cour.ttf",    # Courier New regular fallback
-    "C:/Windows/Fonts/arial.ttf",   # Arial fallback
+    # Windows
+    "C:/Windows/Fonts/courbd.ttf",
+    "C:/Windows/Fonts/cour.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    # Linux / Render (Ubuntu — fonts-dejavu-core is pre-installed)
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
 ]
 
 
@@ -47,7 +54,11 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
             return ImageFont.truetype(path, size)
         except OSError:
             continue
-    return ImageFont.load_default()
+    # load_default(size=) is supported in Pillow 9.2.0+
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
 
 
 def _compose_stamp(received_date: date) -> bytes:
