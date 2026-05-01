@@ -78,7 +78,12 @@ def _clear_cookie() -> None:
 
 
 def _redirect_to_login() -> None:
-    st.html('<script>window.location.replace("https://incogrp.com/staff-login");</script>')
+    st.html(
+        "<script>window.location.replace('https://incogrp.com/staff-login');</script>"
+        "<p style='font-family:sans-serif;text-align:center;padding:2rem;'>"
+        "Redirecting… <a href='https://incogrp.com/staff-login'>Click here if not redirected</a>"
+        "</p>"
+    )
     st.stop()
 
 
@@ -125,7 +130,7 @@ st.sidebar.markdown("---")
 if st.sidebar.button("🚪 Sign Out", use_container_width=True):
     _clear_cookie()
     auth.logout()
-    _redirect_to_login()
+    st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.caption("INCO Logistics • Invoice Automation v1.0")

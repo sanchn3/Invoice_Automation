@@ -73,6 +73,8 @@ _SUBMISSIONS_FILE = Path(__file__).parent.parent.parent / "data" / "operator_sub
 
 def _render_operation_photos() -> None:
     """Display operator photo submissions in a table with inline photo viewer."""
+    import io, zipfile
+
     st.subheader("📷 Operation Photos")
 
     if not _SUBMISSIONS_FILE.exists():
@@ -91,19 +93,21 @@ def _render_operation_photos() -> None:
 
     submissions = sorted(submissions, key=lambda x: x.get("submitted_at", ""), reverse=True)
 
-    hc1, hc2, hc3, hc4 = st.columns([2, 1.2, 3, 1])
+    hc1, hc2, hc3, hc4, hc5 = st.columns([2, 1.2, 3, 1, 1.2])
     hc1.markdown("**Date / Time**")
     hc2.markdown("**Lot #**")
     hc3.markdown("**Notes**")
     hc4.markdown("**Photos**")
+    hc5.markdown("**Delete**")
     st.markdown("---")
 
-    for sub in submissions:
+    for idx, sub in enumerate(submissions):
         submitted_at = sub.get("submitted_at", "")
         lot_number   = sub.get("lot_number", "—")
         notes        = sub.get("notes", "") or "—"
         photo_paths  = sub.get("photo_paths", [])
         n_photos     = len(photo_paths)
+        sub_key      = submitted_at or str(idx)   # stable key per submission
 
         try:
             dt = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
@@ -111,25 +115,81 @@ def _render_operation_photos() -> None:
         except Exception:
             date_str = submitted_at[:16] if submitted_at else "—"
 
-        rc1, rc2, rc3, rc4 = st.columns([2, 1.2, 3, 1])
+        rc1, rc2, rc3, rc4, rc5 = st.columns([2, 1.2, 3, 1, 1.2])
         rc1.write(date_str)
         rc2.write(lot_number)
         rc3.write(notes[:120] + ("…" if len(notes) > 120 else ""))
         rc4.write(f"📷 {n_photos}" if n_photos else "—")
 
+        # ── Delete (two-click confirm) ─────────────────────────────────────
+        _del_key     = f"del_photo_{sub_key}"
+        _confirm_key = f"confirm_del_photo_{sub_key}"
+        if st.session_state.get(_confirm_key):
+            rc5.warning("Sure?")
+            bc1, bc2 = rc5.columns(2)
+            if bc1.button("✅", key=f"yes_{sub_key}"):
+                # Delete photo files and folder
+                for p in photo_paths:
+                    try:
+                        fp = Path(p)
+                        fp.unlink(missing_ok=True)
+                        # Remove folder if empty
+                        if fp.parent.exists() and not any(fp.parent.iterdir()):
+                            fp.parent.rmdir()
+                    except Exception:
+                        pass
+                # Remove submission record
+                updated = [s for s in submissions if s.get("submitted_at") != submitted_at]
+                _SUBMISSIONS_FILE.write_text(
+                    json.dumps(updated, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+                st.session_state.pop(_confirm_key, None)
+                st.rerun()
+            if bc2.button("✗", key=f"no_{sub_key}"):
+                st.session_state.pop(_confirm_key, None)
+                st.rerun()
+        else:
+            if rc5.button("🗑", key=_del_key):
+                st.session_state[_confirm_key] = True
+                st.rerun()
+
+        # ── Photo expander with download buttons ──────────────────────────
         if n_photos:
             with st.expander(f"View {n_photos} photo(s) — Lot {lot_number} — {date_str}"):
                 valid_paths = [p for p in photo_paths if Path(p).exists()]
                 missing     = n_photos - len(valid_paths)
                 if missing:
                     st.warning(f"{missing} photo file(s) not found on disk.")
+
                 if valid_paths:
+                    # Download All zip (only shown when >1 photo)
+                    if len(valid_paths) > 1:
+                        zip_buf = io.BytesIO()
+                        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for p in valid_paths:
+                                zf.write(p, Path(p).name)
+                        zip_buf.seek(0)
+                        st.download_button(
+                            label=f"⬇ Download all {len(valid_paths)} photos (.zip)",
+                            data=zip_buf,
+                            file_name=f"lot_{lot_number}_{date_str[:10]}.zip",
+                            mime="application/zip",
+                            key=f"dl_zip_{sub_key}",
+                        )
+
                     chunk_size = 3
                     for start in range(0, len(valid_paths), chunk_size):
                         chunk    = valid_paths[start : start + chunk_size]
                         img_cols = st.columns(len(chunk))
                         for col, path in zip(img_cols, chunk):
                             col.image(path, caption=Path(path).name, use_container_width=True)
+                            col.download_button(
+                                label="⬇ Download",
+                                data=Path(path).read_bytes(),
+                                file_name=Path(path).name,
+                                mime="image/jpeg",
+                                key=f"dl_{sub_key}_{Path(path).name}",
+                            )
 
         st.markdown("---")
 
