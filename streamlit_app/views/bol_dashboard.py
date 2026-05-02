@@ -87,7 +87,14 @@ def _render_inbox_section(dm: DataManager) -> None:
     poll_col, _ = st.columns([1, 4])
     with poll_col:
         if st.button("🔄 Poll BOL Inbox", width='stretch'):
-            st.info("BOL inbox polling not yet connected to email pipeline.")
+            from email_pipeline.bol_listener import poll_bol_inbox
+            with st.spinner("Polling BOL inbox…"):
+                count = poll_bol_inbox(dm)
+            if count:
+                st.success(f"{count} new BOL email(s) received.")
+                st.rerun()
+            else:
+                st.info("No new BOL emails found.")
 
     with st.expander("➕ Add BOL Manually"):
         f1, f2 = st.columns(2)

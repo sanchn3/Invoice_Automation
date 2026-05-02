@@ -21,6 +21,7 @@ data/
 !data/users.json
 !data/rate_card.json
 !data/client_rates.json
+bols/
 
 # O365 token cache
 o365_token.txt

@@ -18,18 +18,20 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 SUPABASE_URL              = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
-# Outlook folder to poll
+# Outlook folders to poll
 OUTLOOK_INVOICE_FOLDER = os.getenv("OUTLOOK_INVOICE_FOLDER", "Provider Invoices")
+OUTLOOK_BOL_FOLDER     = os.getenv("OUTLOOK_BOL_FOLDER", "BILL OF LADING")
 
 # Paths
 BASE_DIR    = Path(__file__).parent
 DATA_DIR    = BASE_DIR / "data"
 PDFS_DIR    = BASE_DIR / "pdfs"
+BOLS_DIR    = BASE_DIR / "bols"
 PHOTOS_DIR  = BASE_DIR / "photos"
 EXPORTS_DIR = BASE_DIR / "exports"
 LOGS_DIR    = BASE_DIR / "logs"
 
-for _dir in [DATA_DIR, PDFS_DIR, PHOTOS_DIR, EXPORTS_DIR, LOGS_DIR]:
+for _dir in [DATA_DIR, PDFS_DIR, BOLS_DIR, PHOTOS_DIR, EXPORTS_DIR, LOGS_DIR]:
     _dir.mkdir(exist_ok=True)
 
 # Claude model (override via CLAUDE_MODEL env var if needed)

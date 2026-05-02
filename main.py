@@ -18,6 +18,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from config import validate_config, LOGS_DIR
 from data_manager import DataManager
 from email_pipeline.outlook_listener import poll_inbox
+from email_pipeline.bol_listener import poll_bol_inbox
 from alerting.alert_manager import AlertManager
 from scheduler.reconciliation import check_stuck_invoices
 from scheduler.supabase_sync import sync_invoices_to_supabase
@@ -68,6 +69,16 @@ def main() -> None:
         replace_existing=True,
     )
 
+    # Poll for new Bill of Lading emails every 5 minutes
+    scheduler.add_job(
+        func=lambda: poll_bol_inbox(dm),
+        trigger="interval",
+        minutes=5,
+        id="bol_poller",
+        name="BOL Inbox Poller",
+        replace_existing=True,
+    )
+
     # Check for stuck invoices every hour
     scheduler.add_job(
         func=lambda: check_stuck_invoices(dm, alert_manager),
@@ -98,6 +109,7 @@ def main() -> None:
         # Run immediately on startup, then on schedule
         logger.info("Running initial poll...")
         poll_inbox(dm, alert_manager)
+        poll_bol_inbox(dm)
         check_stuck_invoices(dm, alert_manager)
         scheduler.start()
     except KeyboardInterrupt:

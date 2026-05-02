@@ -118,6 +118,47 @@ def parse_with_claude(pdf_path: str) -> dict | None:
         return None
 
 
+_BOL_PO_PROMPT = """You are a logistics document assistant.
+Extract the PO number (Purchase Order number) from the following email details.
+
+Subject: {subject}
+Body preview: {body_preview}
+
+Rules:
+- Return ONLY the PO number as a plain string (e.g. "12345" or "PO-98765").
+- If no PO number can be found, return the single word: null
+- No explanation, no extra text.
+"""
+
+
+def extract_bol_po_number(subject: str, body_preview: str) -> str:
+    """
+    Use Claude to extract a PO number from a BOL email subject and body.
+    Returns the PO number string, or an empty string if not found.
+    """
+    try:
+        message = _client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=50,
+            messages=[
+                {
+                    "role"   : "user",
+                    "content": _BOL_PO_PROMPT.format(
+                        subject=subject,
+                        body_preview=body_preview[:1000],
+                    ),
+                }
+            ],
+        )
+        answer = message.content[0].text.strip()
+        if answer.lower() == "null" or not answer:
+            return ""
+        return answer
+    except Exception as e:
+        logger.warning("Claude BOL PO extraction failed: %s — leaving PO blank.", e)
+        return ""
+
+
 def is_invoice_email(subject: str, sender: str, body_preview: str) -> bool:
     """
     Use Claude to classify whether an email is a provider invoice.

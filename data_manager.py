@@ -324,6 +324,12 @@ class DataManager:
     # BILL OF LADING RECORDS
     # ─────────────────────────────────────────
 
+    def bol_message_id_exists(self, message_id: str) -> bool:
+        return any(
+            r.get("message_id") == message_id
+            for r in self.get_bol_records()
+        )
+
     def get_bol_records(self) -> list[dict]:
         with _lock:
             return _read_json(_BOL_RECORDS_FILE)
