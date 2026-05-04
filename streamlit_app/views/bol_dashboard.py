@@ -297,6 +297,124 @@ def _render_checkin_tab(dm: DataManager) -> None:
 
 # ─── Tab 2: BOL Inspection ────────────────────────────────────────────────────
 
+def _append_admin_annotations(pdf_path: str, po_num: str, driver_name: str,
+                               annotations: dict) -> str:
+    """
+    Build an Admin Completion Notes page with reportlab and append it to the
+    existing BOL PDF (in-place). Returns the (same) path on success.
+    """
+    from io import BytesIO
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER
+    from pypdf import PdfWriter, PdfReader
+
+    BLUE    = colors.HexColor("#0d47a1")
+    LT_BLUE = colors.HexColor("#e3f2fd")
+    styles  = getSampleStyleSheet()
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter,
+                             leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+                             topMargin=0.75 * inch, bottomMargin=0.75 * inch)
+
+    hdr_s = ParagraphStyle("h", parent=styles["Heading1"],
+                            textColor=colors.white, fontSize=16, alignment=TA_CENTER)
+    sub_s = ParagraphStyle("s", parent=styles["Normal"],
+                            textColor=colors.white, fontSize=10, alignment=TA_CENTER)
+    lbl_s = ParagraphStyle("l", parent=styles["Normal"], fontSize=9, textColor=colors.grey)
+    val_s = ParagraphStyle("v", parent=styles["Normal"], fontSize=12, fontName="Helvetica-Bold")
+
+    story = []
+
+    ht = Table([
+        [Paragraph("<b>ADMIN COMPLETION NOTES</b>", hdr_s)],
+        [Paragraph(
+            f"PO: {po_num}  |  Driver: {driver_name or '—'}  |  "
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            sub_s,
+        )],
+    ], colWidths=[7 * inch])
+    ht.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), BLUE),
+        ("TOPPADDING",    (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 12),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 12),
+    ]))
+    story.append(ht)
+    story.append(Spacer(1, 0.2 * inch))
+
+    # Field rows (skip empty)
+    FIELD_LABELS = [
+        ("carrier",     "Carrier / Transportista"),
+        ("trailer_num", "Trailer # / Número de Remolque"),
+        ("seal_num",    "Seal # / Número de Sello"),
+        ("num_pallets", "# Pallets"),
+        ("temp_req",    "Temp Requirement / Temperatura Requerida"),
+    ]
+    rows = [
+        [Paragraph(label, lbl_s), Paragraph(annotations.get(key, "") or "—", val_s)]
+        for key, label in FIELD_LABELS
+        if annotations.get(key, "").strip()
+    ]
+    if rows:
+        ft = Table(rows, colWidths=[3 * inch, 4 * inch])
+        ft.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (0, -1), LT_BLUE),
+            ("BOX",           (0, 0), (-1, -1), 1, BLUE),
+            ("INNERGRID",     (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("TOPPADDING",    (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+        ]))
+        story.append(ft)
+        story.append(Spacer(1, 0.15 * inch))
+
+    if annotations.get("notes", "").strip():
+        nl = Table([[Paragraph("Special Instructions / Instrucciones Especiales", lbl_s)]],
+                   colWidths=[7 * inch])
+        nl.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), LT_BLUE),
+            ("BOX",           (0, 0), (-1, -1), 1, BLUE),
+            ("TOPPADDING",    (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+        ]))
+        nv = Table([[Paragraph(annotations["notes"], val_s)]], colWidths=[7 * inch])
+        nv.setStyle(TableStyle([
+            ("BOX",           (0, 0), (-1, -1), 1, BLUE),
+            ("TOPPADDING",    (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+        ]))
+        story.append(nl)
+        story.append(nv)
+
+    doc.build(story)
+    notes_bytes = buf.getvalue()
+
+    # Merge: existing BOL pages + new notes page
+    writer = PdfWriter()
+    if pdf_path and Path(pdf_path).exists():
+        for page in PdfReader(pdf_path).pages:
+            writer.add_page(page)
+    for page in PdfReader(BytesIO(notes_bytes)).pages:
+        writer.add_page(page)
+
+    out = BytesIO()
+    writer.write(out)
+
+    save_path = pdf_path if pdf_path else str(
+        Path(pdf_path).parent / f"BOL_{po_num}_annotated.pdf"
+    )
+    Path(save_path).write_bytes(out.getvalue())
+    return save_path
+
+
 def _render_inspection_tab(dm: DataManager) -> None:
     inspection_bols = sorted(
         [r for r in dm.get_bol_records() if r.get("status") == "bol_inspection"],
@@ -314,14 +432,20 @@ def _render_inspection_tab(dm: DataManager) -> None:
         bid        = bol["id"]
         po_num     = bol.get("po_number", "—")
         received   = bol.get("received_at", "—")[:10]
+        driver     = bol.get("driver_name") or "—"
         pdf_path   = bol.get("pdf_local_path", "")
         pdf_exists = bool(pdf_path)
         pdf_key    = f"bol_insp_pdf_{bid}"
         edit_key   = f"bol_insp_edit_{bid}"
+        form_key   = f"bol_insp_form_{bid}"
 
         with st.container(border=True):
-            st.markdown(f"**PO Number:** {po_num}")
-            st.caption(f"📅 Date Received: {received}")
+            h1, h2 = st.columns([4, 1])
+            h1.markdown(f"**PO Number:** {po_num}")
+            h1.caption(
+                f"🚛 Driver: {driver}  |  📅 Received: {received}"
+                + ("  |  ✅ Annotations saved" if bol.get("annotations_saved_at") else "")
+            )
 
             if st.session_state.get(edit_key):
                 ep1, ep2 = st.columns(2)
@@ -340,7 +464,8 @@ def _render_inspection_tab(dm: DataManager) -> None:
                     st.rerun()
 
             else:
-                b1, b2 = st.columns(2)
+                # ── Action buttons row ───────────────────────────────────────
+                b1, b2, b3 = st.columns(3)
 
                 pdf_label = "📄 Hide PDF" if st.session_state.get(pdf_key) else "📄 View PDF"
                 if pdf_exists:
@@ -350,10 +475,16 @@ def _render_inspection_tab(dm: DataManager) -> None:
                 else:
                     b1.button("📄 View PDF", key=f"insp_pdf_na_{bid}", disabled=True, width='stretch')
 
-                if b2.button("✏️ Edit", key=f"insp_ebtn_{bid}", width='stretch'):
+                form_label = "📝 Hide Form" if st.session_state.get(form_key) else "📝 Complete Form"
+                if b2.button(form_label, key=f"insp_form_btn_{bid}", width='stretch'):
+                    st.session_state[form_key] = not st.session_state.get(form_key, False)
+                    st.rerun()
+
+                if b3.button("✏️ Edit", key=f"insp_ebtn_{bid}", width='stretch'):
                     st.session_state[edit_key] = True
                     st.rerun()
 
+                # ── PDF viewer ───────────────────────────────────────────────
                 if st.session_state.get(pdf_key) and pdf_exists:
                     from streamlit_pdf_viewer import pdf_viewer
                     _b = _get_pdf_bytes(pdf_path)
@@ -361,6 +492,85 @@ def _render_inspection_tab(dm: DataManager) -> None:
                         pdf_viewer(_b, key=f"insp_pdfview_{bid}")
                     else:
                         st.warning("PDF not available.")
+
+                # ── Admin completion form ────────────────────────────────────
+                if st.session_state.get(form_key):
+                    st.markdown("---")
+                    st.markdown("##### 📋 Complete Remaining BOL Fields")
+                    st.caption(
+                        "Fill in any remaining information and click **Save Annotations** "
+                        "to append a notes page to the BOL PDF."
+                    )
+
+                    prev = bol.get("admin_annotations", {})
+
+                    fc1, fc2 = st.columns(2)
+                    carrier     = fc1.text_input("Carrier / Transportista",
+                                                  key=f"f_carrier_{bid}",
+                                                  value=prev.get("carrier", ""),
+                                                  placeholder="e.g. XPO Logistics")
+                    trailer_num = fc2.text_input("Trailer # / Número de Remolque",
+                                                  key=f"f_trailer_{bid}",
+                                                  value=prev.get("trailer_num", ""),
+                                                  placeholder="e.g. TR-44821")
+                    seal_num    = fc1.text_input("Seal # / Número de Sello",
+                                                  key=f"f_seal_{bid}",
+                                                  value=prev.get("seal_num", ""),
+                                                  placeholder="e.g. S-1234")
+                    num_pallets = fc2.text_input("# Pallets",
+                                                  key=f"f_pallets_{bid}",
+                                                  value=prev.get("num_pallets", ""),
+                                                  placeholder="e.g. 24")
+                    temp_req    = fc1.text_input("Temp Requirement / Temperatura Requerida",
+                                                  key=f"f_temp_{bid}",
+                                                  value=prev.get("temp_req", ""),
+                                                  placeholder="e.g. 34–38°F")
+                    notes       = st.text_area("Special Instructions / Instrucciones Especiales",
+                                               key=f"f_notes_{bid}",
+                                               value=prev.get("notes", ""),
+                                               height=90)
+
+                    save_col, dl_col, _ = st.columns([1, 1, 2])
+
+                    if save_col.button("💾 Save Annotations", key=f"f_save_{bid}",
+                                       type="primary", width='stretch'):
+                        ann = {
+                            "carrier":     carrier.strip(),
+                            "trailer_num": trailer_num.strip(),
+                            "seal_num":    seal_num.strip(),
+                            "num_pallets": num_pallets.strip(),
+                            "temp_req":    temp_req.strip(),
+                            "notes":       notes.strip(),
+                        }
+                        if not any(ann.values()):
+                            st.warning("Please fill in at least one field before saving.")
+                        else:
+                            try:
+                                new_path = _append_admin_annotations(
+                                    pdf_path, po_num, driver, ann
+                                )
+                                dm.update_bol_record(bid, {
+                                    "pdf_local_path"      : new_path,
+                                    "admin_annotations"   : ann,
+                                    "annotations_saved_at": _now_str(),
+                                })
+                                st.session_state[form_key] = False
+                                st.success("✅ Annotations appended to BOL PDF.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Error saving annotations: {exc}")
+
+                    # Download the current PDF (with or without annotations)
+                    if pdf_exists:
+                        _dl = _get_pdf_bytes(pdf_path)
+                        if _dl:
+                            dl_col.download_button(
+                                "⬇ Download PDF",
+                                _dl,
+                                file_name=f"BOL_{po_num}.pdf",
+                                mime="application/pdf",
+                                key=f"insp_dl_{bid}",
+                            )
 
                 st.markdown("---")
                 print_col, _ = st.columns([1, 2])
