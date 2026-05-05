@@ -13,7 +13,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from config import DATA_DIR
+import httpx
+
+from config import DATA_DIR, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+
+# ── Supabase helpers (used by BOL methods only) ────────────────────────────────
+
+def _sb_headers(prefer: str = "return=representation") -> dict:
+    return {
+        "apikey":        SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type":  "application/json",
+        "Prefer":        prefer,
+    }
+
+def _sb_url(table: str) -> str:
+    return f"{SUPABASE_URL}/rest/v1/{table}"
 
 # File paths
 _EMAIL_LOG_FILE          = DATA_DIR / "email_intake_log.json"
@@ -392,40 +407,60 @@ class DataManager:
         return f"{prefix}_{next_num}" if prefix else str(next_num)
 
     # ─────────────────────────────────────────
-    # BILL OF LADING RECORDS
+    # BILL OF LADING RECORDS  (Supabase)
     # ─────────────────────────────────────────
 
     def bol_message_id_exists(self, message_id: str) -> bool:
-        return any(
-            r.get("message_id") == message_id
-            for r in self.get_bol_records()
+        resp = httpx.get(
+            _sb_url("bol_records"),
+            headers=_sb_headers(""),
+            params={"message_id": f"eq.{message_id}", "select": "id", "limit": "1"},
+            timeout=10,
         )
+        resp.raise_for_status()
+        return len(resp.json()) > 0
 
     def get_bol_records(self) -> list[dict]:
-        with _lock:
-            return _read_json(_BOL_RECORDS_FILE)
+        resp = httpx.get(
+            _sb_url("bol_records"),
+            headers=_sb_headers(""),
+            params={"order": "created_at.desc"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     def add_bol_record(self, record: dict) -> dict:
-        with _lock:
-            records = _read_json(_BOL_RECORDS_FILE)
-            record.setdefault("id", _new_id())
-            record.setdefault("created_at", _now())
-            records.append(record)
-            _write_json(_BOL_RECORDS_FILE, records)
-            return record
+        record.setdefault("id", _new_id())
+        record.setdefault("created_at", _now())
+        resp = httpx.post(
+            _sb_url("bol_records"),
+            headers=_sb_headers(),
+            json=record,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()[0]
 
     def update_bol_record(self, id: str, updates: dict) -> dict:
-        with _lock:
-            records = _read_json(_BOL_RECORDS_FILE)
-            for i, rec in enumerate(records):
-                if rec["id"] == id:
-                    records[i].update(updates)
-                    _write_json(_BOL_RECORDS_FILE, records)
-                    return records[i]
+        resp = httpx.patch(
+            _sb_url("bol_records"),
+            headers=_sb_headers(),
+            params={"id": f"eq.{id}"},
+            json=updates,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if not rows:
             raise KeyError(f"BOL record {id} not found.")
+        return rows[0]
 
     def delete_bol_record(self, id: str) -> None:
-        with _lock:
-            records = _read_json(_BOL_RECORDS_FILE)
-            records = [r for r in records if r["id"] != id]
-            _write_json(_BOL_RECORDS_FILE, records)
+        resp = httpx.delete(
+            _sb_url("bol_records"),
+            headers=_sb_headers(""),
+            params={"id": f"eq.{id}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
