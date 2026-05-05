@@ -53,7 +53,22 @@ def _fire_notification(po_number: str, driver_name: str) -> None:
         st.warning(f"⚠️ Windows notification failed: {exc}")
 
 
-# ─── auto-refresh fragment ─────────────────────────────────────────────────────
+# ─── auto-refresh fragments ────────────────────────────────────────────────────
+
+@st.fragment(run_every="4s")
+def _bol_status_watcher(dm: DataManager) -> None:
+    """
+    Polls Supabase every 4 s. Triggers a full rerun when the set of BOL IDs
+    in any active status changes — i.e. whenever the kiosk pushes a check-in.
+    """
+    active = frozenset(
+        (r["id"], r.get("status", "")) for r in dm.get_bol_records()
+        if r.get("status") not in ("printed",)
+    )
+    if active != st.session_state.get("_bol_active_ids"):
+        st.session_state["_bol_active_ids"] = active
+        st.rerun()
+
 
 @st.fragment(run_every="3s")
 def _checkin_watcher(dm: DataManager) -> None:
@@ -98,11 +113,16 @@ def _render_inbox_section(dm: DataManager) -> None:
 
     with st.expander("➕ Add BOL Manually"):
         f1, f2 = st.columns(2)
-        new_po   = f1.text_input("PO Number", key="new_bol_po")
-        new_date = f2.text_input(
+        new_po     = f1.text_input("PO Number", key="new_bol_po")
+        new_date   = f2.text_input(
             "Date Received",
             value=datetime.utcnow().date().isoformat(),
             key="new_bol_date",
+        )
+        new_client = st.text_input(
+            "Customer Name (optional — helps driver identify shipment at kiosk)",
+            key="new_bol_client",
+            placeholder="e.g. Walmart, Costco…",
         )
         if st.button("Add BOL", key="add_bol_btn", type="primary", width='stretch'):
             if not new_po.strip():
@@ -111,6 +131,7 @@ def _render_inbox_section(dm: DataManager) -> None:
                 dm.add_bol_record({
                     "po_number"       : new_po.strip().upper(),
                     "received_at"     : new_date.strip() + "T00:00:00Z",
+                    "client_name"     : new_client.strip() or None,
                     "pdf_local_path"  : "",
                     "status"          : "bol_inbox",
                     "driver_name"     : None,
@@ -145,17 +166,21 @@ def _render_inbox_section(dm: DataManager) -> None:
 
         with st.container(border=True):
             st.markdown(f"**PO Number:** {bol.get('po_number', '—')}")
-            st.caption(f"📅 Date Received: {received}")
+            _client = bol.get("client_name") or ""
+            st.caption(f"📅 Date Received: {received}" + (f"  |  🏢 {_client}" if _client else ""))
 
             if st.session_state.get(edit_key):
                 ep1, ep2 = st.columns(2)
-                edit_po   = ep1.text_input("PO Number",    value=bol.get("po_number", ""), key=f"epo_{bid}")
-                edit_date = ep2.text_input("Date Received", value=received,                 key=f"edt_{bid}")
-                es1, es2  = st.columns(2)
+                edit_po     = ep1.text_input("PO Number",     value=bol.get("po_number", ""),   key=f"epo_{bid}")
+                edit_date   = ep2.text_input("Date Received",  value=received,                   key=f"edt_{bid}")
+                edit_client = st.text_input("Customer Name",   value=_client,                    key=f"ecli_{bid}",
+                                            placeholder="e.g. Walmart, Costco…")
+                es1, es2 = st.columns(2)
                 if es1.button("💾 Save", key=f"esave_{bid}", type="primary", width='stretch'):
                     dm.update_bol_record(bid, {
                         "po_number"  : edit_po.strip().upper(),
                         "received_at": edit_date.strip() + "T00:00:00Z",
+                        "client_name": edit_client.strip() or None,
                     })
                     st.session_state.pop(edit_key, None)
                     st.rerun()
@@ -211,9 +236,12 @@ def _render_inbox_section(dm: DataManager) -> None:
                     type="primary",
                     width='stretch',
                 ):
-                    dm.update_bol_record(bid, {"status": "pending_checkin"})
-                    st.success(f"BOL {bol.get('po_number')} moved to Pending Trucker Check-In.")
-                    st.rerun()
+                    if not bol.get("po_number", "").strip():
+                        st.error("⚠️ Cannot validate: PO Number is required. Click ✏️ Edit to add it.")
+                    else:
+                        dm.update_bol_record(bid, {"status": "pending_checkin"})
+                        st.success(f"BOL {bol.get('po_number')} moved to Pending Trucker Check-In.")
+                        st.rerun()
 
 
 # ─── Tab 1: Pending Trucker Check-In ──────────────────────────────────────────
@@ -238,37 +266,23 @@ def _render_checkin_tab(dm: DataManager) -> None:
         received = bol.get("received_at", "—")[:10]
         status   = bol.get("status")
 
+        client_name = bol.get("client_name") or ""
+
         if status == "pending_checkin":
             st.markdown(
                 f'<div style="background:#fff3cd;border:2px solid #ffc107;'
                 f'border-radius:8px;padding:12px 16px;margin-bottom:8px;">'
                 f'<div style="font-weight:700;font-size:1.05em;margin-bottom:6px;">'
                 f'PO Number: {po_num}</div>'
-                f'<div style="font-size:0.9em;margin-bottom:8px;">📅 Date Received: {received}</div>'
+                f'<div style="font-size:0.9em;margin-bottom:8px;">📅 Date Received: {received}'
+                + (f'&nbsp;&nbsp;|&nbsp;&nbsp;🏢 {client_name}' if client_name else '')
+                + f'</div>'
                 f'<div style="color:#856404;font-style:italic;">'
                 f'⏳ The check-in of the driver is pending.</div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
-            # Placeholder — replace with driver check-in integration later
-            name_col, btn_col = st.columns([2, 1])
-            driver_input = name_col.text_input(
-                "Driver name",
-                key=f"driver_input_{bid}",
-                placeholder="Enter driver name…",
-                label_visibility="collapsed",
-            )
-            if btn_col.button("🚛 Mark Checked In", key=f"bol_checkin_{bid}", width='stretch'):
-                if not driver_input.strip():
-                    st.error("Enter the driver's name first.")
-                else:
-                    dm.update_bol_record(bid, {
-                        "status"          : "checked_in",
-                        "driver_name"     : driver_input.strip(),
-                        "checkin_at"      : _now_str(),
-                        "checkin_notified": False,
-                    })
-                    st.rerun()
+            st.caption("Waiting for driver to check in via kiosk — this tab updates automatically.")
 
         elif status == "checked_in":
             driver     = bol.get("driver_name", "—")
@@ -293,6 +307,254 @@ def _render_checkin_tab(dm: DataManager) -> None:
                 + '</div>',
                 unsafe_allow_html=True,
             )
+
+
+# ─── PDF Edit Mode helpers ────────────────────────────────────────────────────
+
+def _pdf_page_to_pil(pdf_path: str, page_index: int = 0, scale: float = 2.0):
+    """Render a PDF page to a PIL Image using pypdfium2 (already in requirements)."""
+    import pypdfium2 as pdfium  # type: ignore
+    doc    = pdfium.PdfDocument(pdf_path)
+    page   = doc[page_index]
+    bitmap = page.render(scale=scale)
+    img    = bitmap.to_pil()
+    doc.close()
+    return img
+
+
+def _burn_overlay_to_pdf(pdf_path: str, overlay_rgba, canvas_w: int, canvas_h: int) -> None:
+    """
+    Replace PDF page 0 with the fully-composited canvas image (RGBA numpy array).
+    All pages after page 0 are kept intact.  Overwrites pdf_path in-place.
+    """
+    from io import BytesIO
+    from PIL import Image
+    from reportlab.pdfgen import canvas as _rl_canvas
+    from reportlab.lib.utils import ImageReader
+    from pypdf import PdfWriter, PdfReader
+
+    annotated = Image.fromarray(overlay_rgba.astype("uint8"), "RGBA").convert("RGB")
+
+    reader = PdfReader(pdf_path)
+    orig_w = float(reader.pages[0].mediabox.width)
+    orig_h = float(reader.pages[0].mediabox.height)
+
+    img_buf = BytesIO()
+    annotated.save(img_buf, format="PNG")
+    img_buf.seek(0)
+
+    rl_buf = BytesIO()
+    c = _rl_canvas.Canvas(rl_buf, pagesize=(orig_w, orig_h))
+    c.drawImage(ImageReader(img_buf), 0, 0, width=orig_w, height=orig_h)
+    c.save()
+
+    writer = PdfWriter()
+    writer.add_page(PdfReader(rl_buf).pages[0])
+    for i in range(1, len(reader.pages)):
+        writer.add_page(reader.pages[i])
+
+    out = BytesIO()
+    writer.write(out)
+    Path(pdf_path).write_bytes(out.getvalue())
+
+
+def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
+    """
+    Full-screen interactive PDF annotation editor.
+
+    Left sidebar – tool selector + asset palette (signature, ID photos).
+    Right canvas  – PDF page rendered as background; Fabric.js handles
+                    drag/resize of placed images and free-text / freehand.
+    Bottom bar    – Finalize & Save (burns to PDF) / Cancel.
+
+    State keys per BOL id:
+      canvas_obj_{bid}  – list of Fabric.js objects persisted across reruns
+      canvas_rev_{bid}  – int revision counter; incrementing forces canvas re-init
+    """
+    import base64
+    from io import BytesIO
+    from PIL import Image
+
+    try:
+        from streamlit_drawable_canvas import st_canvas  # type: ignore
+    except ImportError:
+        st.error(
+            "**streamlit-drawable-canvas** is not installed.  "
+            "Run `pip install streamlit-drawable-canvas` and restart the app."
+        )
+        if st.button("✗ Close", key=f"close_edit_import_{bol['id']}"):
+            st.session_state.pop(f"pdf_edit_mode_{bol['id']}", None)
+            st.rerun()
+        return
+
+    # ── Compatibility shim: streamlit-drawable-canvas 0.9.x uses the private
+    # st.elements.image.image_to_url API that was removed in Streamlit 1.28+.
+    # Inject a minimal replacement so the canvas background renders correctly.
+    import streamlit.elements.image as _st_img_mod
+    if not hasattr(_st_img_mod, "image_to_url"):
+        import base64 as _b64m
+        from io import BytesIO as _BIOm
+        from PIL import Image as _PILm
+
+        def _image_to_url_shim(image, width=-1, clamp=False, channels="RGB",
+                                output_format="auto", image_id="", **_kw):
+            if isinstance(image, _PILm.Image):
+                _buf = _BIOm()
+                image.save(_buf, format="PNG")
+                return "data:image/png;base64," + _b64m.b64encode(_buf.getvalue()).decode()
+            return ""
+
+        _st_img_mod.image_to_url = _image_to_url_shim
+
+    bid      = bol["id"]
+    po_num   = bol.get("po_number", "—")
+    pdf_path = bol.get("pdf_local_path", "")
+    obj_key  = f"canvas_obj_{bid}"
+    rev_key  = f"canvas_rev_{bid}"
+
+    # ── Render PDF page to background image ──────────────────────────────
+    try:
+        bg_full = _pdf_page_to_pil(pdf_path, page_index=0, scale=2.0)
+    except Exception as exc:
+        st.error(f"Could not render PDF page: {exc}")
+        if st.button("✗ Close Editor", key=f"close_edit_err_{bid}"):
+            st.session_state.pop(f"pdf_edit_mode_{bid}", None)
+            st.rerun()
+        return
+
+    CANVAS_W  = 720
+    CANVAS_H  = int(bg_full.height * CANVAS_W / bg_full.width)
+    bg_scaled = bg_full.resize((CANVAS_W, CANVAS_H), Image.LANCZOS)
+
+    # ── Helper: PIL/path → base64 data-URI ───────────────────────────────
+    def _to_b64(img_path: str, max_w: int = 900) -> str | None:
+        if not img_path or not Path(img_path).exists():
+            return None
+        img = Image.open(img_path).convert("RGBA")
+        if img.width > max_w:
+            img = img.resize((max_w, int(img.height * max_w / img.width)), Image.LANCZOS)
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    # ── Current canvas state ──────────────────────────────────────────────
+    objects  = st.session_state.get(obj_key, [])
+    revision = st.session_state.get(rev_key, 0)
+
+    st.markdown(f"#### ✏️ PDF Edit Mode — PO {po_num}")
+    st.caption(
+        "**Move/Resize** — select and drag any placed asset.  "
+        "**Add Text** — click anywhere on the document to type.  "
+        "**Draw** — freehand markup.  "
+        "Hit **Finalize & Save** to burn all annotations permanently into the PDF."
+    )
+
+    sidebar_col, canvas_col = st.columns([1, 3], gap="medium")
+
+    # ── Left sidebar ──────────────────────────────────────────────────────
+    with sidebar_col:
+        st.markdown("**🛠 Tool**")
+        draw_mode = st.radio(
+            "tool",
+            ["transform", "text", "freedraw", "rect"],
+            format_func=lambda x: {
+                "transform": "↕  Move / Resize",
+                "text":      "T   Add Text",
+                "freedraw":  "✏  Freehand",
+                "rect":      "▬  Rectangle",
+            }[x],
+            key=f"edit_tool_{bid}",
+            label_visibility="collapsed",
+        )
+        stroke_color = st.color_picker("Ink color",   "#1565c0", key=f"edit_col_{bid}")
+        font_size    = st.slider("Font size",   10, 48, 18,   key=f"edit_fs_{bid}")
+        stroke_width = st.slider("Stroke width", 1,  8,  2,  key=f"edit_sw_{bid}")
+
+        st.markdown("---")
+        st.markdown("**📎 Assets**")
+
+        def _add_asset_btn(img_path: str, label: str, btn_key: str,
+                           def_left: int, def_top: int) -> None:
+            b64 = _to_b64(img_path)
+            if b64 is None:
+                st.caption(f"*{label}: not captured*")
+                return
+            st.image(Image.open(img_path), caption=label, use_container_width=True)
+            if st.button(f"➕ Place {label}", key=btn_key, width='stretch'):
+                current = st.session_state.get(obj_key, [])
+                current.append({
+                    "type":       "image",
+                    "src":        b64,
+                    "left":       def_left,
+                    "top":        def_top,
+                    "scaleX":     0.25,
+                    "scaleY":     0.25,
+                    "selectable": True,
+                    "hasControls": True,
+                })
+                st.session_state[obj_key] = current
+                st.session_state[rev_key] = revision + 1
+                st.rerun()
+
+        _add_asset_btn(bol.get("signature_path", ""), "Signature",  f"add_sig_{bid}", 60,  60)
+        _add_asset_btn(bol.get("id_front_path",  ""), "ID — Front", f"add_idf_{bid}", 60, 240)
+        _add_asset_btn(bol.get("id_back_path",   ""), "ID — Back",  f"add_idb_{bid}", 60, 420)
+
+        st.markdown("---")
+        if st.button("🗑 Clear Canvas", key=f"clear_canvas_{bid}", width='stretch'):
+            st.session_state[obj_key] = []
+            st.session_state[rev_key] = revision + 1
+            st.rerun()
+
+    # ── Canvas ────────────────────────────────────────────────────────────
+    with canvas_col:
+        canvas_result = st_canvas(
+            fill_color="rgba(0,0,0,0)",
+            stroke_width=stroke_width,
+            stroke_color=stroke_color,
+            background_image=bg_scaled,
+            drawing_mode=draw_mode,
+            initial_drawing={"version": "4.4.0", "objects": objects},
+            height=CANVAS_H,
+            width=CANVAS_W,
+            key=f"canvas_{bid}_r{revision}",
+            update_streamlit=True,
+            display_toolbar=False,
+        )
+        # Persist all canvas objects after every interaction
+        if (canvas_result.json_data
+                and isinstance(canvas_result.json_data.get("objects"), list)):
+            st.session_state[obj_key] = canvas_result.json_data["objects"]
+
+    # ── Action bar ────────────────────────────────────────────────────────
+    st.markdown("---")
+    save_col, cancel_col, _ = st.columns([1, 1, 3])
+
+    if save_col.button("✅ Finalize & Save", key=f"finalize_pdf_{bid}",
+                       type="primary", width='stretch'):
+        if canvas_result.image_data is None:
+            st.warning("Make at least one change before saving.")
+        else:
+            try:
+                with st.spinner("Burning annotations into PDF…"):
+                    _burn_overlay_to_pdf(
+                        pdf_path,
+                        canvas_result.image_data,
+                        CANVAS_W,
+                        CANVAS_H,
+                    )
+                dm.update_bol_record(bid, {"annotations_saved_at": _now_str()})
+                for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key):
+                    st.session_state.pop(k, None)
+                st.success("✅ PDF updated with annotations.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Save failed: {exc}")
+
+    if cancel_col.button("✗ Cancel", key=f"cancel_pdf_edit_{bid}", width='stretch'):
+        for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key):
+            st.session_state.pop(k, None)
+        st.rerun()
 
 
 # ─── Tab 2: BOL Inspection ────────────────────────────────────────────────────
@@ -463,9 +725,12 @@ def _render_inspection_tab(dm: DataManager) -> None:
                     st.session_state.pop(edit_key, None)
                     st.rerun()
 
+            elif st.session_state.get(f"pdf_edit_mode_{bid}"):
+                _render_pdf_edit_mode(dm, bol)
+
             else:
                 # ── Action buttons row ───────────────────────────────────────
-                b1, b2, b3 = st.columns(3)
+                b1, b2, b3, b4 = st.columns(4)
 
                 pdf_label = "📄 Hide PDF" if st.session_state.get(pdf_key) else "📄 View PDF"
                 if pdf_exists:
@@ -480,7 +745,12 @@ def _render_inspection_tab(dm: DataManager) -> None:
                     st.session_state[form_key] = not st.session_state.get(form_key, False)
                     st.rerun()
 
-                if b3.button("✏️ Edit", key=f"insp_ebtn_{bid}", width='stretch'):
+                if b3.button("🖊 Edit PDF", key=f"insp_pdfedit_{bid}", width='stretch',
+                             disabled=not pdf_exists):
+                    st.session_state[f"pdf_edit_mode_{bid}"] = True
+                    st.rerun()
+
+                if b4.button("✏️ Edit", key=f"insp_ebtn_{bid}", width='stretch'):
                     st.session_state[edit_key] = True
                     st.rerun()
 
@@ -663,7 +933,10 @@ def render(dm: DataManager) -> None:
 
     bol_records = dm.get_bol_records()
 
-    # Run auto-transition watcher only when needed
+    # Always poll for kiosk-triggered status changes (e.g. pending_checkin → bol_inspection)
+    _bol_status_watcher(dm)
+
+    # Run check-in hold timer only when needed
     if any(r.get("status") == "checked_in" for r in bol_records):
         _checkin_watcher(dm)
 
