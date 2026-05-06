@@ -271,13 +271,13 @@ def _render_checkin_tab(dm: DataManager) -> None:
         if status == "pending_checkin":
             st.markdown(
                 f'<div style="background:#fff3cd;border:2px solid #ffc107;'
-                f'border-radius:8px;padding:12px 16px;margin-bottom:8px;">'
-                f'<div style="font-weight:700;font-size:1.05em;margin-bottom:6px;">'
+                f'border-radius:8px;padding:12px 16px;margin-bottom:8px;color:#000;">'
+                f'<div style="font-weight:700;font-size:1.05em;margin-bottom:6px;color:#000;">'
                 f'PO Number: {po_num}</div>'
-                f'<div style="font-size:0.9em;margin-bottom:8px;">📅 Date Received: {received}'
+                f'<div style="font-size:0.9em;margin-bottom:8px;color:#000;">📅 Date Received: {received}'
                 + (f'&nbsp;&nbsp;|&nbsp;&nbsp;🏢 {client_name}' if client_name else '')
                 + f'</div>'
-                f'<div style="color:#856404;font-style:italic;">'
+                f'<div style="color:#5a4000;font-style:italic;">'
                 f'⏳ The check-in of the driver is pending.</div>'
                 f'</div>',
                 unsafe_allow_html=True,
@@ -311,43 +311,121 @@ def _render_checkin_tab(dm: DataManager) -> None:
 
 # ─── PDF Edit Mode helpers ────────────────────────────────────────────────────
 
-def _pdf_page_to_pil(pdf_path: str, page_index: int = 0, scale: float = 2.0):
-    """Render a PDF page to a PIL Image using pypdfium2 (already in requirements)."""
+@st.cache_data(show_spinner=False)
+def _pdf_page_to_pil(pdf_path: str, page_index: int = 0,
+                     scale: float = 2.0, file_mtime: float = 0.0):
+    """
+    Render one PDF page to a flat RGB PIL Image (white background).
+
+    Results are cached by Streamlit keyed on path + mtime + scale, so repeated
+    reruns inside the editor cost nothing.  Pass ``file_mtime`` from
+    ``Path(pdf_path).stat().st_mtime`` so the cache auto-invalidates whenever
+    the file is overwritten by a save.
+
+    pypdfium2 5.x renders BGR (3 ch); older builds used BGRA (4 ch).  We detect
+    the channel count from the buffer size and swap B↔R explicitly via numpy
+    rather than trusting ``bitmap.to_pil()`` which gets the order wrong on some
+    builds.
+    """
+    import numpy as np
+    from PIL import Image as _PIL
     import pypdfium2 as pdfium  # type: ignore
+
     doc    = pdfium.PdfDocument(pdf_path)
     page   = doc[page_index]
     bitmap = page.render(scale=scale)
-    img    = bitmap.to_pil()
+    w, h   = bitmap.width, bitmap.height
+
+    # np.frombuffer() produces a *view* into the memoryview — no data copy.
+    # doc.close() frees the underlying C memory, leaving the view dangling
+    # (reads as zeros = solid black).  np.array() forces an eager copy so
+    # the data survives after the document is closed.
+    raw  = np.array(bitmap.buffer, dtype=np.uint8)
     doc.close()
-    return img
+
+    n_ch = raw.size // (h * w)
+    arr  = raw.reshape(h, w, n_ch)
+
+    if n_ch == 4:                              # BGRA → RGBA, flatten on white
+        img = _PIL.fromarray(arr[:, :, [2, 1, 0, 3]], "RGBA")
+        out = _PIL.new("RGB", img.size, (255, 255, 255))
+        out.paste(img, mask=img.split()[3])
+        return out
+    if n_ch == 3:                              # BGR → RGB, already opaque
+        return _PIL.fromarray(arr[:, :, [2, 1, 0]], "RGB")
+    return _PIL.fromarray(arr.squeeze()).convert("RGB")  # grayscale / other
 
 
-def _burn_overlay_to_pdf(pdf_path: str, overlay_rgba, canvas_w: int, canvas_h: int) -> None:
+@st.cache_data(show_spinner=False)
+def _asset_to_b64(img_path: str, max_w: int = 300) -> str | None:
+    """Convert a local image file to a base64 PNG data-URI (cached)."""
+    from io import BytesIO
+    import base64
+    from PIL import Image as _PIL
+
+    if not img_path or not Path(img_path).exists():
+        return None
+    img = _PIL.open(img_path).convert("RGBA")
+    if img.width > max_w:
+        img = img.resize((max_w, int(img.height * max_w / img.width)), _PIL.LANCZOS)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _burn_overlay_to_pdf(pdf_path: str, overlay_rgba,
+                          canvas_w: int, canvas_h: int,
+                          bg_img=None) -> None:
     """
-    Replace PDF page 0 with the fully-composited canvas image (RGBA numpy array).
-    All pages after page 0 are kept intact.  Overwrites pdf_path in-place.
+    Replace PDF page 0 with the canvas annotations burned on top of the original
+    page.  All remaining pages are kept intact.  Overwrites pdf_path in-place.
+
+    ``bg_img`` – the already-rendered RGB PIL Image of page 0 (from
+    ``_pdf_page_to_pil``).  Pass it to avoid a redundant decode; if omitted the
+    function re-renders from disk (cache hit when called from the editor).
     """
+    import numpy as np
     from io import BytesIO
     from PIL import Image
     from reportlab.pdfgen import canvas as _rl_canvas
     from reportlab.lib.utils import ImageReader
     from pypdf import PdfWriter, PdfReader
 
-    annotated = Image.fromarray(overlay_rgba.astype("uint8"), "RGBA").convert("RGB")
+    # 1. Background: use the pre-rendered image when available, else re-render
+    #    (will be a Streamlit cache hit if called shortly after the editor opened).
+    if bg_img is None:
+        file_mtime = Path(pdf_path).stat().st_mtime
+        bg_img = _pdf_page_to_pil(pdf_path, 0, 2.0, file_mtime)
+    bg = bg_img.resize((canvas_w, canvas_h), Image.LANCZOS).convert("RGBA")
 
-    reader = PdfReader(pdf_path)
-    orig_w = float(reader.pages[0].mediabox.width)
-    orig_h = float(reader.pages[0].mediabox.height)
+    # 2. Punch out the white canvas background so only drawn annotations remain.
+    overlay_arr             = overlay_rgba.astype(np.uint8).copy()
+    white_mask              = overlay_arr[..., :3].astype(np.uint16).sum(axis=-1) > 720
+    overlay_arr[white_mask, 3] = 0
 
+    overlay    = Image.fromarray(overlay_arr, "RGBA")
+    composited = Image.alpha_composite(bg, overlay).convert("RGB")
+
+    # 3. Read the whole file into memory NOW so we can safely overwrite it later.
+    #    On Windows, PdfReader keeps a file handle open; reading into BytesIO
+    #    first lets us write back to the same path without a sharing violation.
+    pdf_bytes = Path(pdf_path).read_bytes()
+    reader    = PdfReader(BytesIO(pdf_bytes))
+    orig_w    = float(reader.pages[0].mediabox.width)
+    orig_h    = float(reader.pages[0].mediabox.height)
+
+    # 4. Draw composited image into a new PDF page at original dimensions
     img_buf = BytesIO()
-    annotated.save(img_buf, format="PNG")
+    composited.save(img_buf, format="PNG")
     img_buf.seek(0)
 
     rl_buf = BytesIO()
     c = _rl_canvas.Canvas(rl_buf, pagesize=(orig_w, orig_h))
     c.drawImage(ImageReader(img_buf), 0, 0, width=orig_w, height=orig_h)
     c.save()
+    rl_buf.seek(0)
 
+    # 5. Replace page 0, keep remaining pages intact
     writer = PdfWriter()
     writer.add_page(PdfReader(rl_buf).pages[0])
     for i in range(1, len(reader.pages)):
@@ -358,6 +436,7 @@ def _burn_overlay_to_pdf(pdf_path: str, overlay_rgba, canvas_w: int, canvas_h: i
     Path(pdf_path).write_bytes(out.getvalue())
 
 
+@st.fragment
 def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
     """
     Full-screen interactive PDF annotation editor.
@@ -371,8 +450,6 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
       canvas_obj_{bid}  – list of Fabric.js objects persisted across reruns
       canvas_rev_{bid}  – int revision counter; incrementing forces canvas re-init
     """
-    import base64
-    from io import BytesIO
     from PIL import Image
 
     try:
@@ -384,27 +461,8 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
         )
         if st.button("✗ Close", key=f"close_edit_import_{bol['id']}"):
             st.session_state.pop(f"pdf_edit_mode_{bol['id']}", None)
-            st.rerun()
+            st.rerun(scope="app")
         return
-
-    # ── Compatibility shim: streamlit-drawable-canvas 0.9.x uses the private
-    # st.elements.image.image_to_url API that was removed in Streamlit 1.28+.
-    # Inject a minimal replacement so the canvas background renders correctly.
-    import streamlit.elements.image as _st_img_mod
-    if not hasattr(_st_img_mod, "image_to_url"):
-        import base64 as _b64m
-        from io import BytesIO as _BIOm
-        from PIL import Image as _PILm
-
-        def _image_to_url_shim(image, width=-1, clamp=False, channels="RGB",
-                                output_format="auto", image_id="", **_kw):
-            if isinstance(image, _PILm.Image):
-                _buf = _BIOm()
-                image.save(_buf, format="PNG")
-                return "data:image/png;base64," + _b64m.b64encode(_buf.getvalue()).decode()
-            return ""
-
-        _st_img_mod.image_to_url = _image_to_url_shim
 
     bid      = bol["id"]
     po_num   = bol.get("po_number", "—")
@@ -412,30 +470,20 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
     obj_key  = f"canvas_obj_{bid}"
     rev_key  = f"canvas_rev_{bid}"
 
-    # ── Render PDF page to background image ──────────────────────────────
+    # ── Render PDF page (cached by mtime — free on subsequent reruns) ────
     try:
-        bg_full = _pdf_page_to_pil(pdf_path, page_index=0, scale=2.0)
+        file_mtime = Path(pdf_path).stat().st_mtime
+        bg_full    = _pdf_page_to_pil(pdf_path, 0, 2.0, file_mtime)
     except Exception as exc:
         st.error(f"Could not render PDF page: {exc}")
         if st.button("✗ Close Editor", key=f"close_edit_err_{bid}"):
             st.session_state.pop(f"pdf_edit_mode_{bid}", None)
-            st.rerun()
+            st.rerun(scope="app")
         return
 
     CANVAS_W  = 720
     CANVAS_H  = int(bg_full.height * CANVAS_W / bg_full.width)
     bg_scaled = bg_full.resize((CANVAS_W, CANVAS_H), Image.LANCZOS)
-
-    # ── Helper: PIL/path → base64 data-URI ───────────────────────────────
-    def _to_b64(img_path: str, max_w: int = 900) -> str | None:
-        if not img_path or not Path(img_path).exists():
-            return None
-        img = Image.open(img_path).convert("RGBA")
-        if img.width > max_w:
-            img = img.resize((max_w, int(img.height * max_w / img.width)), Image.LANCZOS)
-        buf = BytesIO()
-        img.save(buf, format="PNG")
-        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
     # ── Current canvas state ──────────────────────────────────────────────
     objects  = st.session_state.get(obj_key, [])
@@ -475,11 +523,11 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
 
         def _add_asset_btn(img_path: str, label: str, btn_key: str,
                            def_left: int, def_top: int) -> None:
-            b64 = _to_b64(img_path)
+            b64 = _asset_to_b64(img_path)   # cached — free after first load
             if b64 is None:
                 st.caption(f"*{label}: not captured*")
                 return
-            st.image(Image.open(img_path), caption=label, use_container_width=True)
+            st.image(img_path, caption=label, use_container_width=True)
             if st.button(f"➕ Place {label}", key=btn_key, width='stretch'):
                 current = st.session_state.get(obj_key, [])
                 current.append({
@@ -508,11 +556,17 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
 
     # ── Canvas ────────────────────────────────────────────────────────────
     with canvas_col:
+        # Show the PDF page as a reference so the admin knows where to place annotations.
+        # The canvas below is transparent — annotations drawn here are composited
+        # directly onto this page when "Finalize & Save" is clicked.
+        st.image(bg_scaled, width=CANVAS_W,
+                 caption="📄 PDF page — draw annotations on the canvas below at the same scale")
+
         canvas_result = st_canvas(
             fill_color="rgba(0,0,0,0)",
             stroke_width=stroke_width,
             stroke_color=stroke_color,
-            background_image=bg_scaled,
+            background_color="rgba(255,255,255,1)",
             drawing_mode=draw_mode,
             initial_drawing={"version": "4.4.0", "objects": objects},
             height=CANVAS_H,
@@ -542,19 +596,20 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
                         canvas_result.image_data,
                         CANVAS_W,
                         CANVAS_H,
+                        bg_img=bg_full,   # reuse already-rendered page, skip re-decode
                     )
                 dm.update_bol_record(bid, {"annotations_saved_at": _now_str()})
                 for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key):
                     st.session_state.pop(k, None)
                 st.success("✅ PDF updated with annotations.")
-                st.rerun()
+                st.rerun(scope="app")
             except Exception as exc:
                 st.error(f"Save failed: {exc}")
 
     if cancel_col.button("✗ Cancel", key=f"cancel_pdf_edit_{bid}", width='stretch'):
         for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key):
             st.session_state.pop(k, None)
-        st.rerun()
+        st.rerun(scope="app")
 
 
 # ─── Tab 2: BOL Inspection ────────────────────────────────────────────────────
@@ -690,6 +745,13 @@ def _render_inspection_tab(dm: DataManager) -> None:
 
     st.caption(f"{len(inspection_bols)} BOL(s)")
 
+    # Determine if any BOL is currently open in PDF edit mode.
+    # Only one can be active at a time for performance.
+    active_pdf_edit_id = next(
+        (r["id"] for r in inspection_bols if st.session_state.get(f"pdf_edit_mode_{r['id']}")),
+        None,
+    )
+
     for bol in inspection_bols:
         bid        = bol["id"]
         po_num     = bol.get("po_number", "—")
@@ -745,8 +807,9 @@ def _render_inspection_tab(dm: DataManager) -> None:
                     st.session_state[form_key] = not st.session_state.get(form_key, False)
                     st.rerun()
 
+                another_open = active_pdf_edit_id is not None and active_pdf_edit_id != bid
                 if b3.button("🖊 Edit PDF", key=f"insp_pdfedit_{bid}", width='stretch',
-                             disabled=not pdf_exists):
+                             disabled=not pdf_exists or another_open):
                     st.session_state[f"pdf_edit_mode_{bid}"] = True
                     st.rerun()
 
@@ -772,7 +835,7 @@ def _render_inspection_tab(dm: DataManager) -> None:
                         "to append a notes page to the BOL PDF."
                     )
 
-                    prev = bol.get("admin_annotations", {})
+                    prev = bol.get("admin_annotations") or {}
 
                     fc1, fc2 = st.columns(2)
                     carrier     = fc1.text_input("Carrier / Transportista",
