@@ -195,13 +195,37 @@ def _render_inbox_section(dm: DataManager) -> None:
                     st.session_state[edit_key] = True
                     st.rerun()
 
-                pdf_label = "📄 Hide PDF" if st.session_state.get(pdf_key) else "📄 View PDF"
+                # Detect a corrupted/empty PDF (< 5 KB usually means a bad write)
+                _pdf_corrupt = False
                 if pdf_exists:
+                    try:
+                        _pdf_corrupt = Path(pdf_path).stat().st_size < 5_000
+                    except OSError:
+                        _pdf_corrupt = True
+
+                pdf_label = "📄 Hide PDF" if st.session_state.get(pdf_key) else "📄 View PDF"
+                if pdf_exists and not _pdf_corrupt:
                     if b2.button(pdf_label, key=f"bol_epdf_{bid}", width='stretch'):
                         st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
                         st.rerun()
                 else:
                     b2.button("📄 View PDF", key=f"bol_epdf_na_{bid}", disabled=True, width='stretch')
+
+                if _pdf_corrupt:
+                    st.warning("⚠️ PDF appears corrupted or missing. Upload a replacement below.")
+                if not pdf_exists or _pdf_corrupt:
+                    _up = st.file_uploader(
+                        "Upload BOL PDF", type="pdf",
+                        key=f"bol_pdf_upload_{bid}",
+                        label_visibility="collapsed",
+                    )
+                    if _up is not None:
+                        from config import BOLS_DIR
+                        _dest = BOLS_DIR / (Path(pdf_path).name if pdf_exists else f"BOL_{bol.get('po_number','unknown')}_{bid[:8]}.pdf")
+                        _dest.write_bytes(_up.read())
+                        dm.update_bol_record(bid, {"pdf_local_path": str(_dest)})
+                        st.success(f"PDF saved: {_dest.name}")
+                        st.rerun()
 
                 if st.session_state.get(del_key):
                     b3.caption("⚠️ Sure?")
@@ -356,6 +380,31 @@ def _pdf_page_to_pil(pdf_path: str, page_index: int = 0,
     return _PIL.fromarray(arr.squeeze()).convert("RGB")  # grayscale / other
 
 
+def _pil_to_jpeg_b64(img, quality: int = 85) -> str:
+    """Convert a PIL Image to a JPEG base64 data-URI (compact for canvas embedding)."""
+    from io import BytesIO
+    import base64
+    buf = BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=quality)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+@st.cache_data(show_spinner=False)
+def _bg_b64_for_canvas(pdf_path: str, file_mtime: float, canvas_w: int) -> str:
+    """
+    Cached JPEG base64 of the first PDF page scaled to canvas_w pixels wide.
+
+    Keyed by path + mtime so it auto-invalidates when the file changes.
+    Caching ensures the base64 string is identical across fragment reruns,
+    which prevents Fabric.js from re-loading the background on every interaction.
+    """
+    from PIL import Image as _PIL
+    bg_full = _pdf_page_to_pil(pdf_path, 0, 2.0, file_mtime)
+    canvas_h = int(bg_full.height * canvas_w / bg_full.width)
+    bg_scaled = bg_full.resize((canvas_w, canvas_h), _PIL.LANCZOS)
+    return _pil_to_jpeg_b64(bg_scaled, quality=85)
+
+
 @st.cache_data(show_spinner=False)
 def _asset_to_b64(img_path: str, max_w: int = 300) -> str | None:
     """Convert a local image file to a base64 PNG data-URI (cached)."""
@@ -373,16 +422,19 @@ def _asset_to_b64(img_path: str, max_w: int = 300) -> str | None:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def _burn_overlay_to_pdf(pdf_path: str, overlay_rgba,
-                          canvas_w: int, canvas_h: int,
-                          bg_img=None) -> None:
+def _burn_overlay_to_pdf(pdf_path: str, annotations_rgba,
+                          canvas_w: int, canvas_h: int) -> None:
     """
-    Replace PDF page 0 with the canvas annotations burned on top of the original
-    page.  All remaining pages are kept intact.  Overwrites pdf_path in-place.
+    Composite canvas annotations onto the original PDF page 0 and overwrite
+    the file in-place.  All remaining pages are kept intact.
 
-    ``bg_img`` – the already-rendered RGB PIL Image of page 0 (from
-    ``_pdf_page_to_pil``).  Pass it to avoid a redundant decode; if omitted the
-    function re-renders from disk (cache hit when called from the editor).
+    ``annotations_rgba`` is the RGBA numpy array from st_canvas with the
+    canvas background_image already composited by Fabric.js.  We re-render
+    the PDF page from disk at 2× scale, paste the annotations on top, then
+    write everything back to a PDF at the original page dimensions.
+
+    On Windows, PdfReader keeps a file handle open; reading into BytesIO first
+    lets us write back to the same path without a sharing violation.
     """
     import numpy as np
     from io import BytesIO
@@ -391,30 +443,26 @@ def _burn_overlay_to_pdf(pdf_path: str, overlay_rgba,
     from reportlab.lib.utils import ImageReader
     from pypdf import PdfWriter, PdfReader
 
-    # 1. Background: use the pre-rendered image when available, else re-render
-    #    (will be a Streamlit cache hit if called shortly after the editor opened).
-    if bg_img is None:
-        file_mtime = Path(pdf_path).stat().st_mtime
-        bg_img = _pdf_page_to_pil(pdf_path, 0, 2.0, file_mtime)
-    bg = bg_img.resize((canvas_w, canvas_h), Image.LANCZOS).convert("RGBA")
+    # Re-render the PDF page from disk so we always have a clean base
+    # (protects against the canvas returning an all-black frame on first load).
+    file_mtime = Path(pdf_path).stat().st_mtime
+    bg_pil = _pdf_page_to_pil(pdf_path, 0, 2.0, file_mtime)
 
-    # 2. Punch out the white canvas background so only drawn annotations remain.
-    overlay_arr             = overlay_rgba.astype(np.uint8).copy()
-    white_mask              = overlay_arr[..., :3].astype(np.uint16).sum(axis=-1) > 720
-    overlay_arr[white_mask, 3] = 0
+    # Scale the annotation layer to match the full-resolution PDF render
+    ann_img = Image.fromarray(annotations_rgba.astype(np.uint8), "RGBA")
+    if ann_img.size != bg_pil.size:
+        ann_img = ann_img.resize(bg_pil.size, Image.LANCZOS)
 
-    overlay    = Image.fromarray(overlay_arr, "RGBA")
-    composited = Image.alpha_composite(bg, overlay).convert("RGB")
+    # Paste annotations (RGBA) onto the PDF background using the alpha mask
+    base = bg_pil.convert("RGBA")
+    base.paste(ann_img, mask=ann_img.split()[3])
+    composited = base.convert("RGB")
 
-    # 3. Read the whole file into memory NOW so we can safely overwrite it later.
-    #    On Windows, PdfReader keeps a file handle open; reading into BytesIO
-    #    first lets us write back to the same path without a sharing violation.
     pdf_bytes = Path(pdf_path).read_bytes()
     reader    = PdfReader(BytesIO(pdf_bytes))
     orig_w    = float(reader.pages[0].mediabox.width)
     orig_h    = float(reader.pages[0].mediabox.height)
 
-    # 4. Draw composited image into a new PDF page at original dimensions
     img_buf = BytesIO()
     composited.save(img_buf, format="PNG")
     img_buf.seek(0)
@@ -425,7 +473,6 @@ def _burn_overlay_to_pdf(pdf_path: str, overlay_rgba,
     c.save()
     rl_buf.seek(0)
 
-    # 5. Replace page 0, keep remaining pages intact
     writer = PdfWriter()
     writer.add_page(PdfReader(rl_buf).pages[0])
     for i in range(1, len(reader.pages)):
@@ -469,6 +516,7 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
     pdf_path = bol.get("pdf_local_path", "")
     obj_key  = f"canvas_obj_{bid}"
     rev_key  = f"canvas_rev_{bid}"
+    init_key = f"canvas_init_{bid}"   # True after first open; prevents re-auto-placing after Clear
 
     # ── Render PDF page (cached by mtime — free on subsequent reruns) ────
     try:
@@ -481,20 +529,47 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
             st.rerun(scope="app")
         return
 
-    CANVAS_W  = 720
-    CANVAS_H  = int(bg_full.height * CANVAS_W / bg_full.width)
-    bg_scaled = bg_full.resize((CANVAS_W, CANVAS_H), Image.LANCZOS)
+    CANVAS_W = 720
+    CANVAS_H = int(bg_full.height * CANVAS_W / bg_full.width)
+
+    # Cached base64 JPEG for the Fabric.js backgroundImage.
+    # Using the Fabric.js JSON "backgroundImage" key (not the st_canvas
+    # background_image= param) bypasses the React component's broken URL
+    # prefix logic that prepends the Streamlit server URL to data URIs.
+    # Fabric.js loadFromJSON handles "backgroundImage" natively and waits
+    # for the async image load before firing renderAll — no black flash.
+    bg_b64 = _bg_b64_for_canvas(pdf_path, file_mtime, CANVAS_W)
 
     # ── Current canvas state ──────────────────────────────────────────────
-    objects  = st.session_state.get(obj_key, [])
-    revision = st.session_state.get(rev_key, 0)
+    user_objects = st.session_state.get(obj_key, [])
+    revision     = st.session_state.get(rev_key, 0)
+
+    # Auto-place signature on FIRST open so the user can drag it immediately.
+    # init_key guards against re-placing after the user explicitly clears the canvas.
+    if not st.session_state.get(init_key):
+        st.session_state[init_key] = True
+        if not user_objects:
+            _sig_b64 = _asset_to_b64(bol.get("signature_path", ""))
+            if _sig_b64:
+                user_objects = [{
+                    "type":        "image",
+                    "src":         _sig_b64,
+                    "left":        CANVAS_W // 2 - 45,
+                    "top":         int(CANVAS_H * 0.72),   # lower area (typical sig spot)
+                    "scaleX":      0.3,
+                    "scaleY":      0.3,
+                    "selectable":  True,
+                    "hasControls": True,
+                }]
+                st.session_state[obj_key] = user_objects
 
     st.markdown(f"#### ✏️ PDF Edit Mode — PO {po_num}")
     st.caption(
-        "**Move/Resize** — select and drag any placed asset.  "
-        "**Add Text** — click anywhere on the document to type.  "
-        "**Draw** — freehand markup.  "
-        "Hit **Finalize & Save** to burn all annotations permanently into the PDF."
+        "**Drag & Drop** — the signature is pre-placed on the PDF. "
+        "Select it and drag it to the correct position.  "
+        "Use the sidebar to re-add it or add ID photos.  "
+        "**Add Text / Draw** — switch tools in the sidebar.  "
+        "Hit **Finalize & Save** when done."
     )
 
     sidebar_col, canvas_col = st.columns([1, 3], gap="medium")
@@ -535,18 +610,23 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
                     "src":        b64,
                     "left":       def_left,
                     "top":        def_top,
-                    "scaleX":     0.25,
-                    "scaleY":     0.25,
+                    "scaleX":     0.3,
+                    "scaleY":     0.3,
                     "selectable": True,
                     "hasControls": True,
                 })
                 st.session_state[obj_key] = current
                 st.session_state[rev_key] = revision + 1
+                # Auto-switch to Move/Resize so the user can immediately drag it
+                st.session_state[f"edit_tool_{bid}"] = "transform"
                 st.rerun()
 
-        _add_asset_btn(bol.get("signature_path", ""), "Signature",  f"add_sig_{bid}", 60,  60)
-        _add_asset_btn(bol.get("id_front_path",  ""), "ID — Front", f"add_idf_{bid}", 60, 240)
-        _add_asset_btn(bol.get("id_back_path",   ""), "ID — Back",  f"add_idb_{bid}", 60, 420)
+        _add_asset_btn(bol.get("signature_path", ""), "Signature",  f"add_sig_{bid}",
+                       CANVAS_W // 2 - 45, CANVAS_H // 2 - 25)
+        _add_asset_btn(bol.get("id_front_path",  ""), "ID — Front", f"add_idf_{bid}",
+                       CANVAS_W // 2 - 45, CANVAS_H // 2 + 60)
+        _add_asset_btn(bol.get("id_back_path",   ""), "ID — Back",  f"add_idb_{bid}",
+                       CANVAS_W // 2 - 45, CANVAS_H // 2 + 145)
 
         st.markdown("---")
         if st.button("🗑 Clear Canvas", key=f"clear_canvas_{bid}", width='stretch'):
@@ -556,26 +636,40 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
 
     # ── Canvas ────────────────────────────────────────────────────────────
     with canvas_col:
-        # Show the PDF page as a reference so the admin knows where to place annotations.
-        # The canvas below is transparent — annotations drawn here are composited
-        # directly onto this page when "Finalize & Save" is clicked.
-        st.image(bg_scaled, width=CANVAS_W,
-                 caption="📄 PDF page — draw annotations on the canvas below at the same scale")
-
+        # "backgroundImage" in initial_drawing is processed by Fabric.js's
+        # loadFromJSON / _setBgOverlay, which waits for the async image load
+        # before firing renderAll — the PDF is always visible, never black.
+        # This avoids the React component's broken URL prefix logic that
+        # corrupts data URIs passed via the background_image= prop.
         canvas_result = st_canvas(
             fill_color="rgba(0,0,0,0)",
             stroke_width=stroke_width,
             stroke_color=stroke_color,
-            background_color="rgba(255,255,255,1)",
+            background_color="#ffffff",
             drawing_mode=draw_mode,
-            initial_drawing={"version": "4.4.0", "objects": objects},
+            initial_drawing={
+                "version":         "4.4.0",
+                "backgroundImage": {
+                    "type":        "image",
+                    "src":         bg_b64,
+                    "crossOrigin": "",
+                    "left":        0,
+                    "top":         0,
+                    "scaleX":      1.0,
+                    "scaleY":      1.0,
+                    "angle":       0,
+                    "opacity":     1,
+                    "originX":     "left",
+                    "originY":     "top",
+                },
+                "objects": user_objects,
+            },
             height=CANVAS_H,
             width=CANVAS_W,
             key=f"canvas_{bid}_r{revision}",
             update_streamlit=True,
             display_toolbar=False,
         )
-        # Persist all canvas objects after every interaction
         if (canvas_result.json_data
                 and isinstance(canvas_result.json_data.get("objects"), list)):
             st.session_state[obj_key] = canvas_result.json_data["objects"]
@@ -596,10 +690,9 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
                         canvas_result.image_data,
                         CANVAS_W,
                         CANVAS_H,
-                        bg_img=bg_full,   # reuse already-rendered page, skip re-decode
                     )
                 dm.update_bol_record(bid, {"annotations_saved_at": _now_str()})
-                for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key):
+                for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key, init_key):
                     st.session_state.pop(k, None)
                 st.success("✅ PDF updated with annotations.")
                 st.rerun(scope="app")
@@ -607,7 +700,7 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
                 st.error(f"Save failed: {exc}")
 
     if cancel_col.button("✗ Cancel", key=f"cancel_pdf_edit_{bid}", width='stretch'):
-        for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key):
+        for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key, init_key):
             st.session_state.pop(k, None)
         st.rerun(scope="app")
 
@@ -794,8 +887,16 @@ def _render_inspection_tab(dm: DataManager) -> None:
                 # ── Action buttons row ───────────────────────────────────────
                 b1, b2, b3, b4 = st.columns(4)
 
-                pdf_label = "📄 Hide PDF" if st.session_state.get(pdf_key) else "📄 View PDF"
+                # Detect corrupted/empty PDF (< 5 KB)
+                _insp_pdf_corrupt = False
                 if pdf_exists:
+                    try:
+                        _insp_pdf_corrupt = Path(pdf_path).stat().st_size < 5_000
+                    except OSError:
+                        _insp_pdf_corrupt = True
+
+                pdf_label = "📄 Hide PDF" if st.session_state.get(pdf_key) else "📄 View PDF"
+                if pdf_exists and not _insp_pdf_corrupt:
                     if b1.button(pdf_label, key=f"insp_pdf_{bid}", width='stretch'):
                         st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
                         st.rerun()
@@ -809,7 +910,7 @@ def _render_inspection_tab(dm: DataManager) -> None:
 
                 another_open = active_pdf_edit_id is not None and active_pdf_edit_id != bid
                 if b3.button("🖊 Edit PDF", key=f"insp_pdfedit_{bid}", width='stretch',
-                             disabled=not pdf_exists or another_open):
+                             disabled=not pdf_exists or _insp_pdf_corrupt or another_open):
                     st.session_state[f"pdf_edit_mode_{bid}"] = True
                     st.rerun()
 
@@ -817,8 +918,24 @@ def _render_inspection_tab(dm: DataManager) -> None:
                     st.session_state[edit_key] = True
                     st.rerun()
 
+                if _insp_pdf_corrupt:
+                    st.warning("⚠️ PDF appears corrupted or missing. Upload a replacement below.")
+                if not pdf_exists or _insp_pdf_corrupt:
+                    _insp_up = st.file_uploader(
+                        "Upload replacement BOL PDF", type="pdf",
+                        key=f"insp_pdf_upload_{bid}",
+                        label_visibility="collapsed",
+                    )
+                    if _insp_up is not None:
+                        from config import BOLS_DIR
+                        _dest = BOLS_DIR / (Path(pdf_path).name if pdf_exists else f"BOL_{po_num}_{bid[:8]}.pdf")
+                        _dest.write_bytes(_insp_up.read())
+                        dm.update_bol_record(bid, {"pdf_local_path": str(_dest)})
+                        st.success(f"PDF saved: {_dest.name}")
+                        st.rerun()
+
                 # ── PDF viewer ───────────────────────────────────────────────
-                if st.session_state.get(pdf_key) and pdf_exists:
+                if st.session_state.get(pdf_key) and pdf_exists and not _insp_pdf_corrupt:
                     from streamlit_pdf_viewer import pdf_viewer
                     _b = _get_pdf_bytes(pdf_path)
                     if _b:
@@ -996,12 +1113,29 @@ def render(dm: DataManager) -> None:
 
     bol_records = dm.get_bol_records()
 
-    # Always poll for kiosk-triggered status changes (e.g. pending_checkin → bol_inspection)
-    _bol_status_watcher(dm)
+    # ── Global PDF-edit warning ────────────────────────────────────────────────
+    # If any BOL PDF editor is open, show a sticky banner so the user knows to
+    # finish or cancel before navigating away.  Also pause auto-refresh fragments
+    # to prevent unexpected reruns from disrupting the canvas state.
+    _editing_bols = [
+        r for r in bol_records
+        if st.session_state.get(f"pdf_edit_mode_{r['id']}")
+    ]
+    _any_editing = bool(_editing_bols)
 
-    # Run check-in hold timer only when needed
-    if any(r.get("status") == "checked_in" for r in bol_records):
-        _checkin_watcher(dm)
+    if _any_editing:
+        _edit_pos = ", ".join(r.get("po_number", "?") for r in _editing_bols)
+        st.warning(
+            f"⚠️ **PDF edit in progress — PO(s): {_edit_pos}** — "
+            f"Open the **BOL Inspection** tab to finish or cancel your edits "
+            f"before switching pages.",
+        )
+
+    # Auto-refresh fragments are paused while editing to keep the canvas stable.
+    if not _any_editing:
+        _bol_status_watcher(dm)
+        if any(r.get("status") == "checked_in" for r in bol_records):
+            _checkin_watcher(dm)
 
     tab_validation, tab_checkin, tab_inspection, tab_printed = st.tabs([
         "📋 Validation",
