@@ -141,11 +141,11 @@ def _canonical_client(name: str) -> str:
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("📊 Lead")
 
-    tab_report, tab_rates, tab_settings, tab_processed = st.tabs([
+    tab_report, tab_rates, tab_processed, tab_settings = st.tabs([
         "📊 Reports",
         "💲 Rate Card",
-        "⚙️ Settings",
         "📁 Processed Invoices",
+        "⚙️ Settings",
     ])
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -365,87 +365,200 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         st.markdown("---")
 
-        # ── Add New Client Rates ──────────────────────────────────────────────
-        st.markdown("**Add rates for a new client:**")
-        new_client_name = st.text_input("Client name", placeholder="e.g. Walmart", key="new_client_name")
+        # ── Add New Client (Unified Profile) ─────────────────────────────────
+        st.markdown("#### Add New Client")
+        st.caption("Fill in the full client profile below and click **Save Client Profile** to register everything at once.")
 
-        if new_client_name.strip():
-            new_cbp = st.toggle(
-                "Charged by Pallet",
-                value=True,
-                key="new_client_cbp",
-                help="ON = per pallet. OFF = flat cost per truck.",
-            )
-            if new_cbp:
-                new_billing = {
-                    "in_out"  : "In-Out Storage (per pallet)",
-                    "transfer": "Transfer (per pallet)",
-                }
+        # Identity row
+        _nid1, _nid2 = st.columns([2, 1])
+        new_client_name     = _nid1.text_input(
+            "Client Name *",
+            placeholder="e.g. WALMART",
+            key="new_client_name",
+        )
+        new_client_initials = _nid2.text_input(
+            "Initials",
+            placeholder="e.g. WMT",
+            key="new_client_initials",
+            help="Short code used on invoices (e.g. WMT, BBIA). Saved in uppercase.",
+        )
+
+        # Contact / address row
+        new_client_email = st.text_input(
+            "Email Address",
+            placeholder="billing@client.com",
+            key="new_client_email",
+        )
+        new_client_address = st.text_area(
+            "Billing Address",
+            placeholder="123 Main St\nCity, TX 78000",
+            height=90,
+            key="new_client_address",
+        )
+
+        # Rate card
+        st.caption("Rate Card")
+        new_cbp = st.toggle(
+            "Charged by Pallet",
+            value=True,
+            key="new_client_cbp",
+            help="ON = per pallet. OFF = flat cost per truck.",
+        )
+        if new_cbp:
+            new_billing = {
+                "in_out"  : "In-Out Storage (per pallet)",
+                "transfer": "Transfer (per pallet)",
+            }
+        else:
+            new_billing = {"cost_per_truck": "Cost per Truck"}
+
+        new_client_labels = {**new_billing, **_non_billing_labels}
+        new_col1, new_col2 = st.columns(2)
+        new_client_overrides: dict = {"charged_by_pallet": new_cbp}
+        new_items = list(new_client_labels.items())
+        for i, (key, label) in enumerate(new_items):
+            col = new_col1 if i < len(new_items) // 2 + len(new_items) % 2 else new_col2
+            if key == "net_days":
+                default_val = int(default_rates.get(key, 30))
+                new_val = col.number_input(
+                    label=label,
+                    value=default_val,
+                    min_value=1,
+                    step=1,
+                    key=f"new_cr_{key}",
+                )
             else:
-                new_billing = {"cost_per_truck": "Cost per Truck"}
+                default_val = float(default_rates.get(key, 0))
+                new_val = col.number_input(
+                    label=f"{label} ($)",
+                    value=default_val,
+                    min_value=0.0,
+                    step=0.25,
+                    format="%.2f",
+                    key=f"new_cr_{key}",
+                )
+            if new_val != default_val:
+                new_client_overrides[key] = new_val
 
-            new_client_labels = {**new_billing, **_non_billing_labels}
-            new_col1, new_col2 = st.columns(2)
-            new_client_overrides: dict = {"charged_by_pallet": new_cbp}
-            new_items = list(new_client_labels.items())
-            for i, (key, label) in enumerate(new_items):
-                col = new_col1 if i < len(new_items) // 2 + len(new_items) % 2 else new_col2
-                if key == "net_days":
-                    default_val = int(default_rates.get(key, 30))
-                    new_val = col.number_input(
-                        label=label,
-                        value=default_val,
-                        min_value=1,
-                        step=1,
-                        key=f"new_cr_{key}",
-                    )
-                else:
-                    default_val = float(default_rates.get(key, 0))
-                    new_val = col.number_input(
-                        label=f"{label} ($)",
-                        value=default_val,
-                        min_value=0.0,
-                        step=0.25,
-                        format="%.2f",
-                        key=f"new_cr_{key}",
-                    )
-                if new_val != default_val:
-                    new_client_overrides[key] = new_val
+        st.caption("Pallet Override — leave at 0 to disable. When set, this count is always pre-filled for this client's invoices.")
+        _new_fixed_pal = st.number_input(
+            "Fixed Pallet Count (optional)",
+            min_value=0,
+            step=1,
+            value=0,
+            key="new_cr_fixed_pal",
+        )
+        if _new_fixed_pal > 0:
+            new_client_overrides["fixed_pallet_count"] = int(_new_fixed_pal)
 
-            st.markdown("---")
-            st.caption("Pallet Override")
-            _new_fixed_pal = st.number_input(
-                "Fixed Pallet Count (optional)",
-                min_value=0,
-                step=1,
-                value=0,
-                key="new_cr_fixed_pal",
-            )
-            st.caption("Leave at 0 to disable — when set, this count is always pre-filled for this client's invoices.")
-            if _new_fixed_pal > 0:
-                new_client_overrides["fixed_pallet_count"] = int(_new_fixed_pal)
-
-            if _colored_btn(st, "💾 Save Client Rates", key="save_new_client", color="#198754"):
+        if _colored_btn(st, "💾 Save Client Profile", key="save_new_client", color="#198754"):
+            if not new_client_name.strip():
+                st.warning("Client name is required.")
+            else:
                 _saved_name = new_client_name.strip().upper()
                 dm.set_client_rates(_saved_name, new_client_overrides)
-                st.session_state["rates_saved_msg"] = f"✅ Rates saved for {_saved_name}."
-                st.session_state["new_client_save_inline"] = f"Rates saved for **{_saved_name}**."
+                if new_client_address.strip():
+                    dm.set_client_address(_saved_name, new_client_address.strip())
+                if new_client_email.strip():
+                    dm.set_client_email(_saved_name, new_client_email.strip())
+                if new_client_initials.strip():
+                    dm.set_client_initial(_saved_name, new_client_initials.strip())
+                st.session_state["rates_saved_msg"] = f"✅ Client profile saved for {_saved_name}."
+                st.session_state.pop("new_client_save_inline", None)
+                st.session_state["new_client_save_inline"] = f"Client profile saved for **{_saved_name}**."
                 st.rerun()
 
-            if _inline := st.session_state.get("new_client_save_inline"):
-                st.success(_inline)
+        if _inline := st.session_state.pop("new_client_save_inline", None):
+            st.success(_inline)
 
         st.markdown("---")
 
-        # ── Per-Client Rates ──────────────────────────────────────────────────
-        st.markdown("#### Per-Client Rate Overrides")
-        st.caption("Set rates for a specific client. Only fields you change here will override the defaults.")
+        # ── Client Details ────────────────────────────────────────────────────
+        st.markdown("#### Client Details")
+        st.caption("Edit initials, contact info, billing address, and rate card for each client.")
 
-        if all_client_rates:
-            st.markdown("**Clients with custom rates:**")
-            for cname, crates in all_client_rates.items():
-                with st.expander(cname):
-                    # Per-client billing mode toggle
+        all_addresses   = dm.get_client_addresses()
+        all_emails      = dm.get_client_emails()
+        all_initials_cd = dm.get_client_initials()
+
+        _all_cd_names = sorted(
+            set(all_client_rates.keys())
+            | set(all_addresses.keys())
+            | set(all_emails.keys())
+            | set(all_initials_cd.keys())
+        )
+
+        if _all_cd_names:
+            for cname in _all_cd_names:
+                crates = all_client_rates.get(cname, {})
+                _cd_v  = st.session_state.get(f"cd_exp_v_{cname}", 0)
+
+                with st.expander(cname, expanded=False, key=f"cd_exp_{cname}_{_cd_v}"):
+
+                    # ── Delete button (top-right, red) ────────────────────────
+                    _anchor = f"cd_delbtn_{cname}".replace(" ", "_").replace("-", "_")
+                    _del_spacer, _del_btn_col = st.columns([6, 1])
+                    with _del_btn_col:
+                        st.markdown(
+                            f"<span id='{_anchor}'></span>"
+                            f"<style>"
+                            f"[data-testid='element-container']:has(span#{_anchor})"
+                            f" + [data-testid='element-container'] button,"
+                            f"[data-testid='stColumn']:has(span#{_anchor}) button"
+                            f"{{background-color:#dc3545!important;"
+                            f"border-color:#dc3545!important;color:white!important;"
+                            f"font-size:12px!important;padding:2px 8px!important;}}"
+                            f"</style>",
+                            unsafe_allow_html=True,
+                        )
+                        if st.button("✕ DELETE", key=f"cd_del_btn_{cname}", help=f"Delete {cname}", use_container_width=True):
+                            st.session_state[f"cd_del_confirm_{cname}"] = True
+                            st.rerun()
+
+                    # Confirm-delete prompt (inside the expander)
+                    if st.session_state.get(f"cd_del_confirm_{cname}"):
+                        _dc1, _dc2, _dc3 = st.columns([3, 1, 1])
+                        _dc1.warning(f"Delete **{cname}** and all associated data?")
+                        if _dc2.button("✅ Yes", key=f"cd_del_yes_{cname}", use_container_width=True):
+                            dm.delete_client_rates(cname)
+                            dm.set_client_initial(cname, "")
+                            dm.set_client_email(cname, "")
+                            dm.set_client_address(cname, "")
+                            st.session_state.pop(f"cd_del_confirm_{cname}", None)
+                            st.session_state["rates_saved_msg"] = f"✅ {cname} deleted."
+                            st.rerun()
+                        if _dc3.button("✗ Cancel", key=f"cd_del_no_{cname}", use_container_width=True):
+                            st.session_state.pop(f"cd_del_confirm_{cname}", None)
+                            st.rerun()
+
+                    # ── Identity ──────────────────────────────────────────────
+                    st.caption("Identity")
+                    new_initials = st.text_input(
+                        "Initials",
+                        value=all_initials_cd.get(cname, ""),
+                        placeholder="e.g. WMT",
+                        key=f"cd_initials_{cname}",
+                        help="Short code used on invoice IDs (e.g. WMT_2001).",
+                    )
+
+                    # ── Contact ───────────────────────────────────────────────
+                    st.caption("Contact")
+                    new_email = st.text_input(
+                        "Email Address",
+                        value=all_emails.get(cname, ""),
+                        placeholder="billing@client.com",
+                        key=f"cd_email_{cname}",
+                    )
+                    new_addr = st.text_area(
+                        "Billing Address",
+                        value=all_addresses.get(cname, ""),
+                        placeholder="123 Main St\nCity, TX 78000",
+                        height=90,
+                        key=f"cd_addr_{cname}",
+                    )
+
+                    # ── Rate Card ─────────────────────────────────────────────
+                    st.caption("Rate Card")
                     client_cbp = st.toggle(
                         "Charged by Pallet",
                         value=bool(crates.get("charged_by_pallet", charged_by_pallet)),
@@ -462,7 +575,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
                     client_labels  = {**client_billing, **_non_billing_labels}
                     override_items = list(client_labels.items())
-                    # Always persist the toggle state; other fields added below if they differ
                     new_overrides: dict = {"charged_by_pallet": client_cbp}
 
                     override_col1, override_col2 = st.columns(2)
@@ -495,8 +607,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         if new_val != default_val:
                             new_overrides[key] = new_val
 
-                    st.markdown("---")
-                    st.caption("Pallet Override")
+                    st.caption("Pallet Override — leave at 0 to disable.")
                     _fixed_pal = st.number_input(
                         "Fixed Pallet Count (optional)",
                         min_value=0,
@@ -504,142 +615,29 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         value=int(crates.get("fixed_pallet_count", 0) or 0),
                         key=f"cr_{cname}_fixed_pal",
                     )
-                    st.caption("Leave at 0 to disable — when set, this count is always pre-filled for this client's invoices.")
                     if _fixed_pal > 0:
                         new_overrides["fixed_pallet_count"] = int(_fixed_pal)
 
+                    # ── Buttons ───────────────────────────────────────────────
                     btn_col1, btn_col2 = st.columns(2)
-                    if _colored_btn(btn_col1, "💾 Save", key=f"save_cr_{cname}", color="#198754"):
+                    if _colored_btn(btn_col1, "💾 Save", key=f"save_cd_{cname}", color="#198754"):
                         dm.set_client_rates(cname, new_overrides)
-                        st.session_state["rates_saved_msg"] = f"✅ Rates saved for {cname}."
+                        dm.set_client_initial(cname, new_initials.strip())
+                        dm.set_client_email(cname, new_email.strip())
+                        dm.set_client_address(cname, new_addr.strip())
+                        st.session_state[f"cd_exp_v_{cname}"] = _cd_v + 1
+                        st.session_state["rates_saved_msg"] = f"✅ {cname} saved."
+                        st.session_state[f"cd_saved_{cname}"] = f"Details saved for **{cname}**."
                         st.rerun()
                     if btn_col2.button("🗑 Delete Custom Rates", key=f"del_cr_{cname}", type="primary"):
                         dm.delete_client_rates(cname)
                         st.session_state["rates_saved_msg"] = f"✅ Custom rates removed for {cname}. Now using defaults."
                         st.rerun()
+
+                if _cdmsg := st.session_state.pop(f"cd_saved_{cname}", None):
+                    st.success(_cdmsg)
         else:
-            st.info("No client-specific rates set yet.")
-
-        st.markdown("---")
-
-        # ── Client Billing Addresses ──────────────────────────────────────────
-        st.markdown("#### Client Billing Addresses")
-        st.caption("Address printed in the Bill To section of the generated invoice.")
-
-        all_addresses = dm.get_client_addresses()
-
-        if all_addresses:
-            st.markdown("**Saved addresses:**")
-            for cname, addr in sorted(all_addresses.items()):
-                _addr_exp_v  = st.session_state.get(f"addr_exp_v_{cname}", 0)
-                with st.expander(cname, expanded=False, key=f"addr_exp_{cname}_{_addr_exp_v}"):
-                    new_addr = st.text_area(
-                        "Address",
-                        value=addr,
-                        height=90,
-                        key=f"addr_{cname}",
-                        label_visibility="collapsed",
-                    )
-                    ac1, ac2 = st.columns(2)
-                    if _colored_btn(ac1, "💾 Save", key=f"save_addr_{cname}", color="#198754", width="stretch"):
-                        dm.set_client_address(cname, new_addr)
-                        st.session_state[f"addr_exp_v_{cname}"] = _addr_exp_v + 1
-                        st.session_state[f"addr_saved_{cname}"] = f"Address saved for **{cname}**."
-                        st.rerun()
-                    if ac2.button("🗑 Remove", key=f"del_addr_{cname}", width="stretch"):
-                        dm.set_client_address(cname, "")
-                        st.session_state[f"addr_exp_v_{cname}"] = _addr_exp_v + 1
-                        st.rerun()
-                if _amsg := st.session_state.pop(f"addr_saved_{cname}", None):
-                    st.success(_amsg)
-        else:
-            st.info("No billing addresses saved yet.")
-
-        st.markdown("**Add / update a billing address:**")
-        clients_with_rates = sorted(all_client_rates.keys())
-        if not clients_with_rates:
-            st.caption("No clients with rates found. Add client rates above first.")
-        else:
-            addr_client = st.selectbox(
-                "Client",
-                options=clients_with_rates,
-                key="new_addr_client",
-                label_visibility="collapsed",
-            )
-            existing = dm.get_client_address(addr_client)
-            new_addr_val = st.text_area(
-                "Billing Address",
-                value=existing,
-                placeholder="123 Main St\nCity, TX 78000",
-                height=90,
-                key="new_addr_val",
-            )
-            if _colored_btn(st, "💾 Save Address", key="save_new_addr", color="#198754"):
-                if not new_addr_val.strip():
-                    st.warning("Address cannot be empty.")
-                else:
-                    dm.set_client_address(addr_client, new_addr_val.strip())
-                    st.success(f"Billing address saved for {addr_client}.")
-                    st.rerun()
-
-        st.markdown("---")
-
-        # ── Client Emails ─────────────────────────────────────────────────────
-        st.markdown("#### Client Emails")
-        st.caption("Email addresses used when sending invoices to clients.")
-
-        all_emails = dm.get_client_emails()
-
-        if all_emails:
-            st.markdown("**Saved emails:**")
-            for cname, email in sorted(all_emails.items()):
-                _email_exp_v = st.session_state.get(f"email_exp_v_{cname}", 0)
-                with st.expander(cname, expanded=False, key=f"email_exp_{cname}_{_email_exp_v}"):
-                    new_email = st.text_input(
-                        "Email",
-                        value=email,
-                        key=f"email_{cname}",
-                        label_visibility="collapsed",
-                    )
-                    ec1, ec2 = st.columns(2)
-                    if _colored_btn(ec1, "💾 Save", key=f"save_email_{cname}", color="#198754", width="stretch"):
-                        dm.set_client_email(cname, new_email.strip())
-                        st.session_state[f"email_exp_v_{cname}"] = _email_exp_v + 1
-                        st.session_state[f"email_saved_{cname}"] = f"Email saved for **{cname}**."
-                        st.rerun()
-                    if ec2.button("🗑 Remove", key=f"del_email_{cname}", width="stretch"):
-                        dm.set_client_email(cname, "")
-                        st.session_state[f"email_exp_v_{cname}"] = _email_exp_v + 1
-                        st.rerun()
-                if _emsg := st.session_state.pop(f"email_saved_{cname}", None):
-                    st.success(_emsg)
-        else:
-            st.info("No client emails saved yet.")
-
-        st.markdown("**Add / update a client email:**")
-        if not clients_with_rates:
-            st.caption("No clients with rates found. Add client rates above first.")
-        else:
-            email_client = st.selectbox(
-                "Client",
-                options=clients_with_rates,
-                key="new_email_client",
-                label_visibility="collapsed",
-            )
-            existing_email = dm.get_client_email(email_client)
-            new_email_val = st.text_input(
-                "Email address",
-                value=existing_email,
-                placeholder="billing@client.com",
-                key="new_email_val",
-            )
-            if _colored_btn(st, "💾 Save Email", key="save_new_email", color="#198754"):
-                if not new_email_val.strip():
-                    st.warning("Email cannot be empty.")
-                else:
-                    dm.set_client_email(email_client, new_email_val.strip())
-                    st.success(f"Email saved for {email_client}.")
-                    st.rerun()
+            st.info("No clients found. Add a new client above.")
 
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -734,32 +732,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         st.session_state[_del_confirm_key] = True
                         st.rerun()
 
-        st.markdown("---")
-
-        st.markdown("#### Clear Pipeline Data")
-        st.caption(
-            "Removes all emails, provider invoices, and client invoices. "
-            "Rate card, client rates, and provider list are kept. "
-            "Use this to reset between test runs."
-        )
-
-        confirm = st.checkbox("I understand this will permanently delete all pipeline data.")
-        if st.button("🗑 Clear All Pipeline Data", type="primary", disabled=not confirm):
-            from config import DATA_DIR, PDFS_DIR, PHOTOS_DIR
-
-            for fname in ["email_intake_log.json", "provider_invoices.json", "client_invoices.json"]:
-                fpath = DATA_DIR / fname
-                fpath.write_text("[]", encoding="utf-8")
-
-            for folder in [PDFS_DIR, PHOTOS_DIR]:
-                for f in folder.iterdir():
-                    try:
-                        f.unlink()
-                    except Exception:
-                        pass
-
-            st.success("All pipeline data cleared. The dashboard will now show a fresh state.")
-            st.rerun()
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 4 — PROCESSED INVOICES

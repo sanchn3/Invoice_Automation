@@ -3,20 +3,13 @@
     "charged_by_pallet": true,
     "fixed_pallet_count": 20
   },
-  "EXAMPLE_3": {
-    "charged_by_pallet": true,
-    "transfer": 14.75,
-    "temp_recorder_hardware_fee": 25.5,
-    "temp_recorder_installation_fee": 15.0,
-    "quality_inspection_fee": 6.0,
-    "broken_pallet_fee": 25.5,
-    "repacking_fee": 23.5,
-    "re_inspection_fee": 3.5,
-    "broker_fee": 16.5
+  "SPIDERMAN PRODUCE": {
+    "charged_by_pallet": true
   },
-  "GREEN GOBLIN": {
+  "SPIDEY PRODUCE": {
     "charged_by_pallet": true,
-    "in_out": 45.0,
-    "pallet_cleaning_fee": 56.0
+    "in_out": 25.0,
+    "temp_recorder_hardware_fee": 34.0,
+    "temp_recorder_installation_fee": 56.0
   }
 }

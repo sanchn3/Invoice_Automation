@@ -103,15 +103,9 @@ def _canonical_client(name: str) -> str:
     return _CLIENT_ALIASES.get(name.strip().lower(), name)
 
 
-def _generate_unique_invoice_id(dm: DataManager) -> str:
-    """Return the next sequential 5-digit numeric invoice ID."""
-    numeric_ids = [
-        int(ci["quickbooks_invoice_number"])
-        for ci in dm.get_client_invoices()
-        if (ci.get("quickbooks_invoice_number") or "").isdigit()
-    ]
-    next_id = (max(numeric_ids) + 1) if numeric_ids else 10001
-    return str(next_id)
+def _preview_invoice_id(dm: DataManager, client_name: str) -> str:
+    """Return the next invoice ID for this client without consuming the counter."""
+    return dm.peek_client_invoice_number(client_name)
 
 
 def _is_stuck(log: dict) -> bool:
@@ -777,11 +771,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     r1a, r1b, r1c, r1d, r1e = st.columns([1.2, 0.9, 2, 1, 1.8])
 
                     with r1a:
-                        inv_num = (
-                            ci.get("quickbooks_invoice_number")
-                            or prov.get("invoice_number", "—")
-                        )
-                        st.markdown(f"**{inv_num}**")
+                        inv_num = ci.get("quickbooks_invoice_number")
+                        if inv_num:
+                            st.markdown(f"**{inv_num}**")
+                        else:
+                            _preview = _preview_invoice_id(dm, ci.get("client_name", ""))
+                            st.markdown(f"**{prov.get('invoice_number', '—')}**")
+                            st.caption(f"Next ID: {_preview}")
                     with r1b:
                         st.write(ci.get("invoice_date", "—"))
                     with r1c:
@@ -990,7 +986,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
 
                     if _colored_btn(_btn2, "📤 Send to Accounting", key=f"gen_{cid}", color="#198754", width="stretch"):
-                        inv_id  = _generate_unique_invoice_id(dm)
+                        inv_id  = dm.next_client_invoice_number(ci.get("client_name", ""))
                         charges = calculate_charges(
                             dm=dm,
                             service_type=svc,

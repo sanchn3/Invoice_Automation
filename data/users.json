@@ -1,26 +1,26 @@
 [
   {
+    "username": "admin",
+    "password_hash": "897ca575ae36c2a9591a3638e185be27650a5033fa6641415c8ae805568a6c4a",
+    "salt": "5ee5e9ddf5a205735af5207960f9f7a1",
+    "role": "admin"
+  },
+  {
     "username": "accounting",
-    "password_hash": "ba88cf3444b5abf08c7f2b056d4dee2d8ed716d533538c5eaed38503afb36b3c",
-    "salt": "fede5eb35d2bda605e41a2fd8cdfd310",
+    "password_hash": "97c797bb10576c82960dbbc0f5b93225f1db0266eff33fc6c5f8215fae7e29d7",
+    "salt": "31c96492844fe97293a4baa4ef83bd1a",
     "role": "accounting"
   },
   {
     "username": "operator",
-    "password_hash": "a4977bb7bf14bd14a233cdcbd649534599e6938ee22a076ff4d62a79b4e047df",
-    "salt": "5172911e8667a943c60a298483109421",
+    "password_hash": "382ac65066e36289071bdd9f16ca16bd59a518b9d0b27500aa17900dc5f4bc54",
+    "salt": "9d918529f50cc1f4c94c1628bae824f0",
     "role": "operator"
   },
   {
     "username": "lead",
-    "password_hash": "362f7d72857bb06b32477aa712683090e40b0596035bc55856122b674a78f8fa",
-    "salt": "b2ec5e2698693262de0d748b9935ee21",
+    "password_hash": "e55aba141c80f9dabae6072e925940ff501861b58b0cf34dcea1bff79052516d",
+    "salt": "650fd376d4582f4d67ff44a1ab27849e",
     "role": "lead"
-  },
-  {
-    "username": "admin",
-    "password_hash": "817464a8e496118a3f546fb6614da979809997a4aea7ac575abe2cf7709382ba",
-    "salt": "4547817bc3a8387f693e087b3167355a",
-    "role": "admin"
   }
 ]
