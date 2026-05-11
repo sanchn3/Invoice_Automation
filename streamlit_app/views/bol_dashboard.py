@@ -13,8 +13,10 @@ Layout:
   - Tab 3 "Printed": final table with PDF download
 """
 
+import base64
 import json
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 
 import streamlit as st
@@ -44,7 +46,7 @@ def _save_bol_folder_cfg(data: dict) -> None:
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
 def _now_str() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _parse_dt(s: str) -> datetime | None:
@@ -115,7 +117,7 @@ def _checkin_watcher(dm: DataManager) -> None:
 
 # ─── inbox section (pre-tab) ──────────────────────────────────────────────────
 
-def _render_inbox_section(dm: DataManager) -> None:
+def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
     _epoll_col, _fpoll_col, _ = st.columns([1, 1, 3])
 
     with _epoll_col:
@@ -174,7 +176,7 @@ def _render_inbox_section(dm: DataManager) -> None:
                     else:
                         _known_bol_paths = {
                             r.get("pdf_local_path", "")
-                            for r in dm.get_bol_records()
+                            for r in bol_records
                         }
                         _bol_pdfs = sorted(_bol_folder.glob("*.pdf"))
                         _bol_ok   = 0
@@ -234,13 +236,17 @@ def _render_inbox_section(dm: DataManager) -> None:
                     "checkin_at"      : None,
                     "checkin_notified": False,
                 })
+                # Reset form so the next entry starts blank
+                st.session_state["new_bol_po"]     = ""
+                st.session_state["new_bol_client"]  = ""
+                st.session_state["new_bol_date"]    = datetime.now(timezone.utc).date().isoformat()
                 st.success(f"BOL {new_po.strip().upper()} added.")
                 st.rerun()
 
     st.markdown("---")
 
     inbox_bols = sorted(
-        [r for r in dm.get_bol_records() if r.get("status") == "bol_inbox"],
+        [r for r in bol_records if r.get("status") == "bol_inbox"],
         key=lambda x: (1 if x.get("po_number") else 0, x.get("received_at", "")),
         reverse=True,
     )
@@ -281,7 +287,8 @@ def _render_inbox_section(dm: DataManager) -> None:
                     st.session_state.pop(edit_key, None)
                     st.rerun()
                 if es2.button("✗ Cancel", key=f"ecancel_{bid}", width='stretch'):
-                    st.session_state.pop(edit_key, None)
+                    for _k in (edit_key, f"epo_{bid}", f"edt_{bid}", f"ecli_{bid}"):
+                        st.session_state.pop(_k, None)
                     st.rerun()
 
             else:
@@ -366,9 +373,9 @@ def _render_inbox_section(dm: DataManager) -> None:
 
 # ─── Tab 1: Pending Trucker Check-In ──────────────────────────────────────────
 
-def _render_checkin_tab(dm: DataManager) -> None:
+def _render_checkin_tab(dm: DataManager, bol_records: list) -> None:
     checkin_bols = sorted(
-        [r for r in dm.get_bol_records() if r.get("status") in ("pending_checkin", "checked_in")],
+        [r for r in bol_records if r.get("status") in ("pending_checkin", "checked_in")],
         key=lambda x: x.get("received_at", ""),
         reverse=True,
     )
@@ -478,8 +485,6 @@ def _pdf_page_to_pil(pdf_path: str, page_index: int = 0,
 
 def _pil_to_jpeg_b64(img, quality: int = 85) -> str:
     """Convert a PIL Image to a JPEG base64 data-URI (compact for canvas embedding)."""
-    from io import BytesIO
-    import base64
     buf = BytesIO()
     img.convert("RGB").save(buf, format="JPEG", quality=quality)
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
@@ -504,8 +509,6 @@ def _bg_b64_for_canvas(pdf_path: str, file_mtime: float, canvas_w: int) -> str:
 @st.cache_data(show_spinner=False)
 def _asset_to_b64(img_path: str, max_w: int = 300) -> str | None:
     """Convert a local image file to a base64 PNG data-URI (cached)."""
-    from io import BytesIO
-    import base64
     from PIL import Image as _PIL
 
     if not img_path or not Path(img_path).exists():
@@ -533,7 +536,6 @@ def _burn_overlay_to_pdf(pdf_path: str, annotations_rgba,
     lets us write back to the same path without a sharing violation.
     """
     import numpy as np
-    from io import BytesIO
     from PIL import Image
     from reportlab.pdfgen import canvas as _rl_canvas
     from reportlab.lib.utils import ImageReader
@@ -877,7 +879,6 @@ def _append_admin_annotations(pdf_path: str, po_num: str, driver_name: str,
     Build an Admin Completion Notes page with reportlab and append it to the
     existing BOL PDF (in-place). Returns the (same) path on success.
     """
-    from io import BytesIO
     from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
     from reportlab.lib.units import inch
@@ -989,15 +990,14 @@ def _append_admin_annotations(pdf_path: str, po_num: str, driver_name: str,
     return save_path
 
 
-def _render_inspection_tab(dm: DataManager) -> None:
+def _render_inspection_tab(dm: DataManager, bol_records: list) -> None:
     # ── Deferred print: JS is injected on the render AFTER status update + rerun ──
     _pdf_to_print = st.session_state.pop("_deferred_print_pdf", None)
     if _pdf_to_print and Path(_pdf_to_print).exists():
-        import base64 as _b64mod
         import streamlit.components.v1 as _cv1
         _pdf_data = _get_pdf_bytes(_pdf_to_print)
         if _pdf_data:
-            _b64str = _b64mod.b64encode(_pdf_data).decode("utf-8")
+            _b64str = base64.b64encode(_pdf_data).decode("utf-8")
             _cv1.html(f"""<script>
             (function(){{
                 var b64="{_b64str}";
@@ -1013,7 +1013,7 @@ def _render_inspection_tab(dm: DataManager) -> None:
             </script>""", height=0)
 
     inspection_bols = sorted(
-        [r for r in dm.get_bol_records() if r.get("status") == "bol_inspection"],
+        [r for r in bol_records if r.get("status") == "bol_inspection"],
         key=lambda x: x.get("received_at", ""),
         reverse=True,
     )
@@ -1063,7 +1063,8 @@ def _render_inspection_tab(dm: DataManager) -> None:
                     st.session_state.pop(edit_key, None)
                     st.rerun()
                 if es2.button("✗ Cancel", key=f"insp_ecancel_{bid}", width='stretch'):
-                    st.session_state.pop(edit_key, None)
+                    for _k in (edit_key, f"insp_epo_{bid}", f"insp_edt_{bid}"):
+                        st.session_state.pop(_k, None)
                     st.rerun()
 
             elif st.session_state.get(f"pdf_edit_mode_{bid}"):
@@ -1091,7 +1092,12 @@ def _render_inspection_tab(dm: DataManager) -> None:
 
                 form_label = "📝 Hide Form" if st.session_state.get(form_key) else "📝 Complete Form"
                 if b2.button(form_label, key=f"insp_form_btn_{bid}", width='stretch'):
-                    st.session_state[form_key] = not st.session_state.get(form_key, False)
+                    _was_open = st.session_state.get(form_key, False)
+                    st.session_state[form_key] = not _was_open
+                    if _was_open:  # closing — discard any unsaved typed values
+                        for _k in (f"f_carrier_{bid}", f"f_trailer_{bid}", f"f_seal_{bid}",
+                                   f"f_pallets_{bid}", f"f_temp_{bid}", f"f_notes_{bid}"):
+                            st.session_state.pop(_k, None)
                     st.rerun()
 
                 another_open = active_pdf_edit_id is not None and active_pdf_edit_id != bid
@@ -1190,6 +1196,10 @@ def _render_inspection_tab(dm: DataManager) -> None:
                                     "admin_annotations"   : ann,
                                     "annotations_saved_at": _now_str(),
                                 })
+                                # Clear field keys so form re-opens clean from saved values
+                                for _k in (f"f_carrier_{bid}", f"f_trailer_{bid}", f"f_seal_{bid}",
+                                           f"f_pallets_{bid}", f"f_temp_{bid}", f"f_notes_{bid}"):
+                                    st.session_state.pop(_k, None)
                                 st.session_state[form_key] = False
                                 st.success("✅ Annotations appended to BOL PDF.")
                                 st.rerun()
@@ -1229,9 +1239,9 @@ def _render_inspection_tab(dm: DataManager) -> None:
 
 # ─── Tab 3: Printed ───────────────────────────────────────────────────────────
 
-def _render_printed_tab(dm: DataManager) -> None:
+def _render_printed_tab(dm: DataManager, bol_records: list) -> None:
     printed_bols = sorted(
-        [r for r in dm.get_bol_records() if r.get("status") == "printed"],
+        [r for r in bol_records if r.get("status") == "printed"],
         key=lambda x: x.get("checkin_at", x.get("created_at", "")),
         reverse=True,
     )
@@ -1356,13 +1366,13 @@ def render(dm: DataManager) -> None:
     ])
 
     with tab_validation:
-        _render_inbox_section(dm)
+        _render_inbox_section(dm, bol_records)
 
     with tab_checkin:
-        _render_checkin_tab(dm)
+        _render_checkin_tab(dm, bol_records)
 
     with tab_inspection:
-        _render_inspection_tab(dm)
+        _render_inspection_tab(dm, bol_records)
 
     with tab_printed:
-        _render_printed_tab(dm)
+        _render_printed_tab(dm, bol_records)
