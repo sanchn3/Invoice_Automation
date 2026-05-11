@@ -186,7 +186,7 @@ def stamp_temperature(
     producto_caliente: bool,
 ) -> bytes:
     """
-    Overlay a TEMPERATURE RECORD block onto the lower-right corner of the
+    Overlay a PULP TEMPERATURE RECORD block onto the lower-right corner of the
     first page of a provider PDF.
 
     Parameters
@@ -243,7 +243,7 @@ def stamp_temperature(
     # Heading
     c.setFillColor(BLUE)
     c.setFont("Helvetica-Bold", 7)
-    c.drawString(sec_x, sec_y - 0.17 * inch, "TEMPERATURE RECORD")
+    c.drawString(sec_x, sec_y - 0.17 * inch, "PULP TEMPERATURE")
 
     # Rule under heading
     c.setStrokeColor(BLUE)

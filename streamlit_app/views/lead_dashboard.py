@@ -15,6 +15,28 @@ from invoice_logic.pdf_generator import generate_pdf as _generate_pdf
 from invoice_logic.iif_exporter import build_iif_content
 
 
+def _colored_btn(container, label: str, key: str, color: str, **kwargs) -> bool:
+    anchor = "ld_" + "".join(c if c.isalnum() or c == "_" else "_" for c in key)
+    container.markdown(
+        f"<span id='{anchor}'></span>"
+        f"<style>"
+        f"[data-testid='element-container']:has(span#{anchor})"
+        f" + [data-testid='element-container'] button,"
+        f"[data-testid='stColumn']:has(span#{anchor}) button"
+        f"{{background-color:{color}!important;"
+        f"border-color:{color}!important;"
+        f"color:white!important;}}"
+        f"[data-testid='element-container']:has(span#{anchor})"
+        f" + [data-testid='element-container'] button:hover,"
+        f"[data-testid='stColumn']:has(span#{anchor}) button:hover"
+        f"{{filter:brightness(1.12)!important;}}"
+        f"</style>",
+        unsafe_allow_html=True,
+    )
+    kwargs.setdefault("type", "primary")
+    return container.button(label, key=key, **kwargs)
+
+
 @st.cache_data(show_spinner=False)
 def _cached_pdf(
     ci_id: str,
@@ -41,6 +63,67 @@ def _pdf_args(ci: dict, prov: dict | None) -> tuple:
         ci.get("po_number", ""),
         ci,
     )
+
+def _lifecycle_html(ci: dict) -> str:
+    """Return an HTML progress-stepper for the 7 invoice lifecycle stages."""
+    stages = [
+        ("Polled",       True),
+        ("Received",     bool(ci.get("received_date"))),
+        ("Approved",     bool(ci.get("quickbooks_invoice_number"))),
+        ("→ Accounting", bool(ci.get("quickbooks_invoice_number"))),
+        ("QB Export",    bool(ci.get("quickbooks_exported"))),
+        ("Emailed",      bool(ci.get("emailed"))),
+        ("Paid",         bool(ci.get("paid"))),
+    ]
+
+    GREEN = "#198754"
+    BLUE  = "#0d6efd"
+    GREY  = "#ced4da"
+    GTXT  = "#198754"
+    BTXT  = "#0d6efd"
+    PTXT  = "#adb5bd"
+
+    first_pending = next(
+        (i for i, (_, done) in enumerate(stages) if not done),
+        len(stages),
+    )
+
+    parts = [
+        '<div style="display:flex;align-items:flex-start;'
+        'width:100%;padding:6px 0 2px 0;gap:0;">'
+    ]
+    for i, (label, done) in enumerate(stages):
+        is_active = i == first_pending
+        is_last   = i == len(stages) - 1
+
+        if done:
+            bg, txt, sym, lbl_c = GREEN, "white", "✓", GTXT
+        elif is_active:
+            bg, txt, sym, lbl_c = BLUE, "white", str(i + 1), BTXT
+        else:
+            bg, txt, sym, lbl_c = GREY, "#6c757d", str(i + 1), PTXT
+
+        parts.append(
+            f'<div style="display:flex;flex-direction:column;'
+            f'align-items:center;flex-shrink:0;min-width:52px;">'
+            f'<div style="width:22px;height:22px;border-radius:50%;'
+            f'background:{bg};display:flex;align-items:center;'
+            f'justify-content:center;color:{txt};font-size:10px;'
+            f'font-weight:700;">{sym}</div>'
+            f'<span style="color:{lbl_c};font-size:9px;margin-top:3px;'
+            f'text-align:center;line-height:1.2;">{label}</span>'
+            f'</div>'
+        )
+        if not is_last:
+            conn = GREEN if done else GREY
+            parts.append(
+                f'<div style="flex:1;height:2px;background:{conn};'
+                f'margin-top:10px;min-width:4px;"></div>'
+            )
+
+    parts.append('</div>')
+    return "".join(parts)
+
 
 # Canonical client-name aliases (must stay in sync with admin_dashboard.py)
 _CLIENT_ALIASES: dict[str, str] = {
@@ -124,22 +207,88 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
             st.markdown("---")
 
-            # ── Extra charges frequency ───────────────────────────────────────
-            st.markdown("#### Extra Charges Frequency")
-            charge_counts: dict[str, int] = defaultdict(int)
-            for ci in all_ci:
-                for charge in ci.get("extra_charges", []):
-                    charge_counts[charge.replace("_", " ").title()] += 1
-            if charge_counts:
-                st.bar_chart(charge_counts)
-            else:
-                st.caption("No extra charges recorded yet.")
+            # ── Invoice Data Export ───────────────────────────────────────────
+            st.markdown("#### Export Invoice Data")
+            st.caption("Download all invoice records as an Excel spreadsheet.")
+
+            def _build_excel(invoices: list[dict], providers: dict) -> bytes:
+                import io
+                import pandas as pd
+
+                rows = []
+                for ci in invoices:
+                    prov = providers.get(ci.get("provider_invoice_id", ""), {})
+                    inv_date = ci.get("invoice_date", "")
+                    net_days = int(ci.get("net_days", 30) or 30)
+                    due_date = ci.get("due_date", "")
+                    if not due_date and inv_date:
+                        try:
+                            due_date = (
+                                datetime.fromisoformat(inv_date)
+                                + timedelta(days=net_days)
+                            ).date().isoformat()
+                        except Exception:
+                            due_date = ""
+                    rows.append({
+                        "Date"      : inv_date,
+                        "Invoice #" : ci.get("quickbooks_invoice_number") or prov.get("invoice_number", ""),
+                        "Client"    : ci.get("client_name", ""),
+                        "Cost ($)"  : ci.get("total", 0),
+                        "PO Number" : ci.get("po_number", ""),
+                        "Due Date"  : due_date,
+                        "Paid"      : "Yes" if ci.get("paid") else "No",
+                    })
+
+                df  = pd.DataFrame(rows)
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                    df.to_excel(writer, index=False, sheet_name="Invoices")
+                    ws = writer.sheets["Invoices"]
+                    for col in ws.columns:
+                        max_len = max(len(str(cell.value or "")) for cell in col)
+                        ws.column_dimensions[col[0].column_letter].width = max_len + 4
+                return buf.getvalue()
+
+            _exp_col1, _exp_col2, _ = st.columns([1, 1, 3])
+
+            with _exp_col1:
+                if st.button("📊 Generate Excel", key="gen_excel_all"):
+                    st.session_state["excel_bytes_all"] = _build_excel(
+                        all_ci, {pi["id"]: pi for pi in dm.get_provider_invoices()}
+                    )
+                if "excel_bytes_all" in st.session_state:
+                    st.download_button(
+                        "⬇ Download All Invoices",
+                        data=st.session_state["excel_bytes_all"],
+                        file_name="all_invoices.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_excel_all",
+                    )
+
+            with _exp_col2:
+                if st.button("📊 Generate Excel (Paid only)", key="gen_excel_paid"):
+                    _paid_only = [ci for ci in all_ci if ci.get("paid")]
+                    st.session_state["excel_bytes_paid"] = _build_excel(
+                        _paid_only, {pi["id"]: pi for pi in dm.get_provider_invoices()}
+                    )
+                if "excel_bytes_paid" in st.session_state:
+                    st.download_button(
+                        "⬇ Download Paid Invoices",
+                        data=st.session_state["excel_bytes_paid"],
+                        file_name="paid_invoices.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_excel_paid",
+                    )
+
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 2 — RATE CARD EDITOR
     # ──────────────────────────────────────────────────────────────────────────
     with tab_rates:
         st.subheader("Rate Card")
+
+        if _rates_msg := st.session_state.pop("rates_saved_msg", None):
+            st.toast(_rates_msg, icon="✅")
 
         default_rates = dm.get_rate_card()
         all_client_rates = dm.get_client_rates()
@@ -210,9 +359,81 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     key=f"rate_{key}",
                 )
 
-        if st.button("💾 Save Default Rates", type="primary"):
+        if _colored_btn(st, "💾 Save Default Rates", key="save_default_rates", color="#198754"):
             dm.update_rate_card({**updated, "charged_by_pallet": charged_by_pallet})
             st.success("Default rates saved.")
+
+        st.markdown("---")
+
+        # ── Add New Client Rates ──────────────────────────────────────────────
+        st.markdown("**Add rates for a new client:**")
+        new_client_name = st.text_input("Client name", placeholder="e.g. Walmart", key="new_client_name")
+
+        if new_client_name.strip():
+            new_cbp = st.toggle(
+                "Charged by Pallet",
+                value=True,
+                key="new_client_cbp",
+                help="ON = per pallet. OFF = flat cost per truck.",
+            )
+            if new_cbp:
+                new_billing = {
+                    "in_out"  : "In-Out Storage (per pallet)",
+                    "transfer": "Transfer (per pallet)",
+                }
+            else:
+                new_billing = {"cost_per_truck": "Cost per Truck"}
+
+            new_client_labels = {**new_billing, **_non_billing_labels}
+            new_col1, new_col2 = st.columns(2)
+            new_client_overrides: dict = {"charged_by_pallet": new_cbp}
+            new_items = list(new_client_labels.items())
+            for i, (key, label) in enumerate(new_items):
+                col = new_col1 if i < len(new_items) // 2 + len(new_items) % 2 else new_col2
+                if key == "net_days":
+                    default_val = int(default_rates.get(key, 30))
+                    new_val = col.number_input(
+                        label=label,
+                        value=default_val,
+                        min_value=1,
+                        step=1,
+                        key=f"new_cr_{key}",
+                    )
+                else:
+                    default_val = float(default_rates.get(key, 0))
+                    new_val = col.number_input(
+                        label=f"{label} ($)",
+                        value=default_val,
+                        min_value=0.0,
+                        step=0.25,
+                        format="%.2f",
+                        key=f"new_cr_{key}",
+                    )
+                if new_val != default_val:
+                    new_client_overrides[key] = new_val
+
+            st.markdown("---")
+            st.caption("Pallet Override")
+            _new_fixed_pal = st.number_input(
+                "Fixed Pallet Count (optional)",
+                min_value=0,
+                step=1,
+                value=0,
+                key="new_cr_fixed_pal",
+            )
+            st.caption("Leave at 0 to disable — when set, this count is always pre-filled for this client's invoices.")
+            if _new_fixed_pal > 0:
+                new_client_overrides["fixed_pallet_count"] = int(_new_fixed_pal)
+
+            if _colored_btn(st, "💾 Save Client Rates", key="save_new_client", color="#198754"):
+                _saved_name = new_client_name.strip().upper()
+                dm.set_client_rates(_saved_name, new_client_overrides)
+                st.session_state["rates_saved_msg"] = f"✅ Rates saved for {_saved_name}."
+                st.session_state["new_client_save_inline"] = f"Rates saved for **{_saved_name}**."
+                st.rerun()
+
+            if _inline := st.session_state.get("new_client_save_inline"):
+                st.success(_inline)
 
         st.markdown("---")
 
@@ -277,24 +498,24 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     st.markdown("---")
                     st.caption("Pallet Override")
                     _fixed_pal = st.number_input(
-                        "Fixed Pallet Count",
+                        "Fixed Pallet Count (optional)",
                         min_value=0,
                         step=1,
                         value=int(crates.get("fixed_pallet_count", 0) or 0),
                         key=f"cr_{cname}_fixed_pal",
-                        help="When > 0, this count is always pre-filled for this client's invoices. Set to 0 to disable.",
                     )
+                    st.caption("Leave at 0 to disable — when set, this count is always pre-filled for this client's invoices.")
                     if _fixed_pal > 0:
                         new_overrides["fixed_pallet_count"] = int(_fixed_pal)
 
                     btn_col1, btn_col2 = st.columns(2)
-                    if btn_col1.button("💾 Save", key=f"save_cr_{cname}", type="primary"):
+                    if _colored_btn(btn_col1, "💾 Save", key=f"save_cr_{cname}", color="#198754"):
                         dm.set_client_rates(cname, new_overrides)
-                        st.success(f"Rates saved for {cname}.")
+                        st.session_state["rates_saved_msg"] = f"✅ Rates saved for {cname}."
                         st.rerun()
-                    if btn_col2.button("🗑 Remove overrides", key=f"del_cr_{cname}"):
+                    if btn_col2.button("🗑 Delete Custom Rates", key=f"del_cr_{cname}", type="primary"):
                         dm.delete_client_rates(cname)
-                        st.success(f"Custom rates removed for {cname}. Now using defaults.")
+                        st.session_state["rates_saved_msg"] = f"✅ Custom rates removed for {cname}. Now using defaults."
                         st.rerun()
         else:
             st.info("No client-specific rates set yet.")
@@ -310,7 +531,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         if all_addresses:
             st.markdown("**Saved addresses:**")
             for cname, addr in sorted(all_addresses.items()):
-                with st.expander(cname):
+                _addr_exp_v  = st.session_state.get(f"addr_exp_v_{cname}", 0)
+                with st.expander(cname, expanded=False, key=f"addr_exp_{cname}_{_addr_exp_v}"):
                     new_addr = st.text_area(
                         "Address",
                         value=addr,
@@ -319,14 +541,17 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         label_visibility="collapsed",
                     )
                     ac1, ac2 = st.columns(2)
-                    if ac1.button("💾 Save", key=f"save_addr_{cname}", type="primary", width="stretch"):
+                    if _colored_btn(ac1, "💾 Save", key=f"save_addr_{cname}", color="#198754", width="stretch"):
                         dm.set_client_address(cname, new_addr)
-                        st.success(f"Address saved for {cname}.")
+                        st.session_state[f"addr_exp_v_{cname}"] = _addr_exp_v + 1
+                        st.session_state[f"addr_saved_{cname}"] = f"Address saved for **{cname}**."
                         st.rerun()
                     if ac2.button("🗑 Remove", key=f"del_addr_{cname}", width="stretch"):
                         dm.set_client_address(cname, "")
-                        st.success(f"Address removed for {cname}.")
+                        st.session_state[f"addr_exp_v_{cname}"] = _addr_exp_v + 1
                         st.rerun()
+                if _amsg := st.session_state.pop(f"addr_saved_{cname}", None):
+                    st.success(_amsg)
         else:
             st.info("No billing addresses saved yet.")
 
@@ -349,7 +574,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 height=90,
                 key="new_addr_val",
             )
-            if st.button("💾 Save Address", type="primary", key="save_new_addr"):
+            if _colored_btn(st, "💾 Save Address", key="save_new_addr", color="#198754"):
                 if not new_addr_val.strip():
                     st.warning("Address cannot be empty.")
                 else:
@@ -368,7 +593,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         if all_emails:
             st.markdown("**Saved emails:**")
             for cname, email in sorted(all_emails.items()):
-                with st.expander(cname):
+                _email_exp_v = st.session_state.get(f"email_exp_v_{cname}", 0)
+                with st.expander(cname, expanded=False, key=f"email_exp_{cname}_{_email_exp_v}"):
                     new_email = st.text_input(
                         "Email",
                         value=email,
@@ -376,14 +602,17 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         label_visibility="collapsed",
                     )
                     ec1, ec2 = st.columns(2)
-                    if ec1.button("💾 Save", key=f"save_email_{cname}", type="primary", width="stretch"):
+                    if _colored_btn(ec1, "💾 Save", key=f"save_email_{cname}", color="#198754", width="stretch"):
                         dm.set_client_email(cname, new_email.strip())
-                        st.success(f"Email saved for {cname}.")
+                        st.session_state[f"email_exp_v_{cname}"] = _email_exp_v + 1
+                        st.session_state[f"email_saved_{cname}"] = f"Email saved for **{cname}**."
                         st.rerun()
                     if ec2.button("🗑 Remove", key=f"del_email_{cname}", width="stretch"):
                         dm.set_client_email(cname, "")
-                        st.success(f"Email removed for {cname}.")
+                        st.session_state[f"email_exp_v_{cname}"] = _email_exp_v + 1
                         st.rerun()
+                if _emsg := st.session_state.pop(f"email_saved_{cname}", None):
+                    st.success(_emsg)
         else:
             st.info("No client emails saved yet.")
 
@@ -404,7 +633,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 placeholder="billing@client.com",
                 key="new_email_val",
             )
-            if st.button("💾 Save Email", type="primary", key="save_new_email"):
+            if _colored_btn(st, "💾 Save Email", key="save_new_email", color="#198754"):
                 if not new_email_val.strip():
                     st.warning("Email cannot be empty.")
                 else:
@@ -412,71 +641,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     st.success(f"Email saved for {email_client}.")
                     st.rerun()
 
-        st.markdown("---")
-        st.markdown("**Add rates for a new client:**")
-        new_client_name = st.text_input("Client name", placeholder="e.g. Walmart", key="new_client_name")
-
-        if new_client_name.strip():
-            new_cbp = st.toggle(
-                "Charged by Pallet",
-                value=True,
-                key="new_client_cbp",
-                help="ON = per pallet. OFF = flat cost per truck.",
-            )
-            if new_cbp:
-                new_billing = {
-                    "in_out"  : "In-Out Storage (per pallet)",
-                    "transfer": "Transfer (per pallet)",
-                }
-            else:
-                new_billing = {"cost_per_truck": "Cost per Truck"}
-
-            new_client_labels = {**new_billing, **_non_billing_labels}
-            new_col1, new_col2 = st.columns(2)
-            # Always store the billing mode; rate fields added below if they differ
-            new_client_overrides: dict = {"charged_by_pallet": new_cbp}
-            new_items = list(new_client_labels.items())
-            for i, (key, label) in enumerate(new_items):
-                col = new_col1 if i < len(new_items) // 2 + len(new_items) % 2 else new_col2
-                if key == "net_days":
-                    default_val = int(default_rates.get(key, 30))
-                    new_val = col.number_input(
-                        label=label,
-                        value=default_val,
-                        min_value=1,
-                        step=1,
-                        key=f"new_cr_{key}",
-                    )
-                else:
-                    default_val = float(default_rates.get(key, 0))
-                    new_val = col.number_input(
-                        label=f"{label} ($)",
-                        value=default_val,
-                        min_value=0.0,
-                        step=0.25,
-                        format="%.2f",
-                        key=f"new_cr_{key}",
-                    )
-                if new_val != default_val:
-                    new_client_overrides[key] = new_val
-
-            st.markdown("---")
-            st.caption("Pallet Override")
-            _new_fixed_pal = st.number_input(
-                "Fixed Pallet Count",
-                min_value=0,
-                step=1,
-                value=0,
-                key="new_cr_fixed_pal",
-                help="When > 0, this count is always pre-filled for this client's invoices. Set to 0 to disable.",
-            )
-            if _new_fixed_pal > 0:
-                new_client_overrides["fixed_pallet_count"] = int(_new_fixed_pal)
-
-            if st.button("💾 Save Client Rates", type="primary", key="save_new_client"):
-                dm.set_client_rates(new_client_name.strip().upper(), new_client_overrides)
-                st.success(f"Custom rates saved for {new_client_name.strip().upper()}.")
-                st.rerun()
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 3 — SETTINGS
@@ -610,7 +774,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         processed = sorted(
             [
                 ci for ci in all_ci_proc
-                if ci.get("ready_for_export")
+                if ci.get("status") in ("validated", "invoiced")
+                or ci.get("ready_for_export")
                 or ci.get("ready_to_email")
                 or ci.get("quickbooks_exported")
                 or ci.get("emailed")
@@ -645,17 +810,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
             st.caption(f"{len(filtered)} of {len(processed)} invoice(s)")
 
-            h1, h2, h3, h4, h5, h6, h7, h8 = st.columns(
-                [1.2, 1.8, 1, 1, 1.2, 1.2, 0.8, 0.9]
-            )
+            h1, h2, h3, h4, h5, h6 = st.columns([1.2, 1.8, 1, 1, 1.2, 1.2])
             h1.markdown("**Invoice #**")
             h2.markdown("**Client**")
             h3.markdown("**Date**")
             h4.markdown("**Due Date**")
-            h5.markdown("**Reviewed**")
-            h6.markdown("**QB Export**")
-            h7.markdown("**Emailed**")
-            h8.markdown("**Paid**")
+            h5.markdown("**PDF**")
+            h6.markdown("**IIF**")
             st.divider()
 
             for ci in filtered:
@@ -673,45 +834,56 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         due = "—"
 
                 reviewed = bool(
-                    ci.get("ready_for_export")
+                    ci.get("status") == "invoiced"
+                    or ci.get("quickbooks_invoice_number")
+                    or ci.get("ready_for_export")
                     or ci.get("ready_to_email")
                     or ci.get("quickbooks_exported")
                     or ci.get("emailed")
                 )
                 exported = bool(ci.get("quickbooks_exported"))
-                emailed  = bool(ci.get("emailed"))
-                paid     = bool(ci.get("paid"))
 
-                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(
-                    [1.2, 1.8, 1, 1, 1.2, 1.2, 0.8, 0.9]
-                )
+                c1, c2, c3, c4, c5, c6 = st.columns([1.2, 1.8, 1, 1, 1.2, 1.2])
                 c1.write(f"QB #{qb}")
                 c2.write(ci.get("client_name", "—"))
                 c3.write(ci.get("invoice_date", "—"))
                 c4.write(due)
 
                 prov_proc = prov_by_id_proc.get(ci.get("provider_invoice_id", ""), {})
-                if reviewed:
+                if ci.get("quickbooks_invoice_number"):
+                    # Full generated client invoice PDF
                     c5.download_button(
-                        "✅ PDF",
+                        "⬇ PDF",
                         data=_cached_pdf(*_pdf_args(ci, prov_proc)),
                         file_name=f"{qb}-invoice.pdf",
                         mime="application/pdf",
                         key=f"lead_proc_pdf_{cid}",
                     )
                 else:
-                    c5.write("❌")
+                    # Validated but not yet invoiced — offer the provider's original PDF
+                    _prov_pdf = prov_proc.get("pdf_local_path", "")
+                    if _prov_pdf and Path(_prov_pdf).exists():
+                        c5.download_button(
+                            "⬇ PDF",
+                            data=Path(_prov_pdf).read_bytes(),
+                            file_name=Path(_prov_pdf).name,
+                            mime="application/pdf",
+                            key=f"lead_proc_pdf_{cid}",
+                        )
+                    else:
+                        c5.write("—")
 
                 if exported:
                     c6.download_button(
-                        "✅ IIF",
+                        "⬇ IIF",
                         data=build_iif_content(ci),
                         file_name=f"{qb}-export.iif",
                         mime="text/plain",
                         key=f"lead_proc_iif_{cid}",
                     )
                 else:
-                    c6.write("❌")
+                    c6.write("—")
 
-                c7.write("✅" if emailed else "❌")
-                c8.write("✅" if paid else "❌")
+                # ── Lifecycle tracker ─────────────────────────────────────────
+                st.markdown(_lifecycle_html(ci), unsafe_allow_html=True)
+                st.divider()
