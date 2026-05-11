@@ -93,16 +93,19 @@ def poll_bol_inbox(dm: DataManager) -> int:
 
             po_number = extract_bol_po_number(subject, body_preview)
 
-            # Download and save the first PDF attachment
+            # Download and save the first PDF attachment.
+            # Use a UUID prefix so each BOL gets its own unique file even when
+            # multiple emails share the same attachment filename.
             pdf_local_path = ""
             try:
+                import uuid as _uuid
                 message.attachments.download_attachments()
                 for attachment in message.attachments:
                     name = getattr(attachment, "name", "") or ""
                     if not name.lower().endswith(".pdf"):
                         continue
-                    short_id   = message_id.replace("-", "")[:12]
-                    local_name = f"BOL_{short_id}_{name.replace(' ', '_')}"
+                    unique_id  = _uuid.uuid4().hex[:12]
+                    local_name = f"BOL_{unique_id}_{name.replace(' ', '_')}"
                     attachment.save(location=str(BOLS_DIR), custom_name=local_name)
                     pdf_local_path = str(BOLS_DIR / local_name)
                     logger.info("Saved BOL PDF: %s", pdf_local_path)
