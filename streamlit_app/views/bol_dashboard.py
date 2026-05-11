@@ -13,15 +13,32 @@ Layout:
   - Tab 3 "Printed": final table with PDF download
 """
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
 
+from config import DATA_DIR as _DATA_DIR
 from data_manager import DataManager
 from utils.pdf_storage import get_pdf_bytes as _get_pdf_bytes
 
 _CHECKIN_HOLD_SECONDS = 30
+
+_BOL_FOLDER_POLL_CFG = _DATA_DIR / "folder_poll_config.json"
+
+
+def _load_bol_folder_cfg() -> dict:
+    try:
+        return json.loads(_BOL_FOLDER_POLL_CFG.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_bol_folder_cfg(data: dict) -> None:
+    existing = _load_bol_folder_cfg()
+    existing.update(data)
+    _BOL_FOLDER_POLL_CFG.write_text(json.dumps(existing, indent=2), "utf-8")
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
@@ -99,17 +116,96 @@ def _checkin_watcher(dm: DataManager) -> None:
 # ─── inbox section (pre-tab) ──────────────────────────────────────────────────
 
 def _render_inbox_section(dm: DataManager) -> None:
-    poll_col, _ = st.columns([1, 4])
-    with poll_col:
-        if st.button("🔄 Poll BOL Inbox", width='stretch'):
-            from email_pipeline.bol_listener import poll_bol_inbox
-            with st.spinner("Polling BOL inbox…"):
-                count = poll_bol_inbox(dm)
-            if count:
-                st.success(f"{count} new BOL email(s) received.")
-                st.rerun()
+    _epoll_col, _fpoll_col, _ = st.columns([1, 1, 3])
+
+    with _epoll_col:
+        with st.container(border=True):
+            st.markdown("**📧 BOL Email Poll**")
+            st.caption("Polls the Outlook BOL inbox folder")
+            if st.button("🔄 Poll BOL Inbox", width="stretch"):
+                from email_pipeline.bol_listener import poll_bol_inbox
+                with st.spinner("Polling BOL inbox…"):
+                    count = poll_bol_inbox(dm)
+                if count:
+                    st.success(f"{count} new BOL email(s) received.")
+                    st.rerun()
+                else:
+                    st.info("No new BOL emails found.")
+
+    # ── BOL Folder Poll ──────────────────────────────────────────────────────
+    _bol_fcfg        = _load_bol_folder_cfg()
+    _bol_fpath_saved = _bol_fcfg.get("bol_folder_path", "")
+    _bol_fedit_key   = "bol_folder_poll_edit_mode"
+
+    with _fpoll_col:
+        with st.container(border=True):
+            st.markdown("**📁 BOL Folder Poll**")
+
+            if st.session_state.get(_bol_fedit_key):
+                _new_bol_fpath = st.text_input(
+                    "Folder path",
+                    value=_bol_fpath_saved,
+                    key="bol_folder_poll_path_input",
+                    label_visibility="collapsed",
+                    placeholder=r"e.g. C:\bol_pdfs",
+                )
+                _bfsv1, _bfsv2 = st.columns(2)
+                if _bfsv1.button("💾 Save", key="bol_fpoll_save", width="stretch"):
+                    _save_bol_folder_cfg({"bol_folder_path": _new_bol_fpath.strip()})
+                    st.session_state.pop(_bol_fedit_key, None)
+                    st.rerun()
+                if _bfsv2.button("✕ Cancel", key="bol_fpoll_cancel", width="stretch"):
+                    st.session_state.pop(_bol_fedit_key, None)
+                    st.rerun()
             else:
-                st.info("No new BOL emails found.")
+                if _bol_fpath_saved:
+                    st.caption(f"`{_bol_fpath_saved}`")
+                else:
+                    st.caption("*No folder configured*")
+
+                _bfp1, _bfp2 = st.columns([3, 1])
+                if _bfp1.button(
+                    "🔄 Poll Folder", key="bol_fpoll_btn",
+                    width="stretch", disabled=not _bol_fpath_saved,
+                ):
+                    _bol_folder = Path(_bol_fpath_saved)
+                    if not _bol_folder.is_dir():
+                        st.error(f"Directory not found:\n{_bol_fpath_saved}")
+                    else:
+                        _known_bol_paths = {
+                            r.get("pdf_local_path", "")
+                            for r in dm.get_bol_records()
+                        }
+                        _bol_pdfs = sorted(_bol_folder.glob("*.pdf"))
+                        _bol_ok   = 0
+                        _bol_skip = 0
+                        with st.spinner(f"Processing {len(_bol_pdfs)} PDF(s)…"):
+                            for _bol_pdf in _bol_pdfs:
+                                if str(_bol_pdf) in _known_bol_paths:
+                                    _bol_skip += 1
+                                    continue
+                                dm.add_bol_record({
+                                    "po_number"       : _bol_pdf.stem.upper(),
+                                    "received_at"     : datetime.utcnow().isoformat() + "Z",
+                                    "pdf_local_path"  : str(_bol_pdf),
+                                    "status"          : "bol_inbox",
+                                    "driver_name"     : None,
+                                    "checkin_at"      : None,
+                                    "checkin_notified": False,
+                                })
+                                _bol_ok += 1
+                        _bol_msg = f"{_bol_ok} new BOL(s) added"
+                        if _bol_skip:
+                            _bol_msg += f", {_bol_skip} already known"
+                        st.success(f"Folder poll complete — {_bol_msg}.")
+                        st.rerun()
+
+                if _bfp2.button(
+                    "✏️", key="bol_fpoll_edit", width="stretch",
+                    help="Set folder path",
+                ):
+                    st.session_state[_bol_fedit_key] = True
+                    st.rerun()
 
     with st.expander("➕ Add BOL Manually"):
         f1, f2 = st.columns(2)
@@ -894,6 +990,28 @@ def _append_admin_annotations(pdf_path: str, po_num: str, driver_name: str,
 
 
 def _render_inspection_tab(dm: DataManager) -> None:
+    # ── Deferred print: JS is injected on the render AFTER status update + rerun ──
+    _pdf_to_print = st.session_state.pop("_deferred_print_pdf", None)
+    if _pdf_to_print and Path(_pdf_to_print).exists():
+        import base64 as _b64mod
+        import streamlit.components.v1 as _cv1
+        _pdf_data = _get_pdf_bytes(_pdf_to_print)
+        if _pdf_data:
+            _b64str = _b64mod.b64encode(_pdf_data).decode("utf-8")
+            _cv1.html(f"""<script>
+            (function(){{
+                var b64="{_b64str}";
+                var bin=atob(b64), arr=new Uint8Array(bin.length);
+                for(var i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+                var blob=new Blob([arr],{{type:"application/pdf"}});
+                var url=URL.createObjectURL(blob);
+                var w=window.open(url,"_blank");
+                if(w) w.addEventListener("load",function(){{
+                    setTimeout(function(){{w.print();URL.revokeObjectURL(url);}},300);
+                }});
+            }})();
+            </script>""", height=0)
+
     inspection_bols = sorted(
         [r for r in dm.get_bol_records() if r.get("status") == "bol_inspection"],
         key=lambda x: x.get("received_at", ""),
@@ -1098,11 +1216,14 @@ def _render_inspection_tab(dm: DataManager) -> None:
                     type="primary",
                     width='stretch',
                 ):
+                    if pdf_exists and Path(pdf_path).exists():
+                        st.session_state["_deferred_print_pdf"] = pdf_path
+                    else:
+                        st.warning("No PDF file found for this BOL.")
                     dm.update_bol_record(bid, {
                         "status"    : "printed",
                         "print_date": datetime.utcnow().date().isoformat(),
                     })
-                    st.success(f"BOL {po_num} registered as printed.")
                     st.rerun()
 
 
@@ -1119,41 +1240,63 @@ def _render_printed_tab(dm: DataManager) -> None:
         st.info("No BOLs printed yet.")
         return
 
-    st.caption(f"{len(printed_bols)} BOL(s) printed")
+    # ── Filters ──────────────────────────────────────────────────────────────
+    f1, f2, f3 = st.columns(3)
+    filter_po     = f1.text_input("Filter by PO",     placeholder="e.g. CLS-048", key="prt_f_po").strip().upper()
+    filter_client = f2.text_input("Filter by Client",  placeholder="e.g. Acme",    key="prt_f_client").strip().lower()
+    filter_date   = f3.text_input("Filter by Date",    placeholder="YYYY-MM-DD",   key="prt_f_date").strip()
 
-    rows = []
-    for bol in printed_bols:
-        pdf_path   = bol.get("pdf_local_path", "")
-        pdf_exists = bool(pdf_path)
-        shipped    = bol.get("checkin_at", "")
-        rows.append({
-            "PO Number"          : bol.get("po_number", "—"),
-            "Date Email Received": bol.get("received_at", "—")[:10],
-            "Shipped Date"       : shipped[:10] if shipped else "—",
-            "PDF Download"       : "✅" if pdf_exists else "—",
-        })
+    filtered = printed_bols
+    if filter_po:
+        filtered = [b for b in filtered if filter_po in (b.get("po_number") or "").upper()]
+    if filter_client:
+        filtered = [b for b in filtered if filter_client in (b.get("client_name") or "").lower()]
+    if filter_date:
+        filtered = [b for b in filtered if filter_date in (b.get("received_at") or b.get("checkin_at") or "")]
 
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.caption(f"{len(filtered)} of {len(printed_bols)} BOL(s)")
 
-    # Download buttons for BOLs that have a PDF
-    has_pdfs = any(
-        bol.get("pdf_local_path") and Path(bol["pdf_local_path"]).exists()
-        for bol in printed_bols
-    )
-    if has_pdfs:
-        st.caption("PDF Downloads:")
-        for bol in printed_bols:
-            pdf_path = bol.get("pdf_local_path", "")
-            if pdf_path:
-                _b = _get_pdf_bytes(pdf_path)
-                if _b:
-                    st.download_button(
-                        f"✅ {bol.get('po_number', '?')} — Download PDF",
-                        _b,
-                        file_name=f"BOL_{bol.get('po_number', 'unknown')}.pdf",
-                        mime="application/pdf",
-                        key=f"bol_dl_{bol['id']}",
-                    )
+    # Header row
+    h1, h2, h3, h4, h5, h6 = st.columns([2, 2, 2, 2, 1, 1])
+    h1.markdown("**PO Number**")
+    h2.markdown("**Client**")
+    h3.markdown("**Date Received**")
+    h4.markdown("**Shipped Date**")
+    h5.markdown("**PDF**")
+    h6.markdown("**Delete**")
+    st.divider()
+
+    for bol in filtered:
+        bid      = bol["id"]
+        po_num   = bol.get("po_number", "—")
+        client   = bol.get("client_name") or "—"
+        received = (bol.get("received_at") or "—")[:10]
+        shipped  = bol.get("checkin_at", "")
+        pdf_path = bol.get("pdf_local_path", "")
+        has_pdf  = bool(pdf_path) and Path(pdf_path).exists()
+
+        c1, c2, c3, c4, c5, c6 = st.columns([2, 2, 2, 2, 1, 1])
+        c1.write(po_num)
+        c2.write(client)
+        c3.write(received)
+        c4.write(shipped[:10] if shipped else "—")
+
+        if has_pdf:
+            _b = _get_pdf_bytes(pdf_path)
+            if _b:
+                c5.download_button(
+                    "⬇ PDF",
+                    _b,
+                    file_name=f"BOL_{po_num}.pdf",
+                    mime="application/pdf",
+                    key=f"bol_dl_{bid}",
+                )
+        else:
+            c5.write("—")
+
+        if c6.button("🗑", key=f"bol_del_{bid}", help="Delete this BOL"):
+            dm.delete_bol_record(bid)
+            st.rerun()
 
 
 # ─── main render ──────────────────────────────────────────────────────────────
