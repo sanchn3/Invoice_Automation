@@ -145,7 +145,7 @@ def _render_inbox_section(dm: DataManager) -> None:
 
     inbox_bols = sorted(
         [r for r in dm.get_bol_records() if r.get("status") == "bol_inbox"],
-        key=lambda x: x.get("received_at", ""),
+        key=lambda x: (1 if x.get("po_number") else 0, x.get("received_at", "")),
         reverse=True,
     )
 
@@ -517,6 +517,7 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
     obj_key  = f"canvas_obj_{bid}"
     rev_key  = f"canvas_rev_{bid}"
     init_key = f"canvas_init_{bid}"   # True after first open; prevents re-auto-placing after Clear
+    live_key = f"canvas_live_{bid}"   # Latest object positions from canvas (not fed back to initial_drawing)
 
     # ── Render PDF page (cached by mtime — free on subsequent reruns) ────
     try:
@@ -544,23 +545,53 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
     user_objects = st.session_state.get(obj_key, [])
     revision     = st.session_state.get(rev_key, 0)
 
-    # Auto-place signature on FIRST open so the user can drag it immediately.
+    # Driver info from kiosk check-in (available throughout this function)
+    driver_name   = bol.get("driver_name") or ""
+    driver_phone  = bol.get("driver_phone") or ""
+
+    # Auto-place assets on FIRST open so the user can drag them immediately.
     # init_key guards against re-placing after the user explicitly clears the canvas.
     if not st.session_state.get(init_key):
         st.session_state[init_key] = True
         if not user_objects:
+
             _sig_b64 = _asset_to_b64(bol.get("signature_path", ""))
             if _sig_b64:
-                user_objects = [{
+                user_objects.append({
                     "type":        "image",
                     "src":         _sig_b64,
                     "left":        CANVAS_W // 2 - 45,
-                    "top":         int(CANVAS_H * 0.72),   # lower area (typical sig spot)
+                    "top":         int(CANVAS_H * 0.72),
                     "scaleX":      0.3,
                     "scaleY":      0.3,
                     "selectable":  True,
                     "hasControls": True,
-                }]
+                })
+            if driver_name:
+                user_objects.append({
+                    "type":       "i-text",
+                    "text":       driver_name,
+                    "left":       CANVAS_W // 2 - 100,
+                    "top":        int(CANVAS_H * 0.66),
+                    "fill":       "#000000",
+                    "fontFamily": "Arial",
+                    "fontSize":   16,
+                    "selectable": True,
+                    "hasControls": True,
+                })
+            if driver_phone:
+                user_objects.append({
+                    "type":       "i-text",
+                    "text":       driver_phone,
+                    "left":       CANVAS_W // 2 - 100,
+                    "top":        int(CANVAS_H * 0.69),
+                    "fill":       "#000000",
+                    "fontFamily": "Arial",
+                    "fontSize":   16,
+                    "selectable": True,
+                    "hasControls": True,
+                })
+            if user_objects:
                 st.session_state[obj_key] = user_objects
 
     st.markdown(f"#### ✏️ PDF Edit Mode — PO {po_num}")
@@ -568,7 +599,7 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
         "**Drag & Drop** — the signature is pre-placed on the PDF. "
         "Select it and drag it to the correct position.  "
         "Use the sidebar to re-add it or add ID photos.  "
-        "**Add Text / Draw** — switch tools in the sidebar.  "
+        "**Draw / Annotate** — switch tools in the sidebar.  "
         "Hit **Finalize & Save** when done."
     )
 
@@ -577,21 +608,30 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
     # ── Left sidebar ──────────────────────────────────────────────────────
     with sidebar_col:
         st.markdown("**🛠 Tool**")
-        draw_mode = st.radio(
-            "tool",
-            ["transform", "text", "freedraw", "rect"],
-            format_func=lambda x: {
-                "transform": "↕  Move / Resize",
-                "text":      "T   Add Text",
-                "freedraw":  "✏  Freehand",
-                "rect":      "▬  Rectangle",
-            }[x],
-            key=f"edit_tool_{bid}",
-            label_visibility="collapsed",
-        )
-        stroke_color = st.color_picker("Ink color",   "#1565c0", key=f"edit_col_{bid}")
-        font_size    = st.slider("Font size",   10, 48, 18,   key=f"edit_fs_{bid}")
-        stroke_width = st.slider("Stroke width", 1,  8,  2,  key=f"edit_sw_{bid}")
+        st.caption("↕ Move / Resize")
+
+        st.markdown("---")
+        st.markdown("**T  Add Text**")
+        text_content = st.text_input("Text", key=f"edit_txt_{bid}", label_visibility="collapsed",
+                                     placeholder="Type text here…")
+        font_size    = st.slider("Font size", 10, 72, 20, key=f"edit_fs_{bid}")
+        if st.button("➕ Place Text", key=f"add_txt_btn_{bid}", width="stretch",
+                     disabled=not text_content.strip()):
+            current = list(st.session_state.get(live_key, st.session_state.get(obj_key, [])))
+            current.append({
+                "type":       "i-text",
+                "text":       text_content.strip(),
+                "left":       CANVAS_W // 2 - 100,
+                "top":        CANVAS_H // 2,
+                "fill":       "#000000",
+                "fontFamily": "Arial",
+                "fontSize":   font_size,
+                "selectable": True,
+                "hasControls": True,
+            })
+            st.session_state[obj_key] = current
+            st.session_state[rev_key] = revision + 1
+            st.rerun()
 
         st.markdown("---")
         st.markdown("**📎 Assets**")
@@ -604,7 +644,8 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
                 return
             st.image(img_path, caption=label, use_container_width=True)
             if st.button(f"➕ Place {label}", key=btn_key, width='stretch'):
-                current = st.session_state.get(obj_key, [])
+                # Use live_key (latest dragged positions) as base, falling back to obj_key
+                current = list(st.session_state.get(live_key, st.session_state.get(obj_key, [])))
                 current.append({
                     "type":       "image",
                     "src":        b64,
@@ -617,8 +658,6 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
                 })
                 st.session_state[obj_key] = current
                 st.session_state[rev_key] = revision + 1
-                # Auto-switch to Move/Resize so the user can immediately drag it
-                st.session_state[f"edit_tool_{bid}"] = "transform"
                 st.rerun()
 
         _add_asset_btn(bol.get("signature_path", ""), "Signature",  f"add_sig_{bid}",
@@ -628,9 +667,35 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
         _add_asset_btn(bol.get("id_back_path",   ""), "ID — Back",  f"add_idb_{bid}",
                        CANVAS_W // 2 - 45, CANVAS_H // 2 + 145)
 
+        def _add_text_btn(text_val: str, label: str, btn_key: str, def_top: int) -> None:
+            if not text_val:
+                st.caption(f"*{label}: not available*")
+                return
+            st.caption(f"{label}: **{text_val}**")
+            if st.button(f"➕ Place {label}", key=btn_key, width="stretch"):
+                current = list(st.session_state.get(live_key, st.session_state.get(obj_key, [])))
+                current.append({
+                    "type":       "i-text",
+                    "text":       text_val,
+                    "left":       CANVAS_W // 2 - 100,
+                    "top":        def_top,
+                    "fill":       "#000000",
+                    "fontFamily": "Arial",
+                    "fontSize":   16,
+                    "selectable": True,
+                    "hasControls": True,
+                })
+                st.session_state[obj_key] = current
+                st.session_state[rev_key] = revision + 1
+                st.rerun()
+
+        _add_text_btn(driver_name,  "Driver Name",  f"add_dname_{bid}", int(CANVAS_H * 0.66))
+        _add_text_btn(driver_phone, "Driver Phone", f"add_dphone_{bid}", int(CANVAS_H * 0.69))
+
         st.markdown("---")
         if st.button("🗑 Clear Canvas", key=f"clear_canvas_{bid}", width='stretch'):
             st.session_state[obj_key] = []
+            st.session_state[live_key] = []
             st.session_state[rev_key] = revision + 1
             st.rerun()
 
@@ -643,10 +708,10 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
         # corrupts data URIs passed via the background_image= prop.
         canvas_result = st_canvas(
             fill_color="rgba(0,0,0,0)",
-            stroke_width=stroke_width,
-            stroke_color=stroke_color,
+            stroke_width=1,
+            stroke_color="#000000",
             background_color="#ffffff",
-            drawing_mode=draw_mode,
+            drawing_mode="transform",
             initial_drawing={
                 "version":         "4.4.0",
                 "backgroundImage": {
@@ -672,7 +737,10 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
         )
         if (canvas_result.json_data
                 and isinstance(canvas_result.json_data.get("objects"), list)):
-            st.session_state[obj_key] = canvas_result.json_data["objects"]
+            # Store latest positions in live_key ONLY — never back into obj_key.
+            # obj_key feeds initial_drawing; updating it on every drag would cause
+            # Fabric.js to call loadFromJSON on every mouse-up → flicker + Component Error.
+            st.session_state[live_key] = canvas_result.json_data["objects"]
 
     # ── Action bar ────────────────────────────────────────────────────────
     st.markdown("---")
@@ -692,7 +760,7 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
                         CANVAS_H,
                     )
                 dm.update_bol_record(bid, {"annotations_saved_at": _now_str()})
-                for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key, init_key):
+                for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key, init_key, live_key):
                     st.session_state.pop(k, None)
                 st.success("✅ PDF updated with annotations.")
                 st.rerun(scope="app")
@@ -700,7 +768,7 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
                 st.error(f"Save failed: {exc}")
 
     if cancel_col.button("✗ Cancel", key=f"cancel_pdf_edit_{bid}", width='stretch'):
-        for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key, init_key):
+        for k in (f"pdf_edit_mode_{bid}", obj_key, rev_key, init_key, live_key):
             st.session_state.pop(k, None)
         st.rerun(scope="app")
 
