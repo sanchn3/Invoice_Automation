@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import streamlit as st
+from streamlit_cookies_manager import EncryptedCookieManager
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
@@ -20,6 +21,15 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── Persistent cookie session ─────────────────────────────────────────────────
+
+_cookies = EncryptedCookieManager(
+    prefix="inco_",
+    password=os.environ.get("SECRET_KEY", "dev-fallback-key"),
+)
+if not _cookies.ready():
+    st.stop()
+
 # Shared instances (cached across reruns)
 @st.cache_resource
 def get_dm() -> DataManager:
@@ -30,15 +40,79 @@ def get_alert_manager() -> AlertManager:
     return AlertManager()
 
 
-# ── Local dev login ───────────────────────────────────────────────────────────
+# Flask role names → Streamlit role names
+_FLASK_ROLE_MAP = {
+    "administrator": "admin",
+    "lead":          "lead",
+    "accounting":    "accounting",
+    "operator":      "operator",
+}
+
+
+def _validate_flask_token(token: str) -> dict | None:
+    secret = os.environ.get("SECRET_KEY", "")
+    if not secret:
+        return None
+    try:
+        from itsdangerous import URLSafeTimedSerializer
+        s    = URLSafeTimedSerializer(secret)
+        data = s.loads(token, max_age=300)
+        role = _FLASK_ROLE_MAP.get(data.get("role", ""))
+        if not role:
+            return None
+        return {"username": data["role"], "role": role}
+    except Exception:
+        return None
+
+
+def _save_cookie(user: dict) -> None:
+    _cookies["role"]     = user["role"]
+    _cookies["username"] = user["username"]
+    _cookies.save()
+
+
+def _clear_cookie() -> None:
+    _cookies["role"]     = ""
+    _cookies["username"] = ""
+    _cookies.save()
+
+
+def _redirect_to_login() -> None:
+    st.html(
+        "<script>window.location.replace('https://incogrp.com/staff-login');</script>"
+        "<p style='font-family:sans-serif;text-align:center;padding:2rem;'>"
+        "Redirecting… <a href='https://incogrp.com/staff-login'>Click here if not redirected</a>"
+        "</p>"
+    )
+    st.stop()
+
+
+# ── Restore session from cookie on refresh ────────────────────────────────────
 
 if not auth.is_authenticated():
-    st.title("📦 INCO — Local Dev Login")
-    role_choice = st.selectbox("Sign in as", ["admin", "lead", "accounting", "operator"])
-    if st.button("Sign In", type="primary"):
-        auth.login({"role": role_choice, "username": role_choice})
-        st.rerun()
-    st.stop()
+    _saved_role = _cookies.get("role", "")
+    _saved_user = _cookies.get("username", "")
+    if _saved_role and _saved_user:
+        auth.login({"role": _saved_role, "username": _saved_user})
+
+
+# ── Token auto-login (from HTML login page) ───────────────────────────────────
+
+if not auth.is_authenticated():
+    token = st.query_params.get("token")
+    if token:
+        user = _validate_flask_token(token)
+        if user:
+            auth.login(user)
+            _save_cookie(user)
+            st.query_params.clear()
+            st.rerun()
+
+
+# ── Auth gate — redirect to HTML login page ───────────────────────────────────
+
+if not auth.is_authenticated():
+    _redirect_to_login()
 
 
 # ── Authenticated: sidebar + routing ─────────────────────────────────────────
@@ -54,6 +128,7 @@ st.sidebar.markdown(f"**{auth.ROLE_LABELS.get(role, role)}**  \n`{username}`")
 st.sidebar.markdown("---")
 
 if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+    _clear_cookie()
     auth.logout()
     st.rerun()
 
