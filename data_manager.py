@@ -39,6 +39,8 @@ _RATE_CARD_FILE          = DATA_DIR / "rate_card.json"
 _CLIENT_RATES_FILE       = DATA_DIR / "client_rates.json"
 _CLIENT_ADDRESSES_FILE   = DATA_DIR / "client_addresses.json"
 _CLIENT_EMAILS_FILE      = DATA_DIR / "client_emails.json"
+_CLIENT_INITIALS_FILE    = DATA_DIR / "client_initials.json"
+_CLIENT_COUNTERS_FILE    = DATA_DIR / "client_invoice_counters.json"
 _BOL_RECORDS_FILE        = DATA_DIR / "bol_records.json"
 
 _lock = threading.Lock()
@@ -58,11 +60,13 @@ def _new_id() -> str:
 
 
 _JSON_DEFAULTS: dict[Path, Any] = {
-    _RATE_CARD_FILE       : {},
-    _CLIENT_RATES_FILE    : {},
-    _CLIENT_ADDRESSES_FILE: {},
-    _CLIENT_EMAILS_FILE   : {},
-    _BOL_RECORDS_FILE     : [],
+    _RATE_CARD_FILE        : {},
+    _CLIENT_RATES_FILE     : {},
+    _CLIENT_ADDRESSES_FILE : {},
+    _CLIENT_EMAILS_FILE    : {},
+    _CLIENT_INITIALS_FILE  : {},
+    _CLIENT_COUNTERS_FILE  : {},
+    _BOL_RECORDS_FILE      : [],
 }
 
 
@@ -336,7 +340,74 @@ class DataManager:
             _write_json(_CLIENT_EMAILS_FILE, all_emails)
 
     # ─────────────────────────────────────────
-    # BILL OF LADING RECORDS  (Supabase)
+    # CLIENT INITIALS
+    # ─────────────────────────────────────────
+
+    def get_client_initials(self) -> dict:
+        """Returns dict mapping client_name -> initials string."""
+        with _lock:
+            return _read_json(_CLIENT_INITIALS_FILE)
+
+    def get_client_initial(self, client_name: str) -> str:
+        """Returns the initials for a client, or empty string."""
+        return self.get_client_initials().get(client_name, "")
+
+    def set_client_initial(self, client_name: str, initials: str) -> None:
+        """Save or remove initials for a client."""
+        with _lock:
+            all_initials = _read_json(_CLIENT_INITIALS_FILE)
+            if not isinstance(all_initials, dict):
+                all_initials = {}
+            if initials.strip():
+                all_initials[client_name] = initials.strip().upper()
+            else:
+                all_initials.pop(client_name, None)
+            _write_json(_CLIENT_INITIALS_FILE, all_initials)
+
+    # ─────────────────────────────────────────
+    # PER-CLIENT INVOICE COUNTERS
+    # ─────────────────────────────────────────
+
+    def next_client_invoice_number(self, client_name: str) -> str:
+        """
+        Atomically increment and return the next invoice ID for client_name.
+
+        Each client starts at 2000; the first call returns 2001.
+        Format: "<INITIALS>_<NUMBER>" when initials exist, else just "<NUMBER>".
+        Example: "WMT_2001", "WMT_2002" ... or "2001" if no initials set.
+        """
+        with _lock:
+            counters = _read_json(_CLIENT_COUNTERS_FILE)
+            if not isinstance(counters, dict):
+                counters = {}
+            current = int(counters.get(client_name, 2000))
+            next_num = current + 1
+            counters[client_name] = next_num
+            _write_json(_CLIENT_COUNTERS_FILE, counters)
+
+            initials = _read_json(_CLIENT_INITIALS_FILE)
+            prefix = (initials.get(client_name, "") if isinstance(initials, dict) else "").strip().upper()
+
+        return f"{prefix}_{next_num}" if prefix else str(next_num)
+
+    def peek_client_invoice_number(self, client_name: str) -> str:
+        """
+        Return what the next invoice ID *would* be without incrementing the counter.
+        Useful for previewing the ID before the user confirms.
+        """
+        with _lock:
+            counters = _read_json(_CLIENT_COUNTERS_FILE)
+            if not isinstance(counters, dict):
+                counters = {}
+            next_num = int(counters.get(client_name, 2000)) + 1
+
+            initials = _read_json(_CLIENT_INITIALS_FILE)
+            prefix = (initials.get(client_name, "") if isinstance(initials, dict) else "").strip().upper()
+
+        return f"{prefix}_{next_num}" if prefix else str(next_num)
+
+    # ─────────────────────────────────────────
+    # BILL OF LADING RECORDS
     # ─────────────────────────────────────────
 
     def bol_message_id_exists(self, message_id: str) -> bool:

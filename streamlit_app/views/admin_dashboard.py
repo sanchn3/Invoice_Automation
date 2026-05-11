@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from pathlib import Path
 
+from config import DATA_DIR as _DATA_DIR
 from data_manager import DataManager
 from invoice_logic.charge_calculator import calculate_charges
 from invoice_logic.pdf_generator import generate_pdf as _generate_pdf
@@ -28,6 +29,65 @@ logger = logging.getLogger(__name__)
 
 _STUCK_HOURS = 24
 
+_FOLDER_POLL_CFG = _DATA_DIR / "folder_poll_config.json"
+
+
+def _load_folder_cfg() -> dict:
+    try:
+        return json.loads(_FOLDER_POLL_CFG.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_folder_cfg(data: dict) -> None:
+    _FOLDER_POLL_CFG.write_text(json.dumps(data, indent=2), "utf-8")
+
+
+def _colored_btn(container, label: str, key: str, color: str, **kwargs) -> bool:
+    """Render a button with a custom background color using a CSS anchor approach."""
+    anchor = "adm_" + "".join(c if c.isalnum() or c == "_" else "_" for c in key)
+    container.markdown(
+        f"<span id='{anchor}'></span>"
+        f"<style>"
+        f"[data-testid='stColumn']:has(span#{anchor}) [data-testid='stButton']>button,"
+        f"[data-testid='stVerticalBlock']:has(>[data-testid='element-container']"
+        f">[data-testid='stMarkdown'] span#{anchor})"
+        f">[data-testid='element-container']>[data-testid='stButton']>button"
+        f"{{background-color:{color}!important;"
+        f"border-color:{color}!important;"
+        f"color:white!important;}}"
+        f"[data-testid='stColumn']:has(span#{anchor}) [data-testid='stButton']>button:hover,"
+        f"[data-testid='stVerticalBlock']:has(>[data-testid='element-container']"
+        f">[data-testid='stMarkdown'] span#{anchor})"
+        f">[data-testid='element-container']>[data-testid='stButton']>button:hover"
+        f"{{filter:brightness(1.12)!important;}}"
+        f"</style>",
+        unsafe_allow_html=True,
+    )
+    return container.button(label, key=key, **kwargs)
+
+
+@st.cache_data(show_spinner=False)
+def _admin_cached_pdf(
+    ci_id: str, qb_num: str, total: float, provider_pdf_path: str | None,
+    invoice_date: str, due_date: str, po_number: str, _ci: dict,
+) -> bytes:
+    return _generate_pdf(_ci, provider_pdf_path)
+
+
+def _admin_pdf_args(ci: dict, prov: dict | None) -> tuple:
+    _pdf_path = (prov or {}).get("pdf_local_path", "")
+    return (
+        ci["id"],
+        ci.get("quickbooks_invoice_number", ""),
+        float(ci.get("total", 0)),
+        _pdf_path if _pdf_path and Path(_pdf_path).exists() else None,
+        ci.get("invoice_date", ""),
+        ci.get("due_date", ""),
+        ci.get("po_number", ""),
+        ci,
+    )
+
 
 # Canonical client-name aliases (lowercase key → display name)
 _CLIENT_ALIASES: dict[str, str] = {
@@ -43,15 +103,9 @@ def _canonical_client(name: str) -> str:
     return _CLIENT_ALIASES.get(name.strip().lower(), name)
 
 
-def _generate_unique_invoice_id(dm: DataManager) -> str:
-    """Return the next sequential 5-digit numeric invoice ID."""
-    numeric_ids = [
-        int(ci["quickbooks_invoice_number"])
-        for ci in dm.get_client_invoices()
-        if (ci.get("quickbooks_invoice_number") or "").isdigit()
-    ]
-    next_id = (max(numeric_ids) + 1) if numeric_ids else 10001
-    return str(next_id)
+def _preview_invoice_id(dm: DataManager, client_name: str) -> str:
+    """Return the next invoice ID for this client without consuming the counter."""
+    return dm.peek_client_invoice_number(client_name)
 
 
 def _is_stuck(log: dict) -> bool:
@@ -234,14 +288,99 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_pipeline:
         st.subheader("Invoice Validation")
 
-        poll_col, _ = st.columns([1, 4])
-        with poll_col:
-            if st.button("🔄 Poll Inbox Now", width='stretch'):
-                from email_pipeline.outlook_listener import poll_inbox
-                with st.spinner("Polling inbox..."):
-                    new_count = poll_inbox(dm, alert_manager)
-                st.success(f"Poll complete — {new_count} new email(s) processed.")
-                st.rerun()
+        _epoll_col, _fpoll_col, _ = st.columns([1, 1, 3])
+
+        # ── Email Inbox Poll ──────────────────────────────────────────────────
+        with _epoll_col:
+            with st.container(border=True):
+                st.markdown("**📧 Email Inbox Poll**")
+                st.caption("Polls the Outlook BOL inbox folder")
+                if st.button("🔄 Poll Inbox", width="stretch"):
+                    from email_pipeline.outlook_listener import poll_inbox
+                    with st.spinner("Polling inbox..."):
+                        new_count = poll_inbox(dm, alert_manager)
+                    st.success(f"Poll complete — {new_count} new email(s) processed.")
+                    st.rerun()
+
+        # ── Invoice Folder Poll ───────────────────────────────────────────────
+        _fcfg        = _load_folder_cfg()
+        _fpath_saved = _fcfg.get("folder_path", "")
+        _fedit_key   = "folder_poll_edit_mode"
+
+        with _fpoll_col:
+            with st.container(border=True):
+                st.markdown("**📁 Invoice Folder Poll**")
+
+                if st.session_state.get(_fedit_key):
+                    # Edit mode: path text input + Save / Cancel
+                    _new_fpath = st.text_input(
+                        "Folder path",
+                        value=_fpath_saved,
+                        key="folder_poll_path_input",
+                        label_visibility="collapsed",
+                        placeholder=r"e.g. C:\invoices",
+                    )
+                    _fsv1, _fsv2 = st.columns(2)
+                    if _fsv1.button("💾 Save", key="fpoll_save", width="stretch"):
+                        _save_folder_cfg({"folder_path": _new_fpath.strip()})
+                        st.session_state.pop(_fedit_key, None)
+                        st.rerun()
+                    if _fsv2.button("✕ Cancel", key="fpoll_cancel", width="stretch"):
+                        st.session_state.pop(_fedit_key, None)
+                        st.rerun()
+                else:
+                    # Normal mode: show saved path, Poll + Edit buttons
+                    if _fpath_saved:
+                        st.caption(f"`{_fpath_saved}`")
+                    else:
+                        st.caption("*No folder configured*")
+
+                    _fp1, _fp2 = st.columns([3, 1])
+                    if _fp1.button(
+                        "🔄 Poll Folder", key="fpoll_btn",
+                        width="stretch", disabled=not _fpath_saved,
+                    ):
+                        _folder = Path(_fpath_saved)
+                        if not _folder.is_dir():
+                            st.error(f"Directory not found:\n{_fpath_saved}")
+                        else:
+                            _known = {
+                                log.get("pdf_local_path", "")
+                                for log in email_logs
+                            }
+                            _pdfs = sorted(_folder.glob("*.pdf"))
+                            _am   = alert_manager or AlertManager()
+                            _ok   = 0
+                            _skip = 0
+                            with st.spinner(f"Processing {len(_pdfs)} PDF(s)…"):
+                                for _pdf in _pdfs:
+                                    if str(_pdf) in _known:
+                                        _skip += 1
+                                        continue
+                                    _log_rec = dm.add_email_log({
+                                        "source"        : "folder_poll",
+                                        "sender"        : "folder_poll",
+                                        "subject"       : _pdf.name,
+                                        "received_at"   : datetime.utcnow().isoformat() + "Z",
+                                        "pdf_local_path": str(_pdf),
+                                        "status"        : "pending_review",
+                                    })
+                                    if process_pdf_from_path(
+                                        str(_pdf), _log_rec["id"], dm, _am
+                                    ):
+                                        _ok += 1
+                            _msg = f"{_ok} new invoice(s) added"
+                            if _skip:
+                                _msg += f", {_skip} already known"
+                            st.success(f"Folder poll complete — {_msg}.")
+                            st.rerun()
+
+                    if _fp2.button(
+                        "✏️", key="fpoll_edit", width="stretch",
+                        help="Set folder path",
+                    ):
+                        st.session_state[_fedit_key] = True
+                        st.rerun()
 
         pending_review = [log for log in email_logs if log.get("status") == "pending_review"]
         if pending_review:
@@ -545,7 +684,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     _tbr_pdf_key    = f"tbr_pdf_{cid}"
                     _tbr_pdf_label  = "📄 Hide" if st.session_state.get(_tbr_pdf_key) else "📄 PDF"
 
-                    bc1, bc2, bc3 = st.columns(3)
+                    bc1, bc2, bc_date, bc3 = st.columns([1.5, 0.8, 1.2, 1])
                     if bc1.button("↩ Return to Validation", key=f"tbr_return_{cid}", width='stretch'):
                         dm.update_client_invoice(cid, {"status": "pending_validation"})
                         st.rerun()
@@ -555,9 +694,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.rerun()
                     else:
                         bc2.button("📄 PDF", key=f"tbr_pdfbtn_na_{cid}", disabled=True, width='stretch')
+                    _rcv_date = bc_date.date_input(
+                        "Received date",
+                        value=datetime.utcnow().date(),
+                        key=f"tbr_rcv_date_{cid}",
+                        label_visibility="collapsed",
+                    )
                     if bc3.button("✅ Received", key=f"tbr_received_{cid}", width='stretch'):
                         from invoice_logic.stamp_pdf import stamp_pdf as _stamp_pdf
-                        _rcv_date    = datetime.utcnow().date()
                         _stamp_error = None
                         if _tbr_pdf_exists:
                             try:
@@ -627,11 +771,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     r1a, r1b, r1c, r1d, r1e = st.columns([1.2, 0.9, 2, 1, 1.8])
 
                     with r1a:
-                        inv_num = (
-                            ci.get("quickbooks_invoice_number")
-                            or prov.get("invoice_number", "—")
-                        )
-                        st.markdown(f"**{inv_num}**")
+                        inv_num = ci.get("quickbooks_invoice_number")
+                        if inv_num:
+                            st.markdown(f"**{inv_num}**")
+                        else:
+                            _preview = _preview_invoice_id(dm, ci.get("client_name", ""))
+                            st.markdown(f"**{prov.get('invoice_number', '—')}**")
+                            st.caption(f"Next ID: {_preview}")
                     with r1b:
                         st.write(ci.get("invoice_date", "—"))
                     with r1c:
@@ -749,7 +895,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _stored_tr = "hardware_installation"
                     _tr_default = _TR_TO_LBL.get(_stored_tr, "Hardware & Installation") if _stored_tr else "Hardware & Installation"
                     _tr_sel = st.radio(
-                        "Temperature Recorder",
+                        "Pulp Temperature",
                         options=_TR_OPTS,
                         index=_TR_OPTS.index(_tr_default),
                         horizontal=True,
@@ -773,7 +919,16 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     # ── Save / Send buttons ───────────────────────────────────
                     _save_pdf_key = f"save_pdf_{cid}"
                     _save_ok_key  = f"save_ok_{cid}"
-                    _btn1, _btn2  = st.columns([1, 2])
+                    _btn0, _btn1, _btn2 = st.columns([1.5, 1, 2])
+
+                    if _btn0.button("↩ Return to Received", key=f"return_rcv_{cid}", type="primary", width="stretch"):
+                        dm.update_client_invoice(cid, {
+                            "status"       : "to_be_received",
+                            "received_date": None,
+                        })
+                        for _k in (_save_pdf_key, _save_ok_key):
+                            st.session_state.pop(_k, None)
+                        st.rerun()
 
                     if _btn1.button("💾 Save", key=f"savebtn_{cid}", width='stretch'):
                         # 1. Persist all form fields — no status change, no QB number
@@ -830,8 +985,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 key=f"dl_saved_{cid}",
                             )
 
-                    if _btn2.button("📤 Send to Accounting", key=f"gen_{cid}", type="primary", width='stretch'):
-                        inv_id  = _generate_unique_invoice_id(dm)
+                    if _colored_btn(_btn2, "📤 Send to Accounting", key=f"gen_{cid}", color="#198754", width="stretch"):
+                        inv_id  = dm.next_client_invoice_number(ci.get("client_name", ""))
                         charges = calculate_charges(
                             dm=dm,
                             service_type=svc,
@@ -924,18 +1079,32 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             ]
 
             st.caption(f"{len(filtered)} of {len(sent)} invoice(s)")
-            rows = [
-                {
-                    "QB #"    : ci.get("quickbooks_invoice_number") or "—",
-                    "Date"    : ci.get("invoice_date", "—"),
-                    "Client"  : ci.get("client_name", "—"),
-                    "Total"   : f"${ci.get('total', 0):,.2f}",
-                    "Net Days": str(ci.get("net_days", "—")),
-                    "Status"  : "Exported to QB" if ci.get("quickbooks_exported") else "In Accounting",
-                }
-                for ci in filtered
-            ]
-            st.dataframe(rows, use_container_width=True, hide_index=True)
+            hdr = st.columns([1, 1.2, 2, 1, 0.8, 1.4, 0.8])
+            for col, label in zip(hdr, ["QB #", "Date", "Client", "Total", "Net Days", "Status", "PDF"]):
+                col.markdown(f"**{label}**")
+            st.divider()
+            for ci in filtered:
+                cid  = ci["id"]
+                prov = prov_by_id.get(ci.get("provider_invoice_id", ""))
+                qb   = ci.get("quickbooks_invoice_number") or "—"
+                c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 1.2, 2, 1, 0.8, 1.4, 0.8])
+                c1.write(qb)
+                c2.write(ci.get("invoice_date", "—"))
+                c3.write(ci.get("client_name", "—"))
+                c4.write(f"${ci.get('total', 0):,.2f}")
+                c5.write(str(ci.get("net_days", "—")))
+                c6.write("Exported to QB" if ci.get("quickbooks_exported") else "In Accounting")
+                try:
+                    pdf_bytes = _admin_cached_pdf(*_admin_pdf_args(ci, prov))
+                    c7.download_button(
+                        "⬇ PDF",
+                        data=pdf_bytes,
+                        file_name=f"{qb}-invoice.pdf",
+                        mime="application/pdf",
+                        key=f"adm_pdf_{cid}",
+                    )
+                except Exception:
+                    c7.caption("—")
 
     # ── Button colour overrides (injected outside all tabs so the iframe
     #    doesn't taint any tab's background; MutationObserver watches the
