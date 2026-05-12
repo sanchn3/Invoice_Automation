@@ -109,7 +109,15 @@ st.sidebar.markdown("---")
 
 if st.sidebar.button("🚪 Sign Out", use_container_width=True):
     auth.logout()
-    st.rerun()
+    if _IS_PRODUCTION:
+        import streamlit.components.v1 as _cv1
+        _cv1.html(
+            '<script>window.top.location.href = "https://incogrp.com/staff-login";</script>',
+            height=0,
+        )
+        st.stop()
+    else:
+        st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.caption("INCO Logistics • Invoice Automation v1.0")
