@@ -58,7 +58,9 @@ _sso_token = st.query_params.get("token", "")
 if _sso_token and not auth.is_authenticated():
     _td = _verify_sso_token(_sso_token)
     if _td:
-        auth.login({"role": _td["role"], "username": _td.get("username", _td["role"])})
+        _ROLE_MAP = {"administrator": "admin"}  # normalise Flask → Streamlit role names
+        _role = _ROLE_MAP.get(_td["role"], _td["role"])
+        auth.login({"role": _role, "username": _td.get("username", _role)})
         st.query_params.clear()
         st.rerun()
 
