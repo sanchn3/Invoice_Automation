@@ -7,12 +7,15 @@ QuickBooks export, reporting, and rate card editor.
 
 import json
 import logging
+import os
 import streamlit as st
 from datetime import datetime, timedelta, timezone
 
 from pathlib import Path
 
-from config import DATA_DIR as _DATA_DIR
+from config import DATA_DIR as _DATA_DIR, PDFS_DIR as _PDFS_DIR
+
+_IS_PRODUCTION = os.environ.get("RENDER") == "true"
 from data_manager import DataManager
 from invoice_logic.charge_calculator import calculate_charges
 from invoice_logic.pdf_generator import generate_pdf as _generate_pdf
@@ -303,84 +306,115 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     st.rerun()
 
         # ── Invoice Folder Poll ───────────────────────────────────────────────
-        _fcfg        = _load_folder_cfg()
-        _fpath_saved = _fcfg.get("folder_path", "")
-        _fedit_key   = "folder_poll_edit_mode"
-
         with _fpoll_col:
             with st.container(border=True):
-                st.markdown("**📁 Invoice Folder Poll**")
+                st.markdown("**📁 Invoice Upload**" if _IS_PRODUCTION else "**📁 Invoice Folder Poll**")
 
-                if st.session_state.get(_fedit_key):
-                    # Edit mode: path text input + Save / Cancel
-                    _new_fpath = st.text_input(
-                        "Folder path",
-                        value=_fpath_saved,
-                        key="folder_poll_path_input",
+                if _IS_PRODUCTION:
+                    # Production: file uploader (no local filesystem access)
+                    _uploaded = st.file_uploader(
+                        "Upload PDF(s)",
+                        type="pdf",
+                        accept_multiple_files=True,
+                        key="inv_pdf_uploader",
                         label_visibility="collapsed",
-                        placeholder=r"e.g. C:\invoices",
                     )
-                    _fsv1, _fsv2 = st.columns(2)
-                    if _fsv1.button("💾 Save", key="fpoll_save", width="stretch"):
-                        _save_folder_cfg({"folder_path": _new_fpath.strip()})
-                        st.session_state.pop(_fedit_key, None)
-                        st.rerun()
-                    if _fsv2.button("✕ Cancel", key="fpoll_cancel", width="stretch"):
-                        st.session_state.pop(_fedit_key, None)
+                    if st.button("⬆️ Process Uploads", key="fpoll_btn", width="stretch", disabled=not _uploaded):
+                        _am  = alert_manager or AlertManager()
+                        _ok  = 0
+                        _known = {log.get("pdf_local_path", "") for log in email_logs}
+                        with st.spinner(f"Processing {len(_uploaded)} PDF(s)…"):
+                            for _uf in _uploaded:
+                                _dest = _PDFS_DIR / _uf.name
+                                if str(_dest) in _known:
+                                    continue
+                                _dest.write_bytes(_uf.getvalue())
+                                _log_rec = dm.add_email_log({
+                                    "source"        : "folder_poll",
+                                    "sender"        : "folder_poll",
+                                    "subject"       : _uf.name,
+                                    "received_at"   : datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                                    "pdf_local_path": str(_dest),
+                                    "status"        : "pending_review",
+                                })
+                                if process_pdf_from_path(str(_dest), _log_rec["id"], dm, _am):
+                                    _ok += 1
+                        st.success(f"Done — {_ok} new invoice(s) added.")
                         st.rerun()
                 else:
-                    # Normal mode: show saved path, Poll + Edit buttons
-                    if _fpath_saved:
-                        st.caption(f"`{_fpath_saved}`")
-                    else:
-                        st.caption("*No folder configured*")
+                    # Local dev: folder path poll
+                    _fcfg        = _load_folder_cfg()
+                    _fpath_saved = _fcfg.get("folder_path", "")
+                    _fedit_key   = "folder_poll_edit_mode"
 
-                    _fp1, _fp2 = st.columns([3, 1])
-                    if _fp1.button(
-                        "🔄 Poll Folder", key="fpoll_btn",
-                        width="stretch", disabled=not _fpath_saved,
-                    ):
-                        _folder = Path(_fpath_saved)
-                        if not _folder.is_dir():
-                            st.error(f"Directory not found:\n{_fpath_saved}")
-                        else:
-                            _known = {
-                                log.get("pdf_local_path", "")
-                                for log in email_logs
-                            }
-                            _pdfs = sorted(_folder.glob("*.pdf"))
-                            _am   = alert_manager or AlertManager()
-                            _ok   = 0
-                            _skip = 0
-                            with st.spinner(f"Processing {len(_pdfs)} PDF(s)…"):
-                                for _pdf in _pdfs:
-                                    if str(_pdf) in _known:
-                                        _skip += 1
-                                        continue
-                                    _log_rec = dm.add_email_log({
-                                        "source"        : "folder_poll",
-                                        "sender"        : "folder_poll",
-                                        "subject"       : _pdf.name,
-                                        "received_at"   : datetime.utcnow().isoformat() + "Z",
-                                        "pdf_local_path": str(_pdf),
-                                        "status"        : "pending_review",
-                                    })
-                                    if process_pdf_from_path(
-                                        str(_pdf), _log_rec["id"], dm, _am
-                                    ):
-                                        _ok += 1
-                            _msg = f"{_ok} new invoice(s) added"
-                            if _skip:
-                                _msg += f", {_skip} already known"
-                            st.success(f"Folder poll complete — {_msg}.")
+                    if st.session_state.get(_fedit_key):
+                        _new_fpath = st.text_input(
+                            "Folder path",
+                            value=_fpath_saved,
+                            key="folder_poll_path_input",
+                            label_visibility="collapsed",
+                            placeholder=r"e.g. C:\invoices",
+                        )
+                        _fsv1, _fsv2 = st.columns(2)
+                        if _fsv1.button("💾 Save", key="fpoll_save", width="stretch"):
+                            _save_folder_cfg({"folder_path": _new_fpath.strip()})
+                            st.session_state.pop(_fedit_key, None)
                             st.rerun()
+                        if _fsv2.button("✕ Cancel", key="fpoll_cancel", width="stretch"):
+                            st.session_state.pop(_fedit_key, None)
+                            st.rerun()
+                    else:
+                        if _fpath_saved:
+                            st.caption(f"`{_fpath_saved}`")
+                        else:
+                            st.caption("*No folder configured*")
 
-                    if _fp2.button(
-                        "✏️", key="fpoll_edit", width="stretch",
-                        help="Set folder path",
-                    ):
-                        st.session_state[_fedit_key] = True
-                        st.rerun()
+                        _fp1, _fp2 = st.columns([3, 1])
+                        if _fp1.button(
+                            "🔄 Poll Folder", key="fpoll_btn",
+                            width="stretch", disabled=not _fpath_saved,
+                        ):
+                            _folder = Path(_fpath_saved)
+                            if not _folder.is_dir():
+                                st.error(f"Directory not found:\n{_fpath_saved}")
+                            else:
+                                _known = {
+                                    log.get("pdf_local_path", "")
+                                    for log in email_logs
+                                }
+                                _pdfs = sorted(_folder.glob("*.pdf"))
+                                _am   = alert_manager or AlertManager()
+                                _ok   = 0
+                                _skip = 0
+                                with st.spinner(f"Processing {len(_pdfs)} PDF(s)…"):
+                                    for _pdf in _pdfs:
+                                        if str(_pdf) in _known:
+                                            _skip += 1
+                                            continue
+                                        _log_rec = dm.add_email_log({
+                                            "source"        : "folder_poll",
+                                            "sender"        : "folder_poll",
+                                            "subject"       : _pdf.name,
+                                            "received_at"   : datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                                            "pdf_local_path": str(_pdf),
+                                            "status"        : "pending_review",
+                                        })
+                                        if process_pdf_from_path(
+                                            str(_pdf), _log_rec["id"], dm, _am
+                                        ):
+                                            _ok += 1
+                                _msg = f"{_ok} new invoice(s) added"
+                                if _skip:
+                                    _msg += f", {_skip} already known"
+                                st.success(f"Folder poll complete — {_msg}.")
+                                st.rerun()
+
+                        if _fp2.button(
+                            "✏️", key="fpoll_edit", width="stretch",
+                            help="Set folder path",
+                        ):
+                            st.session_state[_fedit_key] = True
+                            st.rerun()
 
         pending_review = [log for log in email_logs if log.get("status") == "pending_review"]
         if pending_review:
