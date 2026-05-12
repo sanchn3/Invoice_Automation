@@ -5,7 +5,7 @@ services:
     runtime: python
     branch: main
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run streamlit_app/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    startCommand: streamlit run streamlit_app/app_production.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     envVars:
       - key: SUPABASE_URL
         sync: false
