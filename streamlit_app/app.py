@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import streamlit as st
+from streamlit_cookies_manager import EncryptedCookieManager
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
@@ -20,6 +21,14 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── Cookie-backed session (survives page refreshes) ───────────────────────────
+_cookies = EncryptedCookieManager(
+    prefix="inco_",
+    password=os.environ.get("SECRET_KEY", "dev-fallback-key"),
+)
+if not _cookies.ready():
+    st.stop()
+
 # Shared instances (cached across reruns)
 @st.cache_resource
 def get_dm() -> DataManager:
@@ -29,13 +38,6 @@ def get_dm() -> DataManager:
 def get_alert_manager() -> AlertManager:
     return AlertManager()
 
-
-# ── Login ─────────────────────────────────────────────────────────────────────
-# Flow:
-#   1. incogrp.com/staff-login (Flask) validates credentials and redirects here
-#      with ?token= signed by SECRET_KEY → auto-login, no form shown.
-#   2. No token + on Render → show username/password form as fallback.
-#   3. Running locally → dev role selector for easy profile switching.
 
 _IS_PRODUCTION = os.environ.get("RENDER") == "true"
 
@@ -53,18 +55,47 @@ def _verify_sso_token(token: str) -> dict | None:
         return None
 
 
-# Step 1: auto-login from incogrp.com token redirect
+def _save_session(role: str, username: str) -> None:
+    _cookies["role"]     = role
+    _cookies["username"] = username
+    _cookies.save()
+
+
+def _clear_session() -> None:
+    _cookies["role"]     = ""
+    _cookies["username"] = ""
+    _cookies.save()
+
+
+# ── Restore session from cookie on refresh ────────────────────────────────────
+if not auth.is_authenticated():
+    _c_role = _cookies.get("role", "")
+    _c_user = _cookies.get("username", "")
+    if _c_role and _c_user:
+        auth.login({"role": _c_role, "username": _c_user})
+
+
+# ── Login ─────────────────────────────────────────────────────────────────────
+# Flow:
+#   1. Cookie present → already restored above, skip login entirely.
+#   2. ?token= from incogrp.com/staff-login → verify & auto-login.
+#   3. No token + on Render → username/password form as fallback.
+#   4. Running locally → dev role selector for easy profile switching.
+
+# Step 2: accept SSO token from incogrp.com redirect
 _sso_token = st.query_params.get("token", "")
 if _sso_token and not auth.is_authenticated():
     _td = _verify_sso_token(_sso_token)
     if _td:
-        _ROLE_MAP = {"administrator": "admin"}  # normalise Flask → Streamlit role names
+        _ROLE_MAP = {"administrator": "admin"}
         _role = _ROLE_MAP.get(_td["role"], _td["role"])
-        auth.login({"role": _role, "username": _td.get("username", _role)})
+        _uname = _td.get("username", _role)
+        auth.login({"role": _role, "username": _uname})
+        _save_session(_role, _uname)
         st.query_params.clear()
         st.rerun()
 
-# Step 2 / 3: no valid token — show login UI
+# Step 3 / 4: no session, no token — show login UI
 if not auth.is_authenticated():
     if _IS_PRODUCTION:
         st.markdown(
@@ -82,6 +113,7 @@ if not auth.is_authenticated():
                     _user = auth.verify_login(_username.strip(), _password)
                     if _user:
                         auth.login(_user)
+                        _save_session(_user["role"], _user["username"])
                         st.rerun()
                     else:
                         st.error("Invalid username or password.")
@@ -109,6 +141,7 @@ st.sidebar.markdown("---")
 
 if st.sidebar.button("🚪 Sign Out", use_container_width=True):
     auth.logout()
+    _clear_session()
     if _IS_PRODUCTION:
         import streamlit.components.v1 as _cv1
         _cv1.html(
