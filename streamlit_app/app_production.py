@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import streamlit as st
-from streamlit_cookies_manager import EncryptedCookieManager
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
@@ -21,15 +20,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Persistent cookie session ─────────────────────────────────────────────────
-
-_cookies = EncryptedCookieManager(
-    prefix="inco_",
-    password=os.environ.get("SECRET_KEY", "dev-fallback-key"),
-)
-if not _cookies.ready():
-    st.stop()
-
 # Shared instances (cached across reruns)
 @st.cache_resource
 def get_dm() -> DataManager:
@@ -38,27 +28,6 @@ def get_dm() -> DataManager:
 @st.cache_resource
 def get_alert_manager() -> AlertManager:
     return AlertManager()
-
-
-def _save_cookie(user: dict) -> None:
-    _cookies["role"]     = user["role"]
-    _cookies["username"] = user["username"]
-    _cookies.save()
-
-
-def _clear_cookie() -> None:
-    _cookies["role"]     = ""
-    _cookies["username"] = ""
-    _cookies.save()
-
-
-# ── Restore session from cookie on refresh ────────────────────────────────────
-
-if not auth.is_authenticated():
-    _saved_role = _cookies.get("role", "")
-    _saved_user = _cookies.get("username", "")
-    if _saved_role and _saved_user:
-        auth.login({"role": _saved_role, "username": _saved_user})
 
 
 # ── Login form ────────────────────────────────────────────────────────────────
@@ -80,7 +49,6 @@ if not auth.is_authenticated():
                 _user = auth.verify_login(_username.strip(), _password)
                 if _user:
                     auth.login(_user)
-                    _save_cookie(_user)
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
@@ -100,7 +68,6 @@ st.sidebar.markdown(f"**{auth.ROLE_LABELS.get(role, role)}**  \n`{username}`")
 st.sidebar.markdown("---")
 
 if st.sidebar.button("🚪 Sign Out", use_container_width=True):
-    _clear_cookie()
     auth.logout()
     st.rerun()
 
