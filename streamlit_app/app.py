@@ -31,11 +31,38 @@ def get_alert_manager() -> AlertManager:
 
 
 # ── Login ─────────────────────────────────────────────────────────────────────
-# Render sets RENDER=true automatically — use that to show the real login form
-# in production and the dev role selector when running locally.
+# Flow:
+#   1. incogrp.com/staff-login (Flask) validates credentials and redirects here
+#      with ?token= signed by SECRET_KEY → auto-login, no form shown.
+#   2. No token + on Render → show username/password form as fallback.
+#   3. Running locally → dev role selector for easy profile switching.
 
 _IS_PRODUCTION = os.environ.get("RENDER") == "true"
 
+
+def _verify_sso_token(token: str) -> dict | None:
+    """Verify the itsdangerous token issued by the incogrp.com Flask login."""
+    from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+    _secret = os.environ.get("SECRET_KEY", "")
+    if not _secret:
+        return None
+    try:
+        data = URLSafeTimedSerializer(_secret).loads(token, max_age=300)
+        return data if isinstance(data, dict) and data.get("role") else None
+    except (BadSignature, SignatureExpired):
+        return None
+
+
+# Step 1: auto-login from incogrp.com token redirect
+_sso_token = st.query_params.get("token", "")
+if _sso_token and not auth.is_authenticated():
+    _td = _verify_sso_token(_sso_token)
+    if _td:
+        auth.login({"role": _td["role"], "username": _td.get("username", _td["role"])})
+        st.query_params.clear()
+        st.rerun()
+
+# Step 2 / 3: no valid token — show login UI
 if not auth.is_authenticated():
     if _IS_PRODUCTION:
         st.markdown(
