@@ -30,15 +30,40 @@ def get_alert_manager() -> AlertManager:
     return AlertManager()
 
 
-# ── Local dev login ───────────────────────────────────────────────────────────
+# ── Login ─────────────────────────────────────────────────────────────────────
+# Render sets RENDER=true automatically — use that to show the real login form
+# in production and the dev role selector when running locally.
+
+_IS_PRODUCTION = os.environ.get("RENDER") == "true"
 
 if not auth.is_authenticated():
-    st.title("📦 INCO — Local Dev Login")
-    role_choice = st.selectbox("Sign in as", ["admin", "lead", "accounting", "operator"])
-    if st.button("Sign In", type="primary"):
-        auth.login({"role": role_choice, "username": role_choice})
-        st.rerun()
-    st.stop()
+    if _IS_PRODUCTION:
+        st.markdown(
+            "<h1 style='text-align:center;padding-top:3rem;'>📦 INCO Staff Portal</h1>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        _, col, _ = st.columns([1, 1.2, 1])
+        with col:
+            with st.container(border=True):
+                st.markdown("#### Sign In")
+                _username = st.text_input("Username", key="login_user")
+                _password = st.text_input("Password", type="password", key="login_pass")
+                if st.button("Sign In", type="primary", use_container_width=True):
+                    _user = auth.verify_login(_username.strip(), _password)
+                    if _user:
+                        auth.login(_user)
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password.")
+        st.stop()
+    else:
+        st.title("📦 INCO — Local Dev Login")
+        role_choice = st.selectbox("Sign in as", ["admin", "lead", "accounting", "operator"])
+        if st.button("Sign In", type="primary"):
+            auth.login({"role": role_choice, "username": role_choice})
+            st.rerun()
+        st.stop()
 
 
 # ── Authenticated: sidebar + routing ─────────────────────────────────────────
