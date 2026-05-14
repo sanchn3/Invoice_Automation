@@ -40,6 +40,7 @@ _CLIENT_RATES_FILE       = DATA_DIR / "client_rates.json"
 _CLIENT_ADDRESSES_FILE   = DATA_DIR / "client_addresses.json"
 _CLIENT_EMAILS_FILE      = DATA_DIR / "client_emails.json"
 _CLIENT_INITIALS_FILE    = DATA_DIR / "client_initials.json"
+_CLIENT_RFCS_FILE        = DATA_DIR / "client_rfcs.json"
 _CLIENT_COUNTERS_FILE    = DATA_DIR / "client_invoice_counters.json"
 _BOL_RECORDS_FILE        = DATA_DIR / "bol_records.json"
 
@@ -65,6 +66,7 @@ _JSON_DEFAULTS: dict[Path, Any] = {
     _CLIENT_ADDRESSES_FILE : {},
     _CLIENT_EMAILS_FILE    : {},
     _CLIENT_INITIALS_FILE  : {},
+    _CLIENT_RFCS_FILE      : {},
     _CLIENT_COUNTERS_FILE  : {},
     _BOL_RECORDS_FILE      : [],
 }
@@ -340,6 +342,31 @@ class DataManager:
             _write_json(_CLIENT_EMAILS_FILE, all_emails)
 
     # ─────────────────────────────────────────
+    # CLIENT RFCs
+    # ─────────────────────────────────────────
+
+    def get_client_rfcs(self) -> dict:
+        """Returns dict mapping client_name -> RFC string."""
+        with _lock:
+            return _read_json(_CLIENT_RFCS_FILE)
+
+    def get_client_rfc(self, client_name: str) -> str:
+        """Returns the RFC for a client, or empty string."""
+        return self.get_client_rfcs().get(client_name, "")
+
+    def set_client_rfc(self, client_name: str, rfc: str) -> None:
+        """Save or remove an RFC for a client."""
+        with _lock:
+            all_rfcs = _read_json(_CLIENT_RFCS_FILE)
+            if not isinstance(all_rfcs, dict):
+                all_rfcs = {}
+            if rfc.strip():
+                all_rfcs[client_name] = rfc.strip().upper()
+            else:
+                all_rfcs.pop(client_name, None)
+            _write_json(_CLIENT_RFCS_FILE, all_rfcs)
+
+    # ─────────────────────────────────────────
     # CLIENT INITIALS
     # ─────────────────────────────────────────
 
@@ -407,7 +434,7 @@ class DataManager:
         return f"{prefix}_{next_num}" if prefix else str(next_num)
 
     # ─────────────────────────────────────────
-    # BILL OF LADING RECORDS
+    # BILL OF LADING RECORDS  (Supabase)
     # ─────────────────────────────────────────
 
     def bol_message_id_exists(self, message_id: str) -> bool:

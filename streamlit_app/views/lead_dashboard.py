@@ -298,24 +298,12 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         else:
             st.caption(f"Loaded {len(default_rates)} rate entries from file.")
 
-        # ── Billing Mode Toggle ───────────────────────────────────────────────
-        charged_by_pallet = st.toggle(
-            "Charged by Pallet",
-            value=bool(default_rates.get("charged_by_pallet", True)),
-            key="rate_charged_by_pallet",
-            help="ON = rates per pallet. OFF = single flat cost per truck; workers skip pallet count.",
-        )
-
-        # Billing labels change based on mode
-        if charged_by_pallet:
-            billing_labels = {
-                "in_out"  : "In-Out Storage (per pallet)",
-                "transfer": "Transfer (per pallet)",
-            }
-        else:
-            billing_labels = {
-                "cost_per_truck": "Cost per Truck",
-            }
+        # All billing fields always shown in default rates
+        billing_labels = {
+            "in_out"        : "In-Out Storage (per pallet)",
+            "transfer"      : "Transfer per Truck",
+            "cost_per_truck": "Cost per Truck",
+        }
 
         # Non-billing labels are the same regardless of mode — reused in all loops
         _non_billing_labels = {
@@ -327,6 +315,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             "repacking_fee"                  : "Repacking",
             "re_inspection_fee"              : "Re-Inspection",
             "broker_fee"                     : "Broker Fee",
+            "stamps_fee"                     : "Stamps",
+            "overtime_fee"                   : "Hours Overtime",
+            "restack_fee"                    : "Restack",
             "net_days"                       : "Net Days (payment terms)",
         }
 
@@ -360,7 +351,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 )
 
         if _colored_btn(st, "💾 Save Default Rates", key="save_default_rates", color="#198754"):
-            dm.update_rate_card({**updated, "charged_by_pallet": charged_by_pallet})
+            dm.update_rate_card(updated)
             st.success("Default rates saved.")
 
         st.markdown("---")
@@ -395,50 +386,72 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             height=90,
             key="new_client_address",
         )
+        new_client_rfc = st.text_input(
+            "RFC",
+            placeholder="e.g. ABC123456DEF",
+            key="new_client_rfc",
+            help="Mexican tax ID (RFC). Printed on the invoice below the billing address.",
+        )
 
         # Rate card
         st.caption("Rate Card")
-        new_cbp = st.toggle(
-            "Charged by Pallet",
-            value=True,
-            key="new_client_cbp",
-            help="ON = per pallet. OFF = flat cost per truck.",
+        _new_billing_mode = st.radio(
+            "Billing Mode",
+            options=["Pallet", "Truck"],
+            horizontal=True,
+            key="new_client_billing_mode",
+            help="Controls which billing rates are shown for editing. Both sets of prices are always saved.",
         )
-        if new_cbp:
-            new_billing = {
-                "in_out"  : "In-Out Storage (per pallet)",
-                "transfer": "Transfer (per pallet)",
-            }
-        else:
-            new_billing = {"cost_per_truck": "Cost per Truck"}
+        new_cbp = (_new_billing_mode == "Pallet")
 
-        new_client_labels = {**new_billing, **_non_billing_labels}
+        st.caption("Pallet Rates")
         new_col1, new_col2 = st.columns(2)
-        new_client_overrides: dict = {"charged_by_pallet": new_cbp}
-        new_items = list(new_client_labels.items())
-        for i, (key, label) in enumerate(new_items):
-            col = new_col1 if i < len(new_items) // 2 + len(new_items) % 2 else new_col2
+        _new_in_out = new_col1.number_input(
+            "In-Out Storage (per pallet) ($)",
+            value=float(default_rates.get("in_out", 0)),
+            min_value=0.0, step=0.25, format="%.2f",
+            key="new_cr_in_out",
+        )
+        _new_transfer = new_col2.number_input(
+            "Transfer per Truck ($)",
+            value=float(default_rates.get("transfer", 0)),
+            min_value=0.0, step=0.25, format="%.2f",
+            key="new_cr_transfer",
+        )
+
+        st.caption("Truck Rates")
+        _new_cost_per_truck = st.number_input(
+            "Cost per Truck ($)",
+            value=float(default_rates.get("cost_per_truck", 0)),
+            min_value=0.0, step=0.25, format="%.2f",
+            key="new_cr_cost_per_truck",
+        )
+
+        # Non-billing fees — always shown
+        new_client_overrides: dict = {
+            "charged_by_pallet": new_cbp,
+            "in_out"           : _new_in_out,
+            "transfer"         : _new_transfer,
+            "cost_per_truck"   : _new_cost_per_truck,
+        }
+        _nb_new_items = list(_non_billing_labels.items())
+        nb_new_col1, nb_new_col2 = st.columns(2)
+        for i, (key, label) in enumerate(_nb_new_items):
+            col = nb_new_col1 if i < len(_nb_new_items) // 2 + len(_nb_new_items) % 2 else nb_new_col2
             if key == "net_days":
-                default_val = int(default_rates.get(key, 30))
-                new_val = col.number_input(
+                new_client_overrides[key] = col.number_input(
                     label=label,
-                    value=default_val,
-                    min_value=1,
-                    step=1,
+                    value=int(default_rates.get(key, 30)),
+                    min_value=1, step=1,
                     key=f"new_cr_{key}",
                 )
             else:
-                default_val = float(default_rates.get(key, 0))
-                new_val = col.number_input(
+                new_client_overrides[key] = col.number_input(
                     label=f"{label} ($)",
-                    value=default_val,
-                    min_value=0.0,
-                    step=0.25,
-                    format="%.2f",
+                    value=float(default_rates.get(key, 0)),
+                    min_value=0.0, step=0.25, format="%.2f",
                     key=f"new_cr_{key}",
                 )
-            if new_val != default_val:
-                new_client_overrides[key] = new_val
 
         st.caption("Pallet Override — leave at 0 to disable. When set, this count is always pre-filled for this client's invoices.")
         _new_fixed_pal = st.number_input(
@@ -463,6 +476,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     dm.set_client_email(_saved_name, new_client_email.strip())
                 if new_client_initials.strip():
                     dm.set_client_initial(_saved_name, new_client_initials.strip())
+                if new_client_rfc.strip():
+                    dm.set_client_rfc(_saved_name, new_client_rfc.strip())
                 st.session_state["rates_saved_msg"] = f"✅ Client profile saved for {_saved_name}."
                 st.session_state.pop("new_client_save_inline", None)
                 st.session_state["new_client_save_inline"] = f"Client profile saved for **{_saved_name}**."
@@ -480,12 +495,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         all_addresses   = dm.get_client_addresses()
         all_emails      = dm.get_client_emails()
         all_initials_cd = dm.get_client_initials()
+        all_rfcs_cd     = dm.get_client_rfcs()
 
         _all_cd_names = sorted(
             set(all_client_rates.keys())
             | set(all_addresses.keys())
             | set(all_emails.keys())
             | set(all_initials_cd.keys())
+            | set(all_rfcs_cd.keys())
         )
 
         if _all_cd_names:
@@ -524,6 +541,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             dm.set_client_initial(cname, "")
                             dm.set_client_email(cname, "")
                             dm.set_client_address(cname, "")
+                            dm.set_client_rfc(cname, "")
                             st.session_state.pop(f"cd_del_confirm_{cname}", None)
                             st.session_state["rates_saved_msg"] = f"✅ {cname} deleted."
                             st.rerun()
@@ -556,39 +574,74 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         height=90,
                         key=f"cd_addr_{cname}",
                     )
+                    new_rfc = st.text_input(
+                        "RFC",
+                        value=all_rfcs_cd.get(cname, ""),
+                        placeholder="e.g. ABC123456DEF",
+                        key=f"cd_rfc_{cname}",
+                        help="Mexican tax ID (RFC). Printed on the invoice below the billing address.",
+                    )
 
                     # ── Rate Card ─────────────────────────────────────────────
                     st.caption("Rate Card")
-                    client_cbp = st.toggle(
-                        "Charged by Pallet",
-                        value=bool(crates.get("charged_by_pallet", charged_by_pallet)),
-                        key=f"cbp_{cname}",
-                        help="ON = per pallet. OFF = flat cost per truck.",
+                    _cd_billing_mode = st.radio(
+                        "Billing Mode",
+                        options=["Pallet", "Truck"],
+                        index=0 if bool(crates.get("charged_by_pallet", True)) else 1,
+                        horizontal=True,
+                        key=f"billing_mode_{cname}",
+                        help="Controls which billing rates are shown for editing. Both sets of prices are always saved.",
                     )
-                    if client_cbp:
-                        client_billing = {
-                            "in_out"  : "In-Out Storage (per pallet)",
-                            "transfer": "Transfer (per pallet)",
-                        }
-                    else:
-                        client_billing = {"cost_per_truck": "Cost per Truck"}
+                    client_cbp = (_cd_billing_mode == "Pallet")
 
-                    client_labels  = {**client_billing, **_non_billing_labels}
-                    override_items = list(client_labels.items())
-                    new_overrides: dict = {"charged_by_pallet": client_cbp}
-
+                    st.caption("Pallet Rates")
                     override_col1, override_col2 = st.columns(2)
-                    for i, (key, label) in enumerate(override_items):
-                        col = override_col1 if i < len(override_items) // 2 + len(override_items) % 2 else override_col2
+                    _def_in_out   = float(default_rates.get("in_out", 0))
+                    _def_transfer = float(default_rates.get("transfer", 0))
+                    _client_in_out = override_col1.number_input(
+                        "In-Out Storage (per pallet) ($)" + (" ✏️" if "in_out" in crates else ""),
+                        value=float(crates.get("in_out", _def_in_out)),
+                        min_value=0.0, step=0.25, format="%.2f",
+                        key=f"cr_{cname}_in_out",
+                        help="Default: ${:.2f}".format(_def_in_out),
+                    )
+                    _client_transfer = override_col2.number_input(
+                        "Transfer per Truck ($)" + (" ✏️" if "transfer" in crates else ""),
+                        value=float(crates.get("transfer", _def_transfer)),
+                        min_value=0.0, step=0.25, format="%.2f",
+                        key=f"cr_{cname}_transfer",
+                        help="Default: ${:.2f}".format(_def_transfer),
+                    )
+
+                    st.caption("Truck Rates")
+                    _def_cpt    = float(default_rates.get("cost_per_truck", 0))
+                    _client_cpt = st.number_input(
+                        "Cost per Truck ($)" + (" ✏️" if "cost_per_truck" in crates else ""),
+                        value=float(crates.get("cost_per_truck", _def_cpt)),
+                        min_value=0.0, step=0.25, format="%.2f",
+                        key=f"cr_{cname}_cost_per_truck",
+                        help="Default: ${:.2f}".format(_def_cpt),
+                    )
+
+                    new_overrides: dict = {
+                        "charged_by_pallet": client_cbp,
+                        "in_out"           : _client_in_out,
+                        "transfer"         : _client_transfer,
+                        "cost_per_truck"   : _client_cpt,
+                    }
+
+                    # Non-billing fees — always shown
+                    _nb_cd_items = list(_non_billing_labels.items())
+                    nb_cd_col1, nb_cd_col2 = st.columns(2)
+                    for i, (key, label) in enumerate(_nb_cd_items):
+                        col = nb_cd_col1 if i < len(_nb_cd_items) // 2 + len(_nb_cd_items) % 2 else nb_cd_col2
                         is_override = key in crates
                         if key == "net_days":
                             default_val = int(default_rates.get(key, 30))
                             current_val = int(crates.get(key, default_val))
                             new_val = col.number_input(
                                 label=label + (" ✏️" if is_override else ""),
-                                value=current_val,
-                                min_value=1,
-                                step=1,
+                                value=current_val, min_value=1, step=1,
                                 key=f"cr_{cname}_{key}",
                                 help=f"Default: {default_val}",
                             )
@@ -597,10 +650,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             current_val = float(crates.get(key, default_val))
                             new_val = col.number_input(
                                 label=f"{label} ($)" + (" ✏️" if is_override else ""),
-                                value=current_val,
-                                min_value=0.0,
-                                step=0.25,
-                                format="%.2f",
+                                value=current_val, min_value=0.0, step=0.25, format="%.2f",
                                 key=f"cr_{cname}_{key}",
                                 help="Default: ${:.2f}".format(default_val),
                             )
@@ -625,6 +675,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         dm.set_client_initial(cname, new_initials.strip())
                         dm.set_client_email(cname, new_email.strip())
                         dm.set_client_address(cname, new_addr.strip())
+                        dm.set_client_rfc(cname, new_rfc.strip())
                         st.session_state[f"cd_exp_v_{cname}"] = _cd_v + 1
                         st.session_state["rates_saved_msg"] = f"✅ {cname} saved."
                         st.session_state[f"cd_saved_{cname}"] = f"Details saved for **{cname}**."

@@ -262,9 +262,14 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     _label(col_x[1] + pad, box_top - 0.18 * inch, "BILL TO")
     _value(col_x[1] + pad, box_top - 0.36 * inch, invoice.get("client_name", ""), bold=True)
     billing_address = invoice.get("billing_address", "")
-    if billing_address:
-        for _i, _line in enumerate(billing_address.splitlines()[:3]):
-            _value(col_x[1] + pad, box_top - (0.51 + _i * 0.13) * inch, _line.strip())
+    _addr_lines = billing_address.splitlines()[:3] if billing_address else []
+    for _i, _line in enumerate(_addr_lines):
+        _value(col_x[1] + pad, box_top - (0.51 + _i * 0.13) * inch, _line.strip())
+    client_rfc = invoice.get("client_rfc", "").strip()
+    if client_rfc:
+        _rfc_y = box_top - (0.51 + len(_addr_lines) * 0.13) * inch
+        _label(col_x[1] + pad,              _rfc_y + 0.01 * inch, "RFC")
+        _value(col_x[1] + pad + 0.22 * inch, _rfc_y + 0.01 * inch, client_rfc)
 
     # INVOICE DATE / DUE DATE
     inv_date_str = invoice.get("invoice_date", datetime.utcnow().date().isoformat())

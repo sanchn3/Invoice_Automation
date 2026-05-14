@@ -13,6 +13,7 @@ _EXTRA_CHARGE_MAP = {
     "pallet_cleaning"   : ("pallet_cleaning_fee",    "Pallet Cleaning"),
     "re_inspection"     : ("re_inspection_fee",       "Re-Inspection"),
     "repacking"         : ("repacking_fee",            "Repacking"),
+    "stamps"            : ("stamps_fee",               "Stamps"),
 }
 
 
@@ -24,6 +25,8 @@ def calculate_charges(
     extra_charges: list[str],
     damaged_pallets: int = 0,
     broken_pallets: int = 0,
+    hours_overtime: int = 0,
+    restack_count: int = 0,
     client_name: str = "",
 ) -> dict:
     """
@@ -114,6 +117,28 @@ def calculate_charges(
                 "unit_price" : fee,
                 "total"      : round(fee, 2),
             })
+
+    # ── Hours Overtime ────────────────────────────────────────────────────────
+    if hours_overtime > 0:
+        fee = float(rates.get("overtime_fee", 0))
+        line_items.append({
+            "description": "Hours Overtime",
+            "quantity"   : hours_overtime,
+            "unit"       : "hrs",
+            "unit_price" : fee,
+            "total"      : round(fee * hours_overtime, 2),
+        })
+
+    # ── Restack ───────────────────────────────────────────────────────────────
+    if restack_count > 0:
+        fee = float(rates.get("restack_fee", 0))
+        line_items.append({
+            "description": "Restack",
+            "quantity"   : restack_count,
+            "unit"       : "ea",
+            "unit_price" : fee,
+            "total"      : round(fee * restack_count, 2),
+        })
 
     subtotal = round(sum(item["total"] for item in line_items), 2)
 
