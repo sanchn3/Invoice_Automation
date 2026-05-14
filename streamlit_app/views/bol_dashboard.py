@@ -137,112 +137,38 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
                 else:
                     st.info("No new BOL emails found.")
 
-    # ── BOL Folder Poll ──────────────────────────────────────────────────────
+    # ── BOL Upload ───────────────────────────────────────────────────────────
     with _fpoll_col:
         with st.container(border=True):
-            st.markdown("**📁 BOL Upload**" if _IS_PRODUCTION else "**📁 BOL Folder Poll**")
-
-            if _IS_PRODUCTION:
-                # Production: file uploader (no local filesystem access)
-                _bol_uploaded = st.file_uploader(
-                    "Upload BOL PDF(s)",
-                    type="pdf",
-                    accept_multiple_files=True,
-                    key="bol_pdf_uploader",
-                    label_visibility="collapsed",
-                )
-                if st.button("⬆️ Process Uploads", key="bol_fpoll_btn", width="stretch", disabled=not _bol_uploaded):
-                    _known_bol_paths = {r.get("pdf_local_path", "") for r in bol_records}
-                    _bol_ok = 0
-                    with st.spinner(f"Processing {len(_bol_uploaded)} PDF(s)…"):
-                        for _uf in _bol_uploaded:
-                            _dest = _BOLS_DIR / _uf.name
-                            if str(_dest) in _known_bol_paths:
-                                continue
-                            _dest.write_bytes(_uf.getvalue())
-                            dm.add_bol_record({
-                                "po_number"       : _dest.stem.upper(),
-                                "received_at"     : datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                                "pdf_local_path"  : str(_dest),
-                                "status"          : "bol_inbox",
-                                "driver_name"     : None,
-                                "checkin_at"      : None,
-                                "checkin_notified": False,
-                            })
-                            _bol_ok += 1
-                    st.success(f"Done — {_bol_ok} new BOL(s) added.")
-                    st.rerun()
-            else:
-                # Local dev: folder path poll
-                _bol_fcfg        = _load_bol_folder_cfg()
-                _bol_fpath_saved = _bol_fcfg.get("bol_folder_path", "")
-                _bol_fedit_key   = "bol_folder_poll_edit_mode"
-
-                if st.session_state.get(_bol_fedit_key):
-                    _new_bol_fpath = st.text_input(
-                        "Folder path",
-                        value=_bol_fpath_saved,
-                        key="bol_folder_poll_path_input",
-                        label_visibility="collapsed",
-                        placeholder=r"e.g. C:\bol_pdfs",
-                    )
-                    _bfsv1, _bfsv2 = st.columns(2)
-                    if _bfsv1.button("💾 Save", key="bol_fpoll_save", width="stretch"):
-                        _save_bol_folder_cfg({"bol_folder_path": _new_bol_fpath.strip()})
-                        st.session_state.pop(_bol_fedit_key, None)
-                        st.rerun()
-                    if _bfsv2.button("✕ Cancel", key="bol_fpoll_cancel", width="stretch"):
-                        st.session_state.pop(_bol_fedit_key, None)
-                        st.rerun()
-                else:
-                    if _bol_fpath_saved:
-                        st.caption(f"`{_bol_fpath_saved}`")
-                    else:
-                        st.caption("*No folder configured*")
-
-                    _bfp1, _bfp2 = st.columns([3, 1])
-                    if _bfp1.button(
-                        "🔄 Poll Folder", key="bol_fpoll_btn",
-                        width="stretch", disabled=not _bol_fpath_saved,
-                    ):
-                        _bol_folder = Path(_bol_fpath_saved)
-                        if not _bol_folder.is_dir():
-                            st.error(f"Directory not found:\n{_bol_fpath_saved}")
-                        else:
-                            _known_bol_paths = {
-                                r.get("pdf_local_path", "")
-                                for r in bol_records
-                            }
-                            _bol_pdfs = sorted(_bol_folder.glob("*.pdf"))
-                            _bol_ok   = 0
-                            _bol_skip = 0
-                            with st.spinner(f"Processing {len(_bol_pdfs)} PDF(s)…"):
-                                for _bol_pdf in _bol_pdfs:
-                                    if str(_bol_pdf) in _known_bol_paths:
-                                        _bol_skip += 1
-                                        continue
-                                    dm.add_bol_record({
-                                        "po_number"       : _bol_pdf.stem.upper(),
-                                        "received_at"     : datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                                        "pdf_local_path"  : str(_bol_pdf),
-                                        "status"          : "bol_inbox",
-                                        "driver_name"     : None,
-                                        "checkin_at"      : None,
-                                        "checkin_notified": False,
-                                    })
-                                    _bol_ok += 1
-                            _bol_msg = f"{_bol_ok} new BOL(s) added"
-                            if _bol_skip:
-                                _bol_msg += f", {_bol_skip} already known"
-                            st.success(f"Folder poll complete — {_bol_msg}.")
-                            st.rerun()
-
-                    if _bfp2.button(
-                        "✏️", key="bol_fpoll_edit", width="stretch",
-                        help="Set folder path",
-                    ):
-                        st.session_state[_bol_fedit_key] = True
-                        st.rerun()
+            st.markdown("**📁 BOL Upload**")
+            _bol_uploaded = st.file_uploader(
+                "Upload BOL PDF(s)",
+                type="pdf",
+                accept_multiple_files=True,
+                key="bol_pdf_uploader",
+                label_visibility="collapsed",
+            )
+            if st.button("⬆️ Process Uploads", key="bol_fpoll_btn", width="stretch", disabled=not _bol_uploaded):
+                _known_bol_paths = {r.get("pdf_local_path", "") for r in bol_records}
+                _bol_ok = 0
+                with st.spinner(f"Processing {len(_bol_uploaded)} PDF(s)…"):
+                    for _uf in _bol_uploaded:
+                        _dest = _BOLS_DIR / _uf.name
+                        if str(_dest) in _known_bol_paths:
+                            continue
+                        _dest.write_bytes(_uf.getvalue())
+                        dm.add_bol_record({
+                            "po_number"       : _dest.stem.upper(),
+                            "received_at"     : datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                            "pdf_local_path"  : str(_dest),
+                            "status"          : "bol_inbox",
+                            "driver_name"     : None,
+                            "checkin_at"      : None,
+                            "checkin_notified": False,
+                        })
+                        _bol_ok += 1
+                st.success(f"Done — {_bol_ok} new BOL(s) added.")
+                st.rerun()
 
     with st.expander("➕ Add BOL Manually"):
         f1, f2 = st.columns(2)
