@@ -69,7 +69,11 @@ st.sidebar.markdown("---")
 
 if st.sidebar.button("🚪 Sign Out", use_container_width=True):
     auth.logout()
-    st.rerun()
+    st.markdown(
+        '<script>window.top.location.href = "https://incogrp.com/staff-login";</script>',
+        unsafe_allow_html=True,
+    )
+    st.stop()
 
 st.sidebar.markdown("---")
 st.sidebar.caption("INCO Logistics • Invoice Automation v1.0")
