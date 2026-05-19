@@ -7,6 +7,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import streamlit as st
+import streamlit.components.v1 as _components
+
+# ── Production sign-out destination — DO NOT CHANGE ──────────────────────────
+_SIGN_OUT_URL = "https://incogrp.com/staff-login"
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
@@ -69,9 +73,9 @@ st.sidebar.markdown("---")
 
 if st.sidebar.button("🚪 Sign Out", use_container_width=True):
     auth.logout()
-    st.markdown(
-        '<script>window.top.location.href = "https://incogrp.com/staff-login";</script>',
-        unsafe_allow_html=True,
+    _components.html(
+        f'<script>window.top.location.href = "{_SIGN_OUT_URL}";</script>',
+        height=0,
     )
     st.stop()
 
