@@ -302,7 +302,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         billing_labels = {
             "in_out"        : "In-Out Storage (per pallet)",
             "transfer"      : "Transfer per Truck",
-            "cost_per_truck": "Cost per Truck",
+            "cost_per_truck": "Cost per Truck In & Out",
         }
 
         # Non-billing labels are the same regardless of mode — reused in all loops
@@ -315,7 +315,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             "repacking_fee"                  : "Repacking",
             "re_inspection_fee"              : "Re-Inspection",
             "broker_fee"                     : "Broker Fee",
-            "stamps_fee"                     : "Stamps",
+            "stamps_fee"                     : "Seals",
             "overtime_fee"                   : "Hours Overtime",
             "restack_fee"                    : "Restack",
             "net_days"                       : "Net Days (payment terms)",
@@ -421,7 +421,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         st.caption("Truck Rates")
         _new_cost_per_truck = st.number_input(
-            "Cost per Truck ($)",
+            "Cost per Truck In & Out ($)",
             value=float(default_rates.get("cost_per_truck", 0)),
             min_value=0.0, step=0.25, format="%.2f",
             key="new_cr_cost_per_truck",
@@ -616,7 +616,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     st.caption("Truck Rates")
                     _def_cpt    = float(default_rates.get("cost_per_truck", 0))
                     _client_cpt = st.number_input(
-                        "Cost per Truck ($)" + (" ✏️" if "cost_per_truck" in crates else ""),
+                        "Cost per Truck In & Out ($)" + (" ✏️" if "cost_per_truck" in crates else ""),
                         value=float(crates.get("cost_per_truck", _def_cpt)),
                         min_value=0.0, step=0.25, format="%.2f",
                         key=f"cr_{cname}_cost_per_truck",
