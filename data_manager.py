@@ -9,6 +9,7 @@ To migrate to Supabase later: replace only this file.
 import json
 import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -46,10 +47,16 @@ _BOL_RECORDS_FILE        = DATA_DIR / "bol_records.json"
 
 _lock = threading.Lock()
 
+# Files that grow unboundedly — never cache them so their full contents are
+# not held in memory between poll cycles.
+_NO_CACHE_FILES = {_EMAIL_LOG_FILE, _PROVIDER_INVOICES_FILE, _CLIENT_INVOICES_FILE}
+
 # In-memory read cache: path -> (mtime, parsed_data)
 # Keyed by file mtime so the background poller's writes auto-invalidate.
+# Uses an OrderedDict for LRU eviction capped at _CACHE_MAX_ENTRIES.
 # All access is inside _lock, so no additional synchronisation is needed.
-_file_cache: dict[Path, tuple[float, Any]] = {}
+_CACHE_MAX_ENTRIES = 20
+_file_cache: OrderedDict[Path, tuple[float, Any]] = OrderedDict()
 
 
 def _now() -> str:
@@ -78,22 +85,34 @@ def _read_json(path: Path) -> Any:
         mtime = path.stat().st_mtime
     except OSError:
         return default
+    if path in _NO_CACHE_FILES:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
     cached = _file_cache.get(path)
     if cached is not None and cached[0] == mtime:
+        _file_cache.move_to_end(path)
         return cached[1]
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     _file_cache[path] = (mtime, data)
+    _file_cache.move_to_end(path)
+    if len(_file_cache) > _CACHE_MAX_ENTRIES:
+        _file_cache.popitem(last=False)  # evict least recently used
     return data
 
 
 def _write_json(path: Path, data: Any) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    if path in _NO_CACHE_FILES:
+        return
     # Update cache immediately so the next read within the same lock
     # cycle doesn't go back to disk.
     try:
         _file_cache[path] = (path.stat().st_mtime, data)
+        _file_cache.move_to_end(path)
+        if len(_file_cache) > _CACHE_MAX_ENTRIES:
+            _file_cache.popitem(last=False)
     except OSError:
         _file_cache.pop(path, None)
 
@@ -106,6 +125,15 @@ class DataManager:
     def get_email_logs(self) -> list[dict]:
         with _lock:
             return _read_json(_EMAIL_LOG_FILE)
+
+    def get_nonterminal_email_logs(self) -> list[dict]:
+        """Return only logs that have not reached a terminal status.
+        Use this instead of get_email_logs() when you only need active records,
+        to avoid loading the full (ever-growing) log into memory."""
+        _TERMINAL = {"invoiced", "exported_to_qb"}
+        with _lock:
+            logs = _read_json(_EMAIL_LOG_FILE)
+        return [log for log in logs if log.get("status", "") not in _TERMINAL]
 
     def add_email_log(self, record: dict) -> dict:
         with _lock:

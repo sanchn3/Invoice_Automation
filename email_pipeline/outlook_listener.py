@@ -47,7 +47,8 @@ def poll_inbox(dm: DataManager, alert_manager: AlertManager) -> int:
     Returns the number of new emails processed.
     """
     logger.info("Polling inbox folder: %s", OUTLOOK_INVOICE_FOLDER)
-    count = 0
+    count   = 0
+    account = None
 
     try:
         account  = _get_account()
@@ -124,6 +125,12 @@ def poll_inbox(dm: DataManager, alert_manager: AlertManager) -> int:
 
     except Exception as e:
         logger.error("poll_inbox failed: %s", e)
+    finally:
+        if account is not None:
+            try:
+                account.con.session.close()
+            except Exception:
+                pass
 
     logger.info("poll_inbox complete. %d new email(s) processed.", count)
     return count
