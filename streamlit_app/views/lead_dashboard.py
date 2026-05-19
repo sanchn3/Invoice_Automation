@@ -300,9 +300,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         # All billing fields always shown in default rates
         billing_labels = {
-            "in_out"        : "In-Out Storage (per pallet)",
-            "transfer"      : "Transfer per Truck",
-            "cost_per_truck": "Cost per Truck In & Out",
+            "in_out"   : "In-Out Storage (per pallet)",
+            "transfer" : "Transfer per Truck",
         }
 
         # Non-billing labels are the same regardless of mode — reused in all loops
@@ -349,6 +348,22 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     format="%.2f",
                     key=f"rate_{key}",
                 )
+
+        _cpt_col, _basis_col = st.columns(2)
+        updated["cost_per_truck"] = _cpt_col.number_input(
+            "Cost per Truck In & Out ($)",
+            value=float(default_rates.get("cost_per_truck", 0)),
+            min_value=0.0, step=0.25, format="%.2f",
+            key="rate_cost_per_truck",
+        )
+        _cur_basis = default_rates.get("default_billing_basis", "Pallet")
+        updated["default_billing_basis"] = _basis_col.selectbox(
+            "Default Billing Basis",
+            options=["Pallet", "Truck"],
+            index=0 if _cur_basis == "Pallet" else 1,
+            key="rate_default_billing_basis",
+            help="Controls whether the admin dashboard shows a total pallet count input (Pallet) or skips it (Truck).",
+        )
 
         if _colored_btn(st, "💾 Save Default Rates", key="save_default_rates", color="#198754"):
             dm.update_rate_card(updated)

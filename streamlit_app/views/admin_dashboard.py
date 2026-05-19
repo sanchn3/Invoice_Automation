@@ -851,8 +851,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         st.markdown("---")
                         st.caption("Job Details")
 
-                        _cl_rates  = dm.get_rates_for_client(ci.get("client_name", ""))
-                        _cbp       = bool(_cl_rates.get("charged_by_pallet", True))
+                        _cl_rates    = dm.get_rates_for_client(ci.get("client_name", ""))
+                        _rate_card   = dm.get_rate_card()
+                        _default_cbp = _rate_card.get("default_billing_basis", "Pallet") == "Pallet"
+                        _cbp         = bool(_cl_rates.get("charged_by_pallet", _default_cbp))
                         _fixed_pal = int(_cl_rates.get("fixed_pallet_count", 0) or 0)
                         if _cbp and svc != "transfer":
                             _pa, _pb, _pc = st.columns(3)
