@@ -30,21 +30,6 @@ from utils.pdf_storage import get_pdf_bytes as _get_pdf_bytes
 
 _CHECKIN_HOLD_SECONDS = 30
 
-_BOL_FOLDER_POLL_CFG = _DATA_DIR / "folder_poll_config.json"
-
-
-def _load_bol_folder_cfg() -> dict:
-    try:
-        return json.loads(_BOL_FOLDER_POLL_CFG.read_text("utf-8"))
-    except Exception:
-        return {}
-
-
-def _save_bol_folder_cfg(data: dict) -> None:
-    existing = _load_bol_folder_cfg()
-    existing.update(data)
-    _BOL_FOLDER_POLL_CFG.write_text(json.dumps(existing, indent=2), "utf-8")
-
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -121,24 +106,10 @@ def _checkin_watcher(dm: DataManager) -> None:
 # ─── inbox section (pre-tab) ──────────────────────────────────────────────────
 
 def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
-    _epoll_col, _fpoll_col, _ = st.columns([1, 1, 3])
+    _upload_col, _ = st.columns([1, 2])
 
-    with _epoll_col:
-        with st.container(border=True):
-            st.markdown("**📧 BOL Email Poll**")
-            st.caption("Polls the Outlook BOL inbox folder")
-            if st.button("🔄 Poll BOL Inbox", width="stretch"):
-                from email_pipeline.bol_listener import poll_bol_inbox
-                with st.spinner("Polling BOL inbox…"):
-                    count = poll_bol_inbox(dm)
-                if count:
-                    st.success(f"{count} new BOL email(s) received.")
-                    st.rerun()
-                else:
-                    st.info("No new BOL emails found.")
-
-    # ── BOL Upload ───────────────────────────────────────────────────────────
-    with _fpoll_col:
+    # ── BOL Upload ────────────────────────────────────────────────────────────
+    with _upload_col:
         with st.container(border=True):
             st.markdown("**📁 BOL Upload**")
             _bol_uploaded = st.file_uploader(

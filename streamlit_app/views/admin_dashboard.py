@@ -33,19 +33,6 @@ logger = logging.getLogger(__name__)
 
 _STUCK_HOURS = 24
 
-_FOLDER_POLL_CFG = _DATA_DIR / "folder_poll_config.json"
-
-
-def _load_folder_cfg() -> dict:
-    try:
-        return json.loads(_FOLDER_POLL_CFG.read_text("utf-8"))
-    except Exception:
-        return {}
-
-
-def _save_folder_cfg(data: dict) -> None:
-    _FOLDER_POLL_CFG.write_text(json.dumps(data, indent=2), "utf-8")
-
 
 def _colored_btn(container, label: str, key: str, color: str, **kwargs) -> bool:
     """Render a button with a custom background color using a CSS anchor approach."""
@@ -301,22 +288,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_pipeline:
         st.subheader("Invoice Validation")
 
-        _epoll_col, _fpoll_col, _ = st.columns([1, 1, 3])
+        _upload_col, _ = st.columns([1, 2])
 
-        # ── Email Inbox Poll ──────────────────────────────────────────────────
-        with _epoll_col:
-            with st.container(border=True):
-                st.markdown("**📧 Email Inbox Poll**")
-                st.caption("Polls the Outlook BOL inbox folder")
-                if st.button("🔄 Poll Inbox", width="stretch"):
-                    from email_pipeline.outlook_listener import poll_inbox
-                    with st.spinner("Polling inbox..."):
-                        new_count = poll_inbox(dm, alert_manager)
-                    st.success(f"Poll complete — {new_count} new email(s) processed.")
-                    st.rerun()
-
-        # ── Invoice Folder Poll ───────────────────────────────────────────────
-        with _fpoll_col:
+        # ── Invoice Upload ────────────────────────────────────────────────────
+        with _upload_col:
             with st.container(border=True):
                 st.markdown("**📁 Invoice Upload**")
                 _uploaded = st.file_uploader(
