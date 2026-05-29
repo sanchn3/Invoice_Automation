@@ -1,20 +1,16 @@
 """
 attachment_handler.py
 =====================
-Extracts PDF attachments from O365 message objects, saves them locally,
-and triggers the parsing pipeline.
+Parsing pipeline for uploaded provider invoice PDFs.
 """
 
 import logging
 from datetime import datetime
-from pathlib import Path
 
-from config import PDFS_DIR
 from data_manager import DataManager
 from parsing.pdf_parser import parse_pdf
 from parsing.claude_parser import parse_with_claude
 from alerting.alert_manager import AlertManager
-from utils.pdf_storage import upload_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +27,6 @@ def _run_parsing_pipeline(
 ) -> bool:
     """
     Core parsing pipeline: identify provider, parse PDF, dedup, persist records.
-    Called by both handle_attachment (automated) and process_pdf_from_path (manual).
     Returns True on success, False on any failure.
     """
     sender_domain = sender.split("@")[-1] if "@" in sender else sender
@@ -139,35 +134,6 @@ def _run_parsing_pipeline(
     return True
 
 
-def save_pdf_attachment(message, email_log_id: str, dm: DataManager) -> str | None:
-    """
-    Download and save the first PDF attachment from an O365 message.
-    Updates the email log with the local path. Returns the path or None.
-    Used to save PDFs for admin review before full processing.
-    """
-    try:
-        message.attachments.download_attachments()
-        for attachment in message.attachments:
-            name = getattr(attachment, "name", "") or ""
-            if not name.lower().endswith(".pdf"):
-                continue
-            short_id   = email_log_id.replace("-", "")[:12]
-            local_name = f"{short_id}_{name.replace(' ', '_')}"
-            local_path = PDFS_DIR / local_name
-            attachment.save(location=str(PDFS_DIR), custom_name=local_name)
-            pdf_path = str(local_path)
-            dm.update_email_log(email_log_id, {
-                "pdf_filename"  : local_name,
-                "pdf_local_path": pdf_path,
-            })
-            upload_pdf(pdf_path)
-            logger.info("Saved PDF for pending review: %s", local_path)
-            return pdf_path
-    except Exception as e:
-        logger.warning("Could not save attachment for pending_review email %s: %s", email_log_id, e)
-    return None
-
-
 def process_pdf_from_path(
     pdf_path: str,
     email_log_id: str,
@@ -188,93 +154,3 @@ def process_pdf_from_path(
     )
 
 
-def handle_attachment(
-    message,
-    email_log_id: str,
-    dm: DataManager,
-    alert_manager: AlertManager,
-) -> None:
-    """
-    Extract ALL PDF attachments from an O365 message, save each locally,
-    and run the parsing pipeline for every PDF found. Emails with multiple
-    PDFs produce one provider_invoice + client_invoice per attachment.
-
-    The first PDF uses the existing email log entry. Each additional PDF
-    gets its own email log entry (message_id suffixed with __att_N) so
-    the deduplication check in outlook_listener continues to work correctly.
-    """
-    email_log = dm.get_email_log_by_id(email_log_id)
-    sender              = (email_log or {}).get("sender", "")
-    original_message_id = (email_log or {}).get("message_id", email_log_id)
-
-    # ── Download and collect all PDF attachments ──────────────────────────────
-    pdf_attachments: list[tuple[str, str]] = []  # (local_path, filename)
-    try:
-        message.attachments.download_attachments()
-        for attachment in message.attachments:
-            name = getattr(attachment, "name", "") or ""
-            if not name.lower().endswith(".pdf"):
-                continue
-            short_id   = email_log_id.replace("-", "")[:12]
-            att_idx    = len(pdf_attachments)
-            suffix     = f"_att{att_idx}" if att_idx > 0 else ""
-            local_name = f"{short_id}{suffix}_{name.replace(' ', '_')}"
-            local_path = PDFS_DIR / local_name
-            attachment.save(location=str(PDFS_DIR), custom_name=local_name)
-            upload_pdf(str(local_path))
-            pdf_attachments.append((str(local_path), local_name))
-            logger.info("Saved attachment %d: %s", att_idx, local_path)
-
-    except Exception as e:
-        logger.error("Failed to save attachment for email_log %s: %s", email_log_id, e)
-        dm.update_email_log(email_log_id, {
-            "status"    : "pending_review",
-            "error_text": f"Attachment save failed: {e}",
-        })
-        alert_manager.parsing_failed(
-            subject=(email_log or {}).get("subject", ""),
-            email_log_id=email_log_id,
-        )
-        return
-
-    if not pdf_attachments:
-        dm.update_email_log(email_log_id, {
-            "status"    : "pending_review",
-            "error_text": "No PDF attachment found.",
-        })
-        return
-
-    # ── Process each PDF independently ───────────────────────────────────────
-    for i, (pdf_path, pdf_filename) in enumerate(pdf_attachments):
-        if i == 0:
-            # First PDF — use the original email log entry
-            log_id = email_log_id
-            dm.update_email_log(email_log_id, {
-                "pdf_filename"  : pdf_filename,
-                "pdf_local_path": pdf_path,
-            })
-        else:
-            # Additional PDFs — create a new email log entry linked to same email
-            now = datetime.utcnow().isoformat() + "Z"
-            extra_log = dm.add_email_log({
-                "received_at"    : now,
-                "sender"         : sender,
-                "subject"        : (email_log or {}).get("subject", ""),
-                "message_id"     : f"{original_message_id}__att_{i}",
-                "attachment_count": 1,
-                "pdf_filename"   : pdf_filename,
-                "pdf_local_path" : pdf_path,
-                "status"         : "received",
-                "error_text"     : None,
-            })
-            log_id = extra_log["id"]
-            logger.info(
-                "Created email log %s for attachment %d of message %s",
-                log_id, i, original_message_id,
-            )
-
-        _run_parsing_pipeline(
-            pdf_path, log_id, sender, dm, alert_manager,
-            alert_on_unknown_provider=(i == 0),  # alert once per email
-            alert_on_duplicate=True,
-        )

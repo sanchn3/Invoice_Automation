@@ -37,18 +37,6 @@ Invoice text:
 {text}
 """
 
-_CLASSIFIER_PROMPT = """You are an email classifier for a logistics company.
-Determine if the following email is a provider invoice that needs to be processed.
-
-Email details:
-Subject: {subject}
-From: {sender}
-Body preview: {body_preview}
-
-Reply with a single word: YES or NO
-"""
-
-
 def parse_with_claude(pdf_path: str) -> dict | None:
     """
     Extract invoice fields from a PDF using Claude as a fallback parser.
@@ -159,28 +147,3 @@ def extract_bol_po_number(subject: str, body_preview: str) -> str:
         return ""
 
 
-def is_invoice_email(subject: str, sender: str, body_preview: str) -> bool:
-    """
-    Use Claude to classify whether an email is a provider invoice.
-    Returns True if Claude says YES, False otherwise.
-    """
-    try:
-        message = _client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=10,
-            messages=[
-                {
-                    "role"   : "user",
-                    "content": _CLASSIFIER_PROMPT.format(
-                        subject=subject,
-                        sender=sender,
-                        body_preview=body_preview[:500],
-                    ),
-                }
-            ],
-        )
-        answer = message.content[0].text.strip().upper()
-        return answer.startswith("YES")
-    except Exception as e:
-        logger.warning("Claude email classifier failed: %s — defaulting to True.", e)
-        return True  # Default to processing on classifier failure
