@@ -13,7 +13,7 @@ _EXTRA_CHARGE_MAP = {
     "pallet_cleaning"   : ("pallet_cleaning_fee",    "Pallet Cleaning"),
     "re_inspection"     : ("re_inspection_fee",       "Re-Inspection"),
     "repacking"         : ("repacking_fee",            "Repacking"),
-    "stamps"            : ("stamps_fee",               "Stamps"),
+    "stamps"            : ("stamps_fee",               "Seal"),
 }
 
 
