@@ -24,7 +24,6 @@ def calculate_charges(
     temp_recorder: str | bool,
     extra_charges: list[str],
     damaged_pallets: int = 0,
-    broken_pallets: int = 0,
     hours_overtime: int = 0,
     restack_count: int = 0,
     client_name: str = "",
@@ -37,9 +36,8 @@ def calculate_charges(
     service_type   : "transfer" or "in_out"
     pallet_count   : number of pallets
     temp_recorder  : whether a temperature recorder was installed
-    extra_charges  : list of charge keys (see _EXTRA_CHARGE_MAP + "broken_pallets")
+    extra_charges  : list of charge keys (see _EXTRA_CHARGE_MAP)
     damaged_pallets: count of damaged pallets (informational only, not billed)
-    broken_pallets : count of broken pallets (billed per unit)
 
     Returns
     -------
@@ -97,17 +95,7 @@ def calculate_charges(
 
     # ── Extra charges ─────────────────────────────────────────────────────────
     for charge_key in extra_charges:
-        if charge_key == "broken_pallets":
-            if broken_pallets > 0:
-                fee = float(rates.get("broken_pallet_fee", 0))
-                line_items.append({
-                    "description": "Broken Pallets",
-                    "quantity"   : broken_pallets,
-                    "unit"       : "pallets",
-                    "unit_price" : fee,
-                    "total"      : round(fee * broken_pallets, 2),
-                })
-        elif charge_key in _EXTRA_CHARGE_MAP:
+        if charge_key in _EXTRA_CHARGE_MAP:
             rate_key, label = _EXTRA_CHARGE_MAP[charge_key]
             fee = float(rates.get(rate_key, 0))
             line_items.append({

@@ -310,7 +310,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             "temp_recorder_installation_fee" : "Temp. Recorder — Installation Only",
             "quality_inspection_fee"         : "Quality Inspection",
             "pallet_cleaning_fee"            : "Pallet Cleaning",
-            "broken_pallet_fee"              : "Broken Pallet (per pallet)",
             "repacking_fee"                  : "Repacking",
             "re_inspection_fee"              : "Re-Inspection",
             "broker_fee"                     : "Broker Fee",
@@ -566,6 +565,34 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
                     # ── Identity ──────────────────────────────────────────────
                     st.caption("Identity")
+
+                    # Rename client
+                    _ren_col, _ren_btn_col = st.columns([4, 1])
+                    _rename_input = _ren_col.text_input(
+                        "Client Name",
+                        value=cname,
+                        key=f"cd_rename_input_{cname}",
+                        label_visibility="collapsed",
+                    )
+                    if _ren_btn_col.button("✏️ Rename", key=f"cd_rename_btn_{cname}", use_container_width=True):
+                        _new_cname = _rename_input.strip()
+                        if _new_cname and _new_cname != cname:
+                            st.session_state[f"cd_rename_confirm_{cname}"] = _new_cname
+                            st.rerun()
+
+                    if st.session_state.get(f"cd_rename_confirm_{cname}"):
+                        _new_cname = st.session_state[f"cd_rename_confirm_{cname}"]
+                        _rc1, _rc2, _rc3 = st.columns([3, 1, 1])
+                        _rc1.warning(f"Rename **{cname}** → **{_new_cname}**?")
+                        if _rc2.button("✅ Yes", key=f"cd_rename_yes_{cname}", use_container_width=True):
+                            dm.rename_client(cname, _new_cname)
+                            st.session_state.pop(f"cd_rename_confirm_{cname}", None)
+                            st.session_state["rates_saved_msg"] = f"✅ {cname} renamed to {_new_cname}."
+                            st.rerun()
+                        if _rc3.button("✗ Cancel", key=f"cd_rename_no_{cname}", use_container_width=True):
+                            st.session_state.pop(f"cd_rename_confirm_{cname}", None)
+                            st.rerun()
+
                     new_initials = st.text_input(
                         "Initials",
                         value=all_initials_cd.get(cname, ""),

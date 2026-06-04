@@ -6,6 +6,8 @@ Uses client-credentials OAuth2 flow directly with requests.
 """
 
 import logging
+import threading
+
 import requests
 
 from config import MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT_ID, ADMIN_EMAIL, WORKER_EMAIL
@@ -35,9 +37,17 @@ class AlertManager:
         return resp.json()["access_token"]
 
     def _send_email(self, subject: str, body: str) -> None:
+        """Fire-and-forget: sends the email in a daemon thread so callers are not blocked."""
         if not ADMIN_EMAIL or not WORKER_EMAIL:
             logger.warning("Alert skipped — ADMIN_EMAIL or WORKER_EMAIL not configured.")
             return
+        threading.Thread(
+            target=self._send_email_sync,
+            args=(subject, body),
+            daemon=True,
+        ).start()
+
+    def _send_email_sync(self, subject: str, body: str) -> None:
         try:
             token = self._get_token()
             payload = {

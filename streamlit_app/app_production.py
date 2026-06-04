@@ -24,6 +24,29 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Disable browser autocomplete on every input across the entire app.
+_components.html(
+    """
+    <script>
+    (function () {
+        function off() {
+            window.parent.document.querySelectorAll('input').forEach(function (el) {
+                if (el.getAttribute('autocomplete') !== 'off') {
+                    el.setAttribute('autocomplete', 'off');
+                }
+            });
+        }
+        off();
+        new MutationObserver(off).observe(
+            window.parent.document.body,
+            { childList: true, subtree: true }
+        );
+    })();
+    </script>
+    """,
+    height=0,
+)
+
 # Shared instances (cached across reruns)
 @st.cache_resource
 def get_dm() -> DataManager:
