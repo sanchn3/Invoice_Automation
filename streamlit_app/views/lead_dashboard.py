@@ -148,13 +148,15 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         "⚙️ Settings",
     ])
 
+    # Fetch once per render — reused across all tabs to avoid redundant disk reads
+    all_ci       = dm.get_client_invoices()
+    _prov_by_id  = {pi["id"]: pi for pi in dm.get_provider_invoices()}
+
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 1 — REPORTS
     # ──────────────────────────────────────────────────────────────────────────
     with tab_report:
         st.subheader("Reports")
-
-        all_ci = dm.get_client_invoices()
 
         if not all_ci:
             st.info("No invoice data yet.")
@@ -253,9 +255,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
             with _exp_col1:
                 if st.button("📊 Generate Excel", key="gen_excel_all"):
-                    st.session_state["excel_bytes_all"] = _build_excel(
-                        all_ci, {pi["id"]: pi for pi in dm.get_provider_invoices()}
-                    )
+                    st.session_state["excel_bytes_all"] = _build_excel(all_ci, _prov_by_id)
                 if "excel_bytes_all" in st.session_state:
                     st.download_button(
                         "⬇ Download All Invoices",
@@ -268,9 +268,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             with _exp_col2:
                 if st.button("📊 Generate Excel (Paid only)", key="gen_excel_paid"):
                     _paid_only = [ci for ci in all_ci if ci.get("paid")]
-                    st.session_state["excel_bytes_paid"] = _build_excel(
-                        _paid_only, {pi["id"]: pi for pi in dm.get_provider_invoices()}
-                    )
+                    st.session_state["excel_bytes_paid"] = _build_excel(_paid_only, _prov_by_id)
                 if "excel_bytes_paid" in st.session_state:
                     st.download_button(
                         "⬇ Download Paid Invoices",
@@ -743,7 +741,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         st.markdown("#### Client Data Management")
         st.caption("Filter invoices by client and delete all records for that client.")
 
-        all_ci = dm.get_client_invoices()
         client_names = sorted(set(
             ci.get("client_name", "").strip()
             for ci in all_ci
@@ -772,7 +769,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 st.caption(f"{len(client_records)} invoice record(s) for {_label_str}")
 
                 if client_records:
-                    _prov_by_id = {pi["id"]: pi for pi in dm.get_provider_invoices()}
                     rows = []
                     for ci in client_records:
                         qb_num = ci.get("quickbooks_invoice_number")
@@ -832,13 +828,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_processed:
         st.subheader("Processed Invoices")
 
-        all_ci_proc   = dm.get_client_invoices()
-        prov_invs_proc = dm.get_provider_invoices()
-        prov_by_id_proc = {pi["id"]: pi for pi in prov_invs_proc}
-
         processed = sorted(
             [
-                ci for ci in all_ci_proc
+                ci for ci in all_ci
                 if ci.get("status") in ("validated", "invoiced")
                 or ci.get("ready_for_export")
                 or ci.get("ready_to_email")
@@ -914,7 +906,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 c3.write(ci.get("invoice_date", "—"))
                 c4.write(due)
 
-                prov_proc = prov_by_id_proc.get(ci.get("provider_invoice_id", ""), {})
+                prov_proc = _prov_by_id.get(ci.get("provider_invoice_id", ""), {})
                 if ci.get("quickbooks_invoice_number"):
                     # Full generated client invoice PDF
                     c5.download_button(

@@ -4,7 +4,7 @@ supabase_sync.py
 Upserts processed client invoices from the local JSON store into the
 Supabase `invoices` table via the PostgREST REST API (no SDK required).
 
-Called by the APScheduler cron job in main.py every Sunday at 05:00 Central.
+Can be called manually or scheduled externally to sync invoice state to Supabase.
 Uses the service-role key so it bypasses Row Level Security.
 """
 

@@ -82,28 +82,6 @@ class AlertManager:
             ),
         )
 
-    def parsing_failed(self, subject: str, email_log_id: str) -> None:
-        self._send_email(
-            subject="Invoice parsing failed — manual review needed",
-            body=(
-                f"An invoice email could not be parsed automatically.\n\n"
-                f"Email subject : {subject}\n"
-                f"Log ID        : {email_log_id}\n\n"
-                f"Please review this email manually in the admin dashboard."
-            ),
-        )
-
-    def worker_submitted(self, client_name: str, job_id: str) -> None:
-        self._send_email(
-            subject=f"Worker submitted job — {client_name}",
-            body=(
-                f"A warehouse worker has submitted job completion details.\n\n"
-                f"Client : {client_name}\n"
-                f"Job ID : {job_id}\n\n"
-                f"The invoice is now ready for your review and approval."
-            ),
-        )
-
     def invoice_stuck(self, invoice_id: str, status: str, hours: int) -> None:
         self._send_email(
             subject=f"Invoice stuck in '{status}' for {hours}h",

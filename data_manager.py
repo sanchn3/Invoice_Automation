@@ -160,12 +160,6 @@ class DataManager:
                 return log
         return None
 
-    def message_id_exists(self, message_id: str) -> bool:
-        return any(
-            log.get("message_id") == message_id
-            for log in self.get_email_logs()
-        )
-
     # ─────────────────────────────────────────
     # PROVIDER INVOICES
     # ─────────────────────────────────────────
