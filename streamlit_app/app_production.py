@@ -74,8 +74,13 @@ st.sidebar.markdown("---")
 if st.sidebar.button("🚪 Sign Out", use_container_width=True):
     auth.logout()
     _components.html(
-        f'<script>window.top.location.href = "{_SIGN_OUT_URL}";</script>',
-        height=0,
+        f'<script>window.top.location.replace("{_SIGN_OUT_URL}");</script>',
+        height=1,
+    )
+    st.markdown(
+        f'Signed out. <a href="{_SIGN_OUT_URL}" target="_top">'
+        f"Return to staff login →</a>",
+        unsafe_allow_html=True,
     )
     st.stop()
 

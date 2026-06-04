@@ -153,8 +153,13 @@ if st.sidebar.button("🚪 Sign Out", use_container_width=True):
     if _IS_PRODUCTION:
         import streamlit.components.v1 as _cv1
         _cv1.html(
-            '<script>window.top.location.href = "https://incogrp.com/staff-login";</script>',
-            height=0,
+            '<script>window.top.location.replace("https://incogrp.com/staff-login");</script>',
+            height=1,
+        )
+        st.markdown(
+            'Signed out. <a href="https://incogrp.com/staff-login" target="_top">'
+            "Return to staff login →</a>",
+            unsafe_allow_html=True,
         )
         st.stop()
     else:
