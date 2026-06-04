@@ -294,11 +294,15 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         with _upload_col:
             with st.container(border=True):
                 st.markdown("**📁 Invoice Upload**")
+                if st.session_state.get("upload_success"):
+                    st.success(f"Invoice successfully uploaded ({st.session_state.pop('upload_success')} processed)")
+                if "inv_upload_key" not in st.session_state:
+                    st.session_state.inv_upload_key = 0
                 _uploaded = st.file_uploader(
                     "Upload PDF(s)",
                     type="pdf",
                     accept_multiple_files=True,
-                    key="inv_pdf_uploader",
+                    key=f"inv_pdf_uploader_{st.session_state.inv_upload_key}",
                     label_visibility="collapsed",
                 )
                 if st.button("⬆️ Process Uploads", key="fpoll_btn", width="stretch", disabled=not _uploaded):
@@ -312,16 +316,17 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 continue
                             _dest.write_bytes(_uf.getvalue())
                             _log_rec = dm.add_email_log({
-                                "source"        : "folder_poll",
-                                "sender"        : "folder_poll",
+                                "source"        : "upload",
+                                "sender"        : "upload",
                                 "subject"       : _uf.name,
                                 "received_at"   : datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                                 "pdf_local_path": str(_dest),
                                 "status"        : "pending_review",
                             })
-                            if process_pdf_from_path(str(_dest), _log_rec["id"], dm, _am):
+                            if process_pdf_from_path(str(_dest), _log_rec["id"], dm, _am, sender="upload"):
                                 _ok += 1
-                    st.success(f"Done — {_ok} new invoice(s) added.")
+                    st.session_state.inv_upload_key += 1
+                    st.session_state.upload_success = _ok
                     st.rerun()
 
         pending_review = [log for log in email_logs if log.get("status") == "pending_review"]
@@ -455,7 +460,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "extra_charges"  : [],
                                 "pallet_count"   : 0,
                                 "damaged_pallets": 0,
-                                "broken_pallets" : 0,
                                 "worker_notes"   : "",
                                 "photo_paths"    : [],
                                 "line_items"     : [],
@@ -817,55 +821,49 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
                     if st.session_state.get(_approve_key):
                         # ── Job details form + Generate Invoice ───────────────
-                        _TR_OPTS   = ["Hardware & Installation", "Installation Only"]
-                        _TR_TO_KEY = {"Hardware & Installation": "hardware_installation",
+                        _TR_OPTS   = ["None", "Hardware & Installation", "Installation Only"]
+                        _TR_TO_KEY = {"None"                  : None,
+                                      "Hardware & Installation": "hardware_installation",
                                       "Installation Only"      : "installation_only"}
-                        _TR_TO_LBL = {"hardware_installation": "Hardware & Installation",
-                                      "installation_only"    : "Installation Only"}
+                        _TR_TO_LBL = {None                    : "None",
+                                      "hardware_installation"  : "Hardware & Installation",
+                                      "installation_only"      : "Installation Only"}
 
                         st.markdown("---")
-                        st.caption("Job Details")
+                        st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Job Details</p>', unsafe_allow_html=True)
 
                         _cl_rates    = dm.get_rates_for_client(ci.get("client_name", ""))
                         _rate_card   = dm.get_rate_card()
                         _default_cbp = _rate_card.get("default_billing_basis", "Pallet") == "Pallet"
                         _cbp         = bool(_cl_rates.get("charged_by_pallet", _default_cbp))
                         _fixed_pal = int(_cl_rates.get("fixed_pallet_count", 0) or 0)
+                        _seal = st.checkbox(
+                            "Seal",
+                            value=bool("stamps" in (ci.get("extra_charges") or [])),
+                            key=f"val_seal_{cid}",
+                        )
                         if _cbp and svc != "transfer":
-                            _pa, _pb, _pc = st.columns(3)
+                            _pa, _pb, _pc, _pd = st.columns(4)
                             _pal_default = _fixed_pal if _fixed_pal > 0 else int(ci.get("pallet_count", 1) or 1)
                             _pal_label   = f"Total Pallets (fixed: {_fixed_pal})" if _fixed_pal > 0 else "Total Pallets"
-                            _pal = _pa.number_input(_pal_label, min_value=1, step=1, value=_pal_default, key=f"val_pal_{cid}")
-                            _dmg = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
-                            _brk = _pc.number_input("Broken Pallets",  min_value=0, step=1, value=int(ci.get("broken_pallets", 0) or 0), key=f"val_brk_{cid}")
+                            _pal            = _pa.number_input(_pal_label,       min_value=1, step=1, value=_pal_default,                                    key=f"val_pal_{cid}")
+                            _dmg            = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0),          key=f"val_dmg_{cid}")
+                            _hours_overtime = _pc.number_input("Hours Overtime",  min_value=0, step=1, value=int(ci.get("hours_overtime",  0) or 0),          key=f"val_ot_{cid}")
+                            _restack_count  = _pd.number_input("Restack",         min_value=0, step=1, value=int(ci.get("restack_count",   0) or 0),          key=f"val_rs_{cid}")
                         else:
                             if not _cbp:
                                 st.info("Billing is per truck — no pallet count required.")
                             _pal = 1
-                            _pb, _pc = st.columns(2)
-                            _dmg = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
-                            _brk = _pc.number_input("Broken Pallets",  min_value=0, step=1, value=int(ci.get("broken_pallets", 0) or 0), key=f"val_brk_{cid}")
+                            _pb, _pc, _pd = st.columns(3)
+                            _dmg            = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0),          key=f"val_dmg_{cid}")
+                            _hours_overtime = _pc.number_input("Hours Overtime",  min_value=0, step=1, value=int(ci.get("hours_overtime",  0) or 0),          key=f"val_ot_{cid}")
+                            _restack_count  = _pd.number_input("Restack",         min_value=0, step=1, value=int(ci.get("restack_count",   0) or 0),          key=f"val_rs_{cid}")
 
                         _new_extras: list[str] = []
+                        if _seal:
+                            _new_extras.append("stamps")
 
-                        _ot_col, _rs_col = st.columns(2)
-                        _hours_overtime = _ot_col.number_input("Hours Overtime", min_value=0, step=1, value=int(ci.get("hours_overtime", 0) or 0), key=f"val_ot_{cid}")
-                        _restack_count  = _rs_col.number_input("Restack",        min_value=0, step=1, value=int(ci.get("restack_count",  0) or 0), key=f"val_rs_{cid}")
-
-                        _stored_tr = ci.get("temp_recorder", "hardware_installation")
-                        if _stored_tr is True:
-                            _stored_tr = "hardware_installation"
-                        _tr_default = _TR_TO_LBL.get(_stored_tr, "Hardware & Installation") if _stored_tr else "Hardware & Installation"
-                        _tr_sel = st.radio(
-                            "Pulp Temperature",
-                            options=_TR_OPTS,
-                            index=_TR_OPTS.index(_tr_default),
-                            horizontal=True,
-                            key=f"val_tr_{cid}",
-                        )
-                        _new_tr = _TR_TO_KEY[_tr_sel]
-
-                        st.caption("Temperature Input")
+                        st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Pulp Temperature</p>', unsafe_allow_html=True)
                         _producto_caliente = st.checkbox(
                             "Producto Caliente",
                             value=bool(ci.get("producto_caliente", False)),
@@ -875,6 +873,21 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _temp1 = _t1.text_input("Temperature 1 (°F)", value=ci.get("temp_f1", ""), key=f"val_t1_{cid}")
                         _temp2 = _t2.text_input("Temperature 2 (°F)", value=ci.get("temp_f2", ""), key=f"val_t2_{cid}")
                         _temp3 = _t3.text_input("Temperature 3 (°F)", value=ci.get("temp_f3", ""), key=f"val_t3_{cid}")
+
+                        _stored_tr = ci.get("temp_recorder")
+                        if _stored_tr is True:
+                            _stored_tr = "hardware_installation"
+                        _tr_default = _TR_TO_LBL.get(_stored_tr, "None")
+                        st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Temperature Recorder</p>', unsafe_allow_html=True)
+                        _tr_sel = st.radio(
+                            "Temperature Recorder",
+                            options=_TR_OPTS,
+                            index=_TR_OPTS.index(_tr_default),
+                            horizontal=True,
+                            key=f"val_tr_{cid}",
+                            label_visibility="collapsed",
+                        )
+                        _new_tr = _TR_TO_KEY[_tr_sel]
 
                         _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
 
@@ -897,7 +910,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             dm.update_client_invoice(cid, {
                                 "pallet_count"     : int(_pal),
                                 "damaged_pallets"  : int(_dmg),
-                                "broken_pallets"   : int(_brk),
                                 "hours_overtime"   : int(_hours_overtime),
                                 "restack_count"    : int(_restack_count),
                                 "extra_charges"    : _new_extras,
@@ -959,7 +971,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 temp_recorder=_new_tr,
                                 extra_charges=_new_extras,
                                 damaged_pallets=int(_dmg),
-                                broken_pallets=int(_brk),
                                 hours_overtime=int(_hours_overtime),
                                 restack_count=int(_restack_count),
                                 client_name=ci.get("client_name", ""),
@@ -972,7 +983,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "service_type"    : svc,
                                 "pallet_count"    : int(_pal),
                                 "damaged_pallets" : int(_dmg),
-                                "broken_pallets"  : int(_brk),
                                 "hours_overtime"  : int(_hours_overtime),
                                 "restack_count"   : int(_restack_count),
                                 "extra_charges"   : _new_extras,
@@ -988,8 +998,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "net_days"        : int(client_rates.get("net_days", 30)),
                                 "billing_address" : billing_addr,
                                 "client_rfc"      : billing_rfc,
-                                "status"          : "invoiced",
-                                "invoice_date"    : datetime.utcnow().date().isoformat(),
+                                "status"              : "invoiced",
+                                "invoice_date"        : datetime.utcnow().date().isoformat(),
+                                "sent_to_accounting_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
                             })
                             if prov.get("email_intake_id"):
                                 dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
@@ -1060,24 +1071,25 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             ]
 
             st.caption(f"{len(filtered)} of {len(sent)} invoice(s)")
-            hdr = st.columns([1, 1.2, 2, 1, 0.8, 1.4, 0.8])
-            for col, label in zip(hdr, ["QB #", "Date", "Client", "Total", "Net Days", "Status", "PDF"]):
+            hdr = st.columns([1, 1.2, 1.4, 2, 1, 0.8, 1.4, 0.8])
+            for col, label in zip(hdr, ["QB #", "Date Received", "Sent On", "Client", "Total", "Net Days", "Status", "PDF"]):
                 col.markdown(f"**{label}**")
             st.divider()
             for ci in filtered:
                 cid  = ci["id"]
                 prov = prov_by_id.get(ci.get("provider_invoice_id", ""))
                 qb   = ci.get("quickbooks_invoice_number") or "—"
-                c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 1.2, 2, 1, 0.8, 1.4, 0.8])
+                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1, 1.2, 1.4, 2, 1, 0.8, 1.4, 0.8])
                 c1.write(qb)
                 c2.write(ci.get("invoice_date", "—"))
-                c3.write(ci.get("client_name", "—"))
-                c4.write(f"${ci.get('total', 0):,.2f}")
-                c5.write(str(ci.get("net_days", "—")))
-                c6.write("Exported to QB" if ci.get("quickbooks_exported") else "In Accounting")
+                c3.write(ci.get("sent_to_accounting_at", "—"))
+                c4.write(ci.get("client_name", "—"))
+                c5.write(f"${ci.get('total', 0):,.2f}")
+                c6.write(str(ci.get("net_days", "—")))
+                c7.write("Exported to QB" if ci.get("quickbooks_exported") else "In Accounting")
                 try:
                     pdf_bytes = _admin_cached_pdf(*_admin_pdf_args(ci, prov))
-                    c7.download_button(
+                    c8.download_button(
                         "⬇ PDF",
                         data=pdf_bytes,
                         file_name=f"{qb}-invoice.pdf",
@@ -1085,7 +1097,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         key=f"adm_pdf_{cid}",
                     )
                 except Exception:
-                    c7.caption("—")
+                    c8.caption("—")
 
     # ── Button colour overrides (injected outside all tabs so the iframe
     #    doesn't taint any tab's background; MutationObserver watches the

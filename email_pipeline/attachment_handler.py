@@ -9,7 +9,6 @@ from datetime import datetime
 
 from data_manager import DataManager
 from parsing.pdf_parser import parse_pdf
-from parsing.claude_parser import parse_with_claude
 from alerting.alert_manager import AlertManager
 
 logger = logging.getLogger(__name__)
@@ -44,39 +43,27 @@ def _run_parsing_pipeline(
 
     parsed = parse_pdf(pdf_path, provider_profile, dm)
     if parsed is None:
-        logger.info("pdfplumber parse failed, trying Claude fallback for %s", pdf_path)
-        parsed = parse_with_claude(pdf_path)
-
-    if parsed is None:
-        logger.error("All parsing failed for %s", pdf_path)
-        email_log = dm.get_email_log_by_id(email_log_id)
-        dm.update_email_log(email_log_id, {
-            "status"    : "pending_review",
-            "error_text": "Parsing failed with both pdfplumber and Claude.",
-        })
-        alert_manager.parsing_failed(
-            subject=(email_log or {}).get("subject", ""),
-            email_log_id=email_log_id,
-        )
-        return False
+        logger.info("pdfplumber parse returned no data for %s — proceeding with empty fields", pdf_path)
+        parsed = {}
 
     if parsed.get("provider_name"):
         provider_name = parsed["provider_name"]
 
-    # Duplicate detection
+    # Duplicate detection (skip when invoice number is unknown)
+    _inv_num = parsed.get("invoice_number", "")
     duplicate = next(
         (
             pi for pi in dm.get_provider_invoices()
-            if pi.get("invoice_number") == parsed.get("invoice_number")
+            if _inv_num and pi.get("invoice_number") == _inv_num
             and pi.get("provider_name") == provider_name
         ),
         None,
-    )
+    ) if _inv_num else None
     if duplicate:
-        logger.warning("Duplicate invoice detected: %s", parsed.get("invoice_number"))
+        logger.warning("Duplicate invoice detected: %s", _inv_num)
         dm.update_email_log(email_log_id, {
             "status"    : "pending_review",
-            "error_text": f"Duplicate invoice number: {parsed.get('invoice_number')}",
+            "error_text": f"Duplicate invoice number: {_inv_num}",
         })
         if alert_on_duplicate:
             alert_manager.duplicate_detected(
@@ -111,7 +98,6 @@ def _run_parsing_pipeline(
         "extra_charges"            : [],
         "pallet_count"             : 0,
         "damaged_pallets"          : 0,
-        "broken_pallets"           : 0,
         "worker_notes"             : "",
         "photo_paths"              : [],
         "line_items"               : [],
@@ -139,18 +125,21 @@ def process_pdf_from_path(
     email_log_id: str,
     dm: DataManager,
     alert_manager: AlertManager,
+    sender: str | None = None,
 ) -> bool:
     """
     Run the full parsing + invoice-creation pipeline on an already-saved PDF.
-    Called when an admin manually accepts a pending_review email.
+    Pass `sender` directly to skip the email log lookup (faster for uploads).
     Returns True on success, False on failure.
     """
-    email_log = dm.get_email_log_by_id(email_log_id)
-    if email_log is None:
-        logger.error("Email log not found: %s", email_log_id)
-        return False
+    if sender is None:
+        email_log = dm.get_email_log_by_id(email_log_id)
+        if email_log is None:
+            logger.error("Email log not found: %s", email_log_id)
+            return False
+        sender = email_log.get("sender", "")
     return _run_parsing_pipeline(
-        pdf_path, email_log_id, email_log.get("sender", ""), dm, alert_manager,
+        pdf_path, email_log_id, sender, dm, alert_manager,
     )
 
 

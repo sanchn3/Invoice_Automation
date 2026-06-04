@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import streamlit as st
+import streamlit.components.v1 as _components
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
@@ -20,6 +21,29 @@ st.set_page_config(
     page_icon="📦",
     layout="wide",
     initial_sidebar_state="expanded",
+)
+
+# Disable browser autocomplete on every input across the entire app.
+_components.html(
+    """
+    <script>
+    (function () {
+        function off() {
+            window.parent.document.querySelectorAll('input').forEach(function (el) {
+                if (el.getAttribute('autocomplete') !== 'off') {
+                    el.setAttribute('autocomplete', 'off');
+                }
+            });
+        }
+        off();
+        new MutationObserver(off).observe(
+            window.parent.document.body,
+            { childList: true, subtree: true }
+        );
+    })();
+    </script>
+    """,
+    height=0,
 )
 
 # ── Shared instances (cached across reruns) ───────────────────────────────────

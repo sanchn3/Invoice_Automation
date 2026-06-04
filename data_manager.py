@@ -319,6 +319,30 @@ class DataManager:
                 all_rates.pop(client_name, None)
                 _write_json(_CLIENT_RATES_FILE, all_rates)
 
+    def rename_client(self, old_name: str, new_name: str) -> None:
+        """Rename a client across all data files atomically."""
+        if not new_name or old_name == new_name:
+            return
+        with _lock:
+            for fpath in (_CLIENT_RATES_FILE, _CLIENT_ADDRESSES_FILE,
+                          _CLIENT_EMAILS_FILE, _CLIENT_RFCS_FILE,
+                          _CLIENT_INITIALS_FILE, _CLIENT_COUNTERS_FILE):
+                data = _read_json(fpath)
+                if isinstance(data, dict) and old_name in data:
+                    data[new_name] = data.pop(old_name)
+                    _write_json(fpath, data)
+
+            for fpath in (_CLIENT_INVOICES_FILE, _PROVIDER_INVOICES_FILE):
+                records = _read_json(fpath)
+                if isinstance(records, list):
+                    changed = False
+                    for rec in records:
+                        if rec.get("client_name") == old_name:
+                            rec["client_name"] = new_name
+                            changed = True
+                    if changed:
+                        _write_json(fpath, records)
+
     # ─────────────────────────────────────────
     # CLIENT BILLING ADDRESSES
     # ─────────────────────────────────────────
