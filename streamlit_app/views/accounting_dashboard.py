@@ -412,7 +412,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             f" — {ci.get('invoice_date','—')}"
                             for ci in invoices
                         )
-                        default_subject = f"Invoices — INCO Group, Inc. — {cname}"
+                        _inv_nums = [ci.get("quickbooks_invoice_number", "") for ci in invoices]
+                        _inv_label = (
+                            f"Invoice #{_inv_nums[0]}"
+                            if len(_inv_nums) == 1
+                            else "Invoices #" + ", #".join(_inv_nums)
+                        )
+                        default_subject = f"{_inv_label} — INCO Group, Inc. — {cname}"
                         default_body = (
                             f"Dear {cname},\n\n"
                             f"Please find attached the following invoice(s):\n\n"
