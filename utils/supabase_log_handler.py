@@ -14,8 +14,11 @@ import json
 import logging
 import os
 import traceback
+from urllib.parse import urlparse
 
 import httpx
+
+from utils.dns_fix import ensure_host_reachable
 
 
 class SupabaseLogHandler(logging.Handler):
@@ -44,6 +47,10 @@ class SupabaseLogHandler(logging.Handler):
         }
 
     def emit(self, record: logging.LogRecord) -> None:
+        url = os.environ.get("SUPABASE_URL", "")
+        host = urlparse(url).hostname
+        if host:
+            ensure_host_reachable(host)
         endpoint = self._endpoint()
         if not endpoint:
             return

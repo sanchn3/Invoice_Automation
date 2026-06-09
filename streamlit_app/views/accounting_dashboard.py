@@ -492,10 +492,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.session_state.get(f"email_body_{cname}", default_body),
                             _eml_attachments,
                         )
-                        _eml_name = (
-                            f"Invoice_{cname.replace(' ', '_')}"
-                            f"_{datetime.now().strftime('%Y%m%d')}.eml"
-                        )
+                        _latest_qb = invoices[-1].get("quickbooks_invoice_number", "") if invoices else ""
+                        _eml_name  = f"Invoice_{_latest_qb}.eml" if _latest_qb else "Invoice.eml"
                         st.download_button(
                             "📎 Download Email Draft (.eml)",
                             data=_eml_bytes,

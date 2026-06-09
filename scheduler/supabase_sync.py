@@ -12,15 +12,24 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 import httpx
 
 from data_manager import DataManager
+from utils.dns_fix import ensure_host_reachable
 
 logger = logging.getLogger(__name__)
 
 _TABLE   = "cold_storage_invoices"
 _BATCH_SIZE = 100
+
+
+def _fix_dns() -> None:
+    url = os.environ.get("SUPABASE_URL", "")
+    host = urlparse(url).hostname
+    if host:
+        ensure_host_reachable(host)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -93,9 +102,10 @@ def sync_single_invoice(ci: dict) -> None:
     Called immediately after any status-changing action in the UI.
     Silently logs errors so UI actions are never blocked by a sync failure.
     """
+    _fix_dns()
     try:
         now_iso  = datetime.utcnow().isoformat() + "Z"
-        endpoint = f"{_base_url()}/rest/v1/{_TABLE}"
+        endpoint = f"{_base_url()}/rest/v1/{_TABLE}?on_conflict=local_id"
         resp = httpx.post(
             endpoint,
             headers=_headers(),
@@ -112,6 +122,7 @@ def sync_single_invoice(ci: dict) -> None:
 
 
 def sync_invoices_to_supabase(dm: DataManager) -> int:
+    _fix_dns()
     """
     Bulk-upsert all processed client invoices to cold_storage_invoices.
 
@@ -137,7 +148,7 @@ def sync_invoices_to_supabase(dm: DataManager) -> int:
 
     now_iso  = datetime.utcnow().isoformat() + "Z"
     rows     = [_to_row(ci, now_iso) for ci in processed]
-    endpoint = f"{_base_url()}/rest/v1/{_TABLE}"
+    endpoint = f"{_base_url()}/rest/v1/{_TABLE}?on_conflict=local_id"
     headers  = _headers()
     total_upserted = 0
 
@@ -159,6 +170,7 @@ def sync_invoices_to_supabase(dm: DataManager) -> int:
 
 
 def patch_invoice_paid(local_id: str) -> None:
+    _fix_dns()
     """Immediately mark a single invoice as paid in cold_storage_invoices."""
     endpoint = f"{_base_url()}/rest/v1/{_TABLE}?local_id=eq.{local_id}"
     now_iso  = datetime.utcnow().isoformat() + "Z"

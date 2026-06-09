@@ -30,3 +30,6 @@ bols/
 # claude
 claude.md
 .claude
+
+# Local-only test scripts
+tests/
