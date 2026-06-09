@@ -18,8 +18,6 @@ photos/
 
 # Runtime pipeline data (live invoice state — not for version control)
 data/
-!data/rate_card.json
-!data/client_rates.json
 bols/
 
 # IDE

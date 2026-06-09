@@ -925,6 +925,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             _has_temp_data = (
                                 bool(_temp1.strip() or _temp2.strip() or _temp3.strip())
                                 or _producto_caliente
+                                or bool(_new_notes.strip())
                             )
                             _prov_path = prov.get("pdf_local_path", "")
                             _stamped_bytes = None
@@ -937,6 +938,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                             _raw,
                                             [_temp1.strip(), _temp2.strip(), _temp3.strip()],
                                             _producto_caliente,
+                                            _new_notes.strip(),
                                         )
                                     except Exception as _se:
                                         logger.warning("Temperature stamp failed: %s", _se)

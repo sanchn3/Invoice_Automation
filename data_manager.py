@@ -441,10 +441,32 @@ class DataManager:
     # PER-CLIENT INVOICE COUNTERS
     # ─────────────────────────────────────────
 
+    def _max_issued_number(self, client_name: str) -> int:
+        """
+        Scan client_invoices.json for the highest numeric invoice number
+        already issued to client_name. Returns 2000 if none found.
+        Strips any prefix (e.g. 'WMT_2005' → 2005) before comparing.
+        """
+        invoices = _read_json(_CLIENT_INVOICES_FILE)
+        max_num = 2000
+        for inv in invoices:
+            if inv.get("client_name") != client_name:
+                continue
+            qb = inv.get("quickbooks_invoice_number") or ""
+            # Strip optional prefix (e.g. "WMT_" or "MKY_")
+            numeric_part = qb.split("_")[-1] if "_" in qb else qb
+            try:
+                max_num = max(max_num, int(numeric_part))
+            except (ValueError, AttributeError):
+                pass
+        return max_num
+
     def next_client_invoice_number(self, client_name: str) -> str:
         """
         Atomically increment and return the next invoice ID for client_name.
 
+        Uses the higher of the stored counter and the max number already issued
+        in the data file, so the sequence self-heals if the counter file drifts.
         Each client starts at 2000; the first call returns 2001.
         Format: "<INITIALS>_<NUMBER>" when initials exist, else just "<NUMBER>".
         Example: "WMT_2001", "WMT_2002" ... or "2001" if no initials set.
@@ -453,7 +475,8 @@ class DataManager:
             counters = _read_json(_CLIENT_COUNTERS_FILE)
             if not isinstance(counters, dict):
                 counters = {}
-            current = int(counters.get(client_name, 2000))
+            stored  = int(counters.get(client_name, 2000))
+            current = max(stored, self._max_issued_number(client_name))
             next_num = current + 1
             counters[client_name] = next_num
             _write_json(_CLIENT_COUNTERS_FILE, counters)
@@ -472,7 +495,9 @@ class DataManager:
             counters = _read_json(_CLIENT_COUNTERS_FILE)
             if not isinstance(counters, dict):
                 counters = {}
-            next_num = int(counters.get(client_name, 2000)) + 1
+            stored   = int(counters.get(client_name, 2000))
+            current  = max(stored, self._max_issued_number(client_name))
+            next_num = current + 1
 
             initials = _read_json(_CLIENT_INITIALS_FILE)
             prefix = (initials.get(client_name, "") if isinstance(initials, dict) else "").strip().upper()
