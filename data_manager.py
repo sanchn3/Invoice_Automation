@@ -67,8 +67,24 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+_RATE_CARD_DEFAULTS: dict = {
+    "charged_by_pallet"          : True,
+    "in_out"                     : 12.0,
+    "transfer"                   : 14.0,
+    "cost_per_truck"             : 0.0,
+    "temp_recorder_hardware_fee" : 1.0,
+    "temp_recorder_installation_fee": 2.0,
+    "quality_inspection_fee"     : 4.0,
+    "pallet_cleaning_fee"        : 8.0,
+    "broken_pallet_fee"          : 25.0,
+    "repacking_fee"              : 23.0,
+    "re_inspection_fee"          : 3.0,
+    "broker_fee"                 : 16.0,
+    "net_days"                   : 30,
+}
+
 _JSON_DEFAULTS: dict[Path, Any] = {
-    _RATE_CARD_FILE        : {},
+    _RATE_CARD_FILE        : _RATE_CARD_DEFAULTS,
     _CLIENT_RATES_FILE     : {},
     _CLIENT_ADDRESSES_FILE : {},
     _CLIENT_EMAILS_FILE    : {},
@@ -77,6 +93,18 @@ _JSON_DEFAULTS: dict[Path, Any] = {
     _CLIENT_COUNTERS_FILE  : {},
     _BOL_RECORDS_FILE      : [],
 }
+
+
+def _ensure_defaults() -> None:
+    """Write default JSON files to disk if they don't exist.
+    Called once at import time so Render always has the files after a fresh deploy."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for path, default in _JSON_DEFAULTS.items():
+        if not path.exists():
+            _write_json(path, default)
+
+
+_ensure_defaults()
 
 
 def _read_json(path: Path) -> Any:
