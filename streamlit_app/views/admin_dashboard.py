@@ -1015,6 +1015,11 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                     _upload_pdf_bytes(f"{inv_id}-invoice.pdf", _pdf_bytes)
                                 except Exception as _e:
                                     logger.warning("Could not upload generated invoice PDF: %s", _e)
+                                try:
+                                    from scheduler.supabase_sync import sync_single_invoice as _sync_inv
+                                    _sync_inv(ci_updated)
+                                except Exception as _e:
+                                    logger.warning("Supabase sync failed: %s", _e)
                             st.session_state.pop(_save_pdf_key, None)
                             st.session_state.pop(_save_ok_key, None)
                             st.session_state.pop(_approve_key, None)

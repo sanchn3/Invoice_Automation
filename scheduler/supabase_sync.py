@@ -1,11 +1,11 @@
 """
 supabase_sync.py
 ================
-Upserts processed client invoices from the local JSON store into the
-Supabase `invoices` table via the PostgREST REST API (no SDK required).
+Syncs client invoices from the local JSON store into the Supabase
+`cold_storage_invoices` table via the PostgREST REST API.
 
-Can be called manually or scheduled externally to sync invoice state to Supabase.
-Uses the service-role key so it bypasses Row Level Security.
+Upserts are keyed on `local_id` (the UUID from the local JSON record)
+so the same invoice can be synced multiple times without creating duplicates.
 """
 
 import json
@@ -19,24 +19,11 @@ from data_manager import DataManager
 
 logger = logging.getLogger(__name__)
 
+_TABLE   = "cold_storage_invoices"
 _BATCH_SIZE = 100
 
 
-def patch_invoice_paid(local_id: str) -> None:
-    """Immediately mark a single invoice as paid in Supabase via a PATCH request."""
-    endpoint = f"{_base_url()}/rest/v1/invoices?local_id=eq.{local_id}"
-    headers  = _headers()
-    payload  = {
-        "paid"      : True,
-        "updated_at": datetime.utcnow().isoformat() + "Z",
-    }
-    with httpx.Client(timeout=15) as client:
-        resp = client.patch(endpoint, headers=headers, content=json.dumps(payload))
-        if resp.status_code not in (200, 204):
-            raise RuntimeError(
-                f"Supabase PATCH failed (HTTP {resp.status_code}): {resp.text}"
-            )
-
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _base_url() -> str:
     url = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -45,7 +32,7 @@ def _base_url() -> str:
     return url
 
 
-def _headers() -> dict:
+def _headers(prefer: str = "resolution=merge-duplicates,return=minimal") -> dict:
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
     if not key:
         raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY must be set in .env")
@@ -53,8 +40,7 @@ def _headers() -> dict:
         "apikey"       : key,
         "Authorization": f"Bearer {key}",
         "Content-Type" : "application/json",
-        # merge-duplicates → upsert on the local_id unique constraint
-        "Prefer"       : "resolution=merge-duplicates,return=minimal",
+        "Prefer"       : prefer,
     }
 
 
@@ -71,11 +57,65 @@ def _due_date(ci: dict) -> str | None:
         return None
 
 
+def _to_row(ci: dict, now_iso: str) -> dict:
+    """Map a local client-invoice dict to a cold_storage_invoices row."""
+    reviewed = bool(
+        ci.get("ready_for_export")
+        or ci.get("ready_to_email")
+        or ci.get("quickbooks_exported")
+        or ci.get("emailed")
+    )
+    return {
+        "local_id"                 : ci["id"],
+        "quickbooks_invoice_number": ci.get("quickbooks_invoice_number") or None,
+        "client_name"              : ci.get("client_name") or None,
+        "invoice_date"             : ci.get("invoice_date") or None,
+        "due_date"                 : _due_date(ci),
+        "net_days"                 : int(ci.get("net_days", 30)),
+        "total"                    : float(ci.get("total", 0)),
+        "service_type"             : ci.get("service_type") or None,
+        "pipeline_status"          : ci.get("status") or None,
+        "line_items"               : ci.get("line_items", []),
+        "quickbooks_exported"      : bool(ci.get("quickbooks_exported")),
+        "emailed"                  : bool(ci.get("emailed")),
+        "reviewed"                 : reviewed,
+        "paid"                     : bool(ci.get("paid")),
+        "synced_at"                : now_iso,
+        "updated_at"               : now_iso,
+    }
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def sync_single_invoice(ci: dict) -> None:
+    """
+    Upsert a single client-invoice dict to cold_storage_invoices.
+    Called immediately after any status-changing action in the UI.
+    Silently logs errors so UI actions are never blocked by a sync failure.
+    """
+    try:
+        now_iso  = datetime.utcnow().isoformat() + "Z"
+        endpoint = f"{_base_url()}/rest/v1/{_TABLE}"
+        resp = httpx.post(
+            endpoint,
+            headers=_headers(),
+            content=json.dumps(_to_row(ci, now_iso)),
+            timeout=10,
+        )
+        if resp.status_code not in (200, 201):
+            logger.warning(
+                "sync_single_invoice: upsert failed (HTTP %s): %s",
+                resp.status_code, resp.text,
+            )
+    except Exception as e:
+        logger.warning("sync_single_invoice: %s", e)
+
+
 def sync_invoices_to_supabase(dm: DataManager) -> int:
     """
-    Upsert all processed client invoices to Supabase.
+    Bulk-upsert all processed client invoices to cold_storage_invoices.
 
-    "Processed" mirrors the Processed Invoices tab filter:
+    'Processed' = any invoice that has moved past the approval stage:
     ready_for_export | ready_to_email | quickbooks_exported | emailed | paid.
 
     Returns the number of rows upserted, or raises on failure.
@@ -95,37 +135,9 @@ def sync_invoices_to_supabase(dm: DataManager) -> int:
         logger.info("supabase_sync: no processed invoices to upload.")
         return 0
 
-    now_iso = datetime.utcnow().isoformat() + "Z"
-    rows: list[dict] = []
-
-    for ci in processed:
-        reviewed = bool(
-            ci.get("ready_for_export")
-            or ci.get("ready_to_email")
-            or ci.get("quickbooks_exported")
-            or ci.get("emailed")
-        )
-        rows.append({
-            "local_id"                 : ci["id"],
-            "quickbooks_invoice_number": ci.get("quickbooks_invoice_number") or None,
-            "client_name"              : ci.get("client_name") or None,
-            "invoice_date"             : ci.get("invoice_date") or None,
-            "due_date"                 : _due_date(ci),
-            "net_days"                 : int(ci.get("net_days", 30)),
-            "total"                    : float(ci.get("total", 0)),
-            "subtotal"                 : float(ci.get("subtotal", 0)),
-            "service_type"             : ci.get("service_type") or None,
-            "pipeline_status"          : ci.get("status") or None,
-            "line_items"               : ci.get("line_items", []),
-            "quickbooks_exported"      : bool(ci.get("quickbooks_exported")),
-            "emailed"                  : bool(ci.get("emailed")),
-            "reviewed"                 : reviewed,
-            "paid"                     : bool(ci.get("paid")),
-            "synced_at"                : now_iso,
-            "updated_at"               : now_iso,
-        })
-
-    endpoint = f"{_base_url()}/rest/v1/invoices"
+    now_iso  = datetime.utcnow().isoformat() + "Z"
+    rows     = [_to_row(ci, now_iso) for ci in processed]
+    endpoint = f"{_base_url()}/rest/v1/{_TABLE}"
     headers  = _headers()
     total_upserted = 0
 
@@ -144,3 +156,20 @@ def sync_invoices_to_supabase(dm: DataManager) -> int:
         total_upserted, len(processed),
     )
     return total_upserted
+
+
+def patch_invoice_paid(local_id: str) -> None:
+    """Immediately mark a single invoice as paid in cold_storage_invoices."""
+    endpoint = f"{_base_url()}/rest/v1/{_TABLE}?local_id=eq.{local_id}"
+    now_iso  = datetime.utcnow().isoformat() + "Z"
+    payload  = {"paid": True, "updated_at": now_iso}
+    with httpx.Client(timeout=15) as client:
+        resp = client.patch(
+            endpoint,
+            headers=_headers("return=minimal"),
+            content=json.dumps(payload),
+        )
+        if resp.status_code not in (200, 204):
+            raise RuntimeError(
+                f"Supabase PATCH failed (HTTP {resp.status_code}): {resp.text}"
+            )
