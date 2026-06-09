@@ -83,13 +83,54 @@ _RATE_CARD_DEFAULTS: dict = {
     "net_days"                   : 30,
 }
 
+_CLIENT_RATES_DEFAULTS: dict = {
+    "PRODEMEX": {
+        "charged_by_pallet"             : True,
+        "in_out"                        : 16.0,
+        "transfer"                      : 200.0,
+        "cost_per_truck"                : 0.0,
+        "temp_recorder_hardware_fee"    : 25.0,
+        "temp_recorder_installation_fee": 15.0,
+        "quality_inspection_fee"        : 4.0,
+        "pallet_cleaning_fee"           : 8.0,
+        "repacking_fee"                 : 23.0,
+        "re_inspection_fee"             : 3.0,
+        "broker_fee"                    : 0.0,
+        "stamps_fee"                    : 5.0,
+        "overtime_fee"                  : 100.0,
+        "restack_fee"                   : 40.0,
+        "net_days"                      : 30,
+    },
+}
+
+_CLIENT_ADDRESSES_DEFAULTS: dict = {
+    "PRODEMEX": (
+        "Comercializadora Prodomex SA de CV\n"
+        "Blvd Morelos 307\n"
+        "Colonia: Zona Militar Cuartel XV\n"
+        "83145 Hermosillo, Sonora, MX"
+    ),
+}
+
+_CLIENT_EMAILS_DEFAULTS: dict = {
+    "PRODEMEX": "jfheguertty@produceexports.mx",
+}
+
+_CLIENT_INITIALS_DEFAULTS: dict = {
+    "PRODEMEX": "PDMX",
+}
+
+_CLIENT_RFCS_DEFAULTS: dict = {
+    "PRODEMEX": "CPR1509284K9",
+}
+
 _JSON_DEFAULTS: dict[Path, Any] = {
     _RATE_CARD_FILE        : _RATE_CARD_DEFAULTS,
-    _CLIENT_RATES_FILE     : {},
-    _CLIENT_ADDRESSES_FILE : {},
-    _CLIENT_EMAILS_FILE    : {},
-    _CLIENT_INITIALS_FILE  : {},
-    _CLIENT_RFCS_FILE      : {},
+    _CLIENT_RATES_FILE     : _CLIENT_RATES_DEFAULTS,
+    _CLIENT_ADDRESSES_FILE : _CLIENT_ADDRESSES_DEFAULTS,
+    _CLIENT_EMAILS_FILE    : _CLIENT_EMAILS_DEFAULTS,
+    _CLIENT_INITIALS_FILE  : _CLIENT_INITIALS_DEFAULTS,
+    _CLIENT_RFCS_FILE      : _CLIENT_RFCS_DEFAULTS,
     _CLIENT_COUNTERS_FILE  : {},
     _BOL_RECORDS_FILE      : [],
 }
