@@ -7,6 +7,9 @@ Accounting dashboard: Invoice Review, Import to QuickBooks, and Email Clients.
 import streamlit as st
 from collections import defaultdict
 from datetime import datetime, timedelta
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 
 from data_manager import DataManager
@@ -14,6 +17,20 @@ from alerting.alert_manager import AlertManager
 from invoice_logic.iif_exporter import generate_iif, build_iif_content
 from invoice_logic.pdf_generator import generate_pdf
 from scheduler.supabase_sync import patch_invoice_paid
+
+
+def _build_eml(to_addr: str, subject: str, body: str, attachments: list[tuple[str, bytes]]) -> bytes:
+    """Build a RFC 2822 .eml file with PDF attachments.
+    Opens in Outlook as a pre-filled compose window ready to send."""
+    msg = MIMEMultipart()
+    msg["To"]      = to_addr
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+    for filename, pdf_bytes in attachments:
+        part = MIMEApplication(pdf_bytes, _subtype="pdf")
+        part.add_header("Content-Disposition", "attachment", filename=filename)
+        msg.attach(part)
+    return msg.as_bytes()
 
 
 @st.cache_data(show_spinner=False)
@@ -443,7 +460,33 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             height=180,
                             key=f"email_body_{cname}",
                         )
-                        st.caption("Download PDFs above to attach to your email.")
+                        # Build .eml with all invoice PDFs attached
+                        _eml_attachments = []
+                        for _ci in invoices:
+                            _qb  = _ci.get("quickbooks_invoice_number", "invoice")
+                            _pe  = prov_by_id.get(_ci.get("provider_invoice_id", ""), {})
+                            _eml_attachments.append((
+                                f"{_qb}.pdf",
+                                _cached_pdf(*_pdf_args(_ci, _pe)),
+                            ))
+                        _eml_bytes = _build_eml(
+                            st.session_state.get(f"email_to_{cname}",   client_email or ""),
+                            st.session_state.get(f"email_subj_{cname}", default_subject),
+                            st.session_state.get(f"email_body_{cname}", default_body),
+                            _eml_attachments,
+                        )
+                        _eml_name = (
+                            f"Invoice_{cname.replace(' ', '_')}"
+                            f"_{datetime.now().strftime('%Y%m%d')}.eml"
+                        )
+                        st.download_button(
+                            "📎 Download Email Draft (.eml)",
+                            data=_eml_bytes,
+                            file_name=_eml_name,
+                            mime="message/rfc822",
+                            key=f"dl_eml_{cname}",
+                            use_container_width=True,
+                        )
 
                         mc1, mc2 = st.columns(2)
                         if mc1.button(
