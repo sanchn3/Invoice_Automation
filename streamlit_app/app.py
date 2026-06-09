@@ -8,6 +8,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
+from utils.supabase_log_handler import setup_supabase_logging
+setup_supabase_logging()
+
 import streamlit as st
 import streamlit.components.v1 as _components
 

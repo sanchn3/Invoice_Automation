@@ -4,6 +4,7 @@ accounting_dashboard.py
 Accounting dashboard: Invoice Review, Import to QuickBooks, and Email Clients.
 """
 
+import logging
 import streamlit as st
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -11,6 +12,8 @@ from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
@@ -234,6 +237,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 st.rerun()
                             if rfe_clicked:
                                 dm.update_client_invoice(cid, {"ready_for_export": True})
+                                _ci_updated = dm.get_client_invoice_by_id(cid)
+                                if _ci_updated:
+                                    try:
+                                        from scheduler.supabase_sync import sync_single_invoice as _sync_inv
+                                        _sync_inv(_ci_updated)
+                                    except Exception as _e:
+                                        logger.warning("Supabase sync failed: %s", _e)
                                 st.rerun()
 
 
@@ -314,6 +324,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         st.rerun()
                     if rte_clicked:
                         dm.update_client_invoice(ci["id"], {"ready_to_email": True})
+                        _ci_updated = dm.get_client_invoice_by_id(ci["id"])
+                        if _ci_updated:
+                            try:
+                                from scheduler.supabase_sync import sync_single_invoice as _sync_inv
+                                _sync_inv(_ci_updated)
+                            except Exception as _e:
+                                logger.warning("Supabase sync failed: %s", _e)
                         st.rerun()
 
             if selected_ids:
@@ -475,10 +492,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.session_state.get(f"email_body_{cname}", default_body),
                             _eml_attachments,
                         )
-                        _eml_name = (
-                            f"Invoice_{cname.replace(' ', '_')}"
-                            f"_{datetime.now().strftime('%Y%m%d')}.eml"
-                        )
+                        _latest_qb = invoices[-1].get("quickbooks_invoice_number", "") if invoices else ""
+                        _eml_name  = f"Invoice_{_latest_qb}.eml" if _latest_qb else "Invoice.eml"
                         st.download_button(
                             "📎 Download Email Draft (.eml)",
                             data=_eml_bytes,
@@ -497,6 +512,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         ):
                             for ci in invoices:
                                 dm.update_client_invoice(ci["id"], {"emailed": True})
+                                _ci_updated = dm.get_client_invoice_by_id(ci["id"])
+                                if _ci_updated:
+                                    try:
+                                        from scheduler.supabase_sync import sync_single_invoice as _sync_inv
+                                        _sync_inv(_ci_updated)
+                                    except Exception as _e:
+                                        logger.warning("Supabase sync failed: %s", _e)
                             st.session_state.pop(prep_key, None)
                             st.rerun()
                         if mc2.button(
