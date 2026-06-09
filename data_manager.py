@@ -95,18 +95,6 @@ _JSON_DEFAULTS: dict[Path, Any] = {
 }
 
 
-def _ensure_defaults() -> None:
-    """Write default JSON files to disk if they don't exist.
-    Called once at import time so Render always has the files after a fresh deploy."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    for path, default in _JSON_DEFAULTS.items():
-        if not path.exists():
-            _write_json(path, default)
-
-
-_ensure_defaults()
-
-
 def _read_json(path: Path) -> Any:
     default = _JSON_DEFAULTS.get(path, [])
     try:
@@ -143,6 +131,18 @@ def _write_json(path: Path, data: Any) -> None:
             _file_cache.popitem(last=False)
     except OSError:
         _file_cache.pop(path, None)
+
+
+def _ensure_defaults() -> None:
+    """Write default JSON files to disk if they don't exist.
+    Called once at import time so Render always has the files after a fresh deploy."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for path, default in _JSON_DEFAULTS.items():
+        if not path.exists():
+            _write_json(path, default)
+
+
+_ensure_defaults()
 
 
 class DataManager:
