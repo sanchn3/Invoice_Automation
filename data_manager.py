@@ -530,22 +530,58 @@ class DataManager:
                 pass
         return max_num
 
+    def _sb_get_counter(self, client_name: str) -> int:
+        """
+        Fetch last_issued for client_name from Supabase client_invoice_counters.
+        Returns 2000 on any error so callers always get a safe floor.
+        """
+        try:
+            resp = httpx.get(
+                _sb_url("client_invoice_counters"),
+                headers=_sb_headers(""),
+                params={"client_name": f"eq.{client_name}", "select": "last_issued", "limit": "1"},
+                timeout=5,
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            return int(rows[0]["last_issued"]) if rows else 2000
+        except Exception:
+            return 2000
+
+    def _sb_set_counter(self, client_name: str, value: int) -> None:
+        """
+        Upsert last_issued for client_name in Supabase. Silently ignores errors
+        so a transient network issue never blocks invoice creation.
+        """
+        try:
+            httpx.post(
+                _sb_url("client_invoice_counters"),
+                headers={**_sb_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+                json={"client_name": client_name, "last_issued": value, "updated_at": _now()},
+                timeout=5,
+            )
+        except Exception:
+            pass
+
     def next_client_invoice_number(self, client_name: str) -> str:
         """
         Atomically increment and return the next invoice ID for client_name.
 
-        Uses the higher of the stored counter and the max number already issued
-        in the data file, so the sequence self-heals if the counter file drifts.
+        Takes the max of three floors:
+          - local JSON counter (fast, same-process safety)
+          - max number already in client_invoices.json (self-healing scan)
+          - Supabase counter (survives redeploys)
         Each client starts at 2000; the first call returns 2001.
         Format: "<INITIALS>_<NUMBER>" when initials exist, else just "<NUMBER>".
         Example: "WMT_2001", "WMT_2002" ... or "2001" if no initials set.
         """
+        sb_floor = self._sb_get_counter(client_name)
         with _lock:
             counters = _read_json(_CLIENT_COUNTERS_FILE)
             if not isinstance(counters, dict):
                 counters = {}
-            stored  = int(counters.get(client_name, 2000))
-            current = max(stored, self._max_issued_number(client_name))
+            stored   = int(counters.get(client_name, 2000))
+            current  = max(stored, self._max_issued_number(client_name), sb_floor)
             next_num = current + 1
             counters[client_name] = next_num
             _write_json(_CLIENT_COUNTERS_FILE, counters)
@@ -553,6 +589,7 @@ class DataManager:
             initials = _read_json(_CLIENT_INITIALS_FILE)
             prefix = (initials.get(client_name, "") if isinstance(initials, dict) else "").strip().upper()
 
+        self._sb_set_counter(client_name, next_num)
         return f"{prefix}_{next_num}" if prefix else str(next_num)
 
     def peek_client_invoice_number(self, client_name: str) -> str:
@@ -560,12 +597,13 @@ class DataManager:
         Return what the next invoice ID *would* be without incrementing the counter.
         Useful for previewing the ID before the user confirms.
         """
+        sb_floor = self._sb_get_counter(client_name)
         with _lock:
             counters = _read_json(_CLIENT_COUNTERS_FILE)
             if not isinstance(counters, dict):
                 counters = {}
             stored   = int(counters.get(client_name, 2000))
-            current  = max(stored, self._max_issued_number(client_name))
+            current  = max(stored, self._max_issued_number(client_name), sb_floor)
             next_num = current + 1
 
             initials = _read_json(_CLIENT_INITIALS_FILE)
