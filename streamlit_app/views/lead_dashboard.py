@@ -769,20 +769,60 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 st.caption(f"{len(client_records)} invoice record(s) for {_label_str}")
 
                 if client_records:
-                    rows = []
+                    # Header row
+                    h1, h2, h3, h4, h5, h6 = st.columns([2, 1.5, 1, 1.5, 1, 0.8])
+                    h1.markdown("**Client**")
+                    h2.markdown("**Invoice #**")
+                    h3.markdown("**Date**")
+                    h4.markdown("**Status**")
+                    h5.markdown("**Total**")
+                    h6.markdown("**Delete**")
+                    st.divider()
+
                     for ci in client_records:
+                        cid    = ci["id"]
                         qb_num = ci.get("quickbooks_invoice_number")
                         if not qb_num and ci.get("provider_invoice_id"):
                             prov   = _prov_by_id.get(ci["provider_invoice_id"])
                             qb_num = prov.get("invoice_number") if prov else None
-                        rows.append({
-                            "Client"    : ci.get("client_name", "—"),
-                            "Invoice #" : qb_num or "—",
-                            "Date"      : ci.get("invoice_date", "—"),
-                            "Status"    : ci.get("status", "—"),
-                            "Total"     : f"${ci.get('total', 0):,.2f}",
-                        })
-                    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+                        _del_single_key    = f"ld_del_single_{cid}"
+                        _del_confirm_single = f"ld_del_confirm_single_{cid}"
+
+                        c1, c2, c3, c4, c5, c6 = st.columns([2, 1.5, 1, 1.5, 1, 0.8])
+                        c1.write(ci.get("client_name", "—"))
+                        c2.write(qb_num or "—")
+                        c3.write(ci.get("invoice_date", "—"))
+                        c4.write(ci.get("status", "—"))
+                        c5.write(f"${ci.get('total', 0):,.2f}")
+
+                        if st.session_state.get(_del_confirm_single):
+                            c6.caption("⚠️ Sure?")
+                        else:
+                            if c6.button("🗑", key=_del_single_key, help=f"Delete {qb_num or cid}"):
+                                st.session_state[_del_confirm_single] = True
+                                st.rerun()
+
+                        if st.session_state.get(_del_confirm_single):
+                            dc1, dc2, _ = st.columns([1, 1, 3])
+                            if dc1.button("✅ Yes", key=f"ld_del_yes_{cid}", type="primary"):
+                                prov_id = ci.get("provider_invoice_id")
+                                if prov_id:
+                                    prov = dm.get_provider_invoice_by_id(prov_id)
+                                    if prov and prov.get("email_intake_id"):
+                                        try:
+                                            dm.update_email_log(prov["email_intake_id"], {"status": "rejected"})
+                                        except KeyError:
+                                            pass
+                                    dm.delete_provider_invoice(prov_id)
+                                dm.delete_client_invoice(cid)
+                                st.session_state.pop(_del_confirm_single, None)
+                                st.rerun()
+                            if dc2.button("✗ No", key=f"ld_del_no_{cid}"):
+                                st.session_state.pop(_del_confirm_single, None)
+                                st.rerun()
+
+                    st.divider()
 
                 _del_confirm_key = "confirm_del_clients_multi"
                 _btn_label = (
