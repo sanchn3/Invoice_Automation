@@ -105,6 +105,53 @@ def _restore_pipeline_from_supabase() -> None:
         except Exception as exc:
             _sb_logger.warning("_restore_pipeline %s: %s", table, exc)
 
+
+def _backfill_pipeline_to_supabase() -> None:
+    """
+    One-time transition helper: if a pipeline Supabase table is empty but the
+    local JSON file has records, push all local records up.  This handles the
+    first redeploy after this feature was introduced, when the tables are new
+    and empty but the running server already has invoice data on disk.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return
+    for file_path, table in (
+        (_PROVIDER_INVOICES_FILE, _SB_PI_TABLE),
+        (_CLIENT_INVOICES_FILE,   _SB_CI_TABLE),
+    ):
+        try:
+            # Check how many rows Supabase already has
+            count_resp = httpx.get(
+                f"{_sb_url(table)}?select=local_id",
+                headers={**_sb_headers(), "Prefer": "count=exact"},
+                timeout=10,
+            )
+            sb_count = int(count_resp.headers.get("content-range", "0/0").split("/")[-1] or 0)
+            if sb_count > 0:
+                continue  # already has data — nothing to backfill
+
+            local_records = _read_json(file_path)
+            if not local_records:
+                continue
+
+            now = _now()
+            rows = [{"local_id": r["id"], "data": r, "updated_at": now}
+                    for r in local_records if r.get("id")]
+            resp = httpx.post(
+                f"{_sb_url(table)}?on_conflict=local_id",
+                headers=_sb_headers("resolution=merge-duplicates,return=minimal"),
+                content=json.dumps(rows),
+                timeout=30,
+            )
+            if resp.status_code in (200, 201):
+                _sb_logger.info("_backfill_pipeline: pushed %d records to %s",
+                                len(rows), table)
+            else:
+                _sb_logger.warning("_backfill_pipeline %s: HTTP %s %s",
+                                   table, resp.status_code, resp.text[:200])
+        except Exception as exc:
+            _sb_logger.warning("_backfill_pipeline %s: %s", table, exc)
+
 # File paths
 _EMAIL_LOG_FILE          = DATA_DIR / "email_intake_log.json"
 _PROVIDER_INVOICES_FILE  = DATA_DIR / "provider_invoices.json"
@@ -261,6 +308,8 @@ def _ensure_defaults() -> None:
                 pipeline_files_created = True
     if pipeline_files_created:
         _restore_pipeline_from_supabase()
+    else:
+        _backfill_pipeline_to_supabase()
 
 
 _ensure_defaults()
