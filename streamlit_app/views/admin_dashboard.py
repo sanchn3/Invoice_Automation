@@ -1009,7 +1009,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "sent_to_accounting_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
                             })
                             if prov.get("email_intake_id"):
-                                dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
+                                try:
+                                    dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
+                                except KeyError:
+                                    pass
                             if prov.get("pdf_local_path"):
                                 _move_to_processed(prov["pdf_local_path"])
                             ci_updated = dm.get_client_invoice_by_id(cid)
