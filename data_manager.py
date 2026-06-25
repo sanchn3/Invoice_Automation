@@ -297,16 +297,19 @@ def _write_json(path: Path, data: Any) -> None:
 
 def _ensure_defaults() -> None:
     """Write default JSON files to disk if they don't exist, then restore
-    pipeline invoice data from Supabase when the files were freshly created
-    (i.e. after a Render redeploy wiped the ephemeral filesystem)."""
+    pipeline invoice data from Supabase when the pipeline files are missing
+    or empty (i.e. after a Render redeploy wiped the ephemeral filesystem)."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    pipeline_files_created = False
     for path, default in _JSON_DEFAULTS.items():
         if not path.exists():
             _write_json(path, default)
-            if path in (_CLIENT_INVOICES_FILE, _PROVIDER_INVOICES_FILE):
-                pipeline_files_created = True
-    if pipeline_files_created:
+
+    # Restore from Supabase if either pipeline file is empty
+    pipeline_empty = (
+        not _read_json(_CLIENT_INVOICES_FILE)
+        or not _read_json(_PROVIDER_INVOICES_FILE)
+    )
+    if pipeline_empty:
         _restore_pipeline_from_supabase()
     else:
         _backfill_pipeline_to_supabase()
