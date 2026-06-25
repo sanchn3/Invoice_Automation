@@ -54,6 +54,8 @@ def _cached_pdf(
 def _pdf_args(ci: dict, prov: dict | None) -> tuple:
     """Return the positional args for _cached_pdf from a client invoice + provider record."""
     _pdf_path = (prov or {}).get("pdf_local_path", "")
+    _prov_inv_num = (prov or {}).get("invoice_number", "")
+    _ci_for_pdf = {**ci, "provider_invoice_number": _prov_inv_num}
     return (
         ci["id"],
         ci.get("quickbooks_invoice_number", ""),
@@ -62,7 +64,7 @@ def _pdf_args(ci: dict, prov: dict | None) -> tuple:
         ci.get("invoice_date", ""),
         ci.get("due_date", ""),
         ci.get("po_number", ""),
-        ci,
+        _ci_for_pdf,
     )
 
 

@@ -232,13 +232,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         except Exception:
                             due_date = ""
                     rows.append({
-                        "Date"      : inv_date,
-                        "Invoice #" : ci.get("quickbooks_invoice_number") or prov.get("invoice_number", ""),
-                        "Client"    : ci.get("client_name", ""),
-                        "Cost ($)"  : ci.get("total", 0),
-                        "PO Number" : ci.get("po_number", ""),
-                        "Due Date"  : due_date,
-                        "Paid"      : "Yes" if ci.get("paid") else "No",
+                        "Date"           : inv_date,
+                        "Invoice ID"     : ci.get("quickbooks_invoice_number", ""),
+                        "Service Number" : prov.get("invoice_number", ""),
+                        "Client"         : ci.get("client_name", ""),
+                        "Cost ($)"       : ci.get("total", 0),
+                        "PO Number"      : ci.get("po_number", ""),
+                        "Due Date"       : due_date,
+                        "Paid"           : "Yes" if ci.get("paid") else "No",
                     })
 
                 df  = pd.DataFrame(rows)

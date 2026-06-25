@@ -208,13 +208,26 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     c.setFillColor(BLUE)
     c.roundRect(inv_x, inv_y, inv_w, inv_h, r, fill=1, stroke=0)
 
-    c.setFillColor(colors.white)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(inv_x + 0.15 * inch, inv_y + 0.57 * inch, "INVOICE")
+    inv_right = inv_x + inv_w - 0.15 * inch   # right-align anchor
 
+    # Row 1 — INVOICE label (left) | invoice number (right)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(inv_x + 0.15 * inch, inv_y + 0.63 * inch, "INVOICE")
     qb_num = invoice.get("quickbooks_invoice_number", "")
-    c.setFont("Helvetica-Bold", 13)
-    c.drawString(inv_x + 0.15 * inch, inv_y + 0.22 * inch, f"#{qb_num}")
+    c.drawRightString(inv_right, inv_y + 0.63 * inch, f"#{qb_num}")
+
+    # Thin white divider
+    c.setStrokeColor(colors.white)
+    c.setLineWidth(0.5)
+    c.line(inv_x + 0.10 * inch, inv_y + 0.47 * inch,
+           inv_x + inv_w - 0.10 * inch, inv_y + 0.47 * inch)
+
+    # Row 2 — SERVICE label (left) | provider invoice number (right)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(inv_x + 0.15 * inch, inv_y + 0.22 * inch, "SERVICE")
+    prov_inv_num = invoice.get("provider_invoice_number", "")
+    c.drawRightString(inv_right, inv_y + 0.22 * inch, prov_inv_num)
 
     # ── BLUE RULE ─────────────────────────────────────────────────────────────
     rule_y = logo_y - 0.14 * inch
