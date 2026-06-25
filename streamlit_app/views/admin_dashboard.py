@@ -77,6 +77,8 @@ def _admin_cached_pdf(
 
 def _admin_pdf_args(ci: dict, prov: dict | None) -> tuple:
     _pdf_path = (prov or {}).get("pdf_local_path", "")
+    _prov_inv_num = (prov or {}).get("invoice_number", "")
+    _ci_for_pdf = {**ci, "provider_invoice_number": _prov_inv_num}
     return (
         ci["id"],
         ci.get("quickbooks_invoice_number", ""),
@@ -85,7 +87,7 @@ def _admin_pdf_args(ci: dict, prov: dict | None) -> tuple:
         ci.get("invoice_date", ""),
         ci.get("due_date", ""),
         ci.get("po_number", ""),
-        ci,
+        _ci_for_pdf,
     )
 
 
@@ -528,6 +530,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 dm.update_client_invoice(linked_ci["id"], {
                                     "client_name" : canonical,
                                     "invoice_date": new_date.strip(),
+                                    "total"       : new_total,
+                                    "subtotal"    : new_total,
                                 })
                             st.session_state.pop(edit_key, None)
                             st.rerun()
@@ -626,7 +630,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     ic4.write(f"${ci.get('total', 0):,.2f}")
                     # Action buttons
                     _tbr_pdf_path   = prov_pi.get("pdf_local_path", "")
-                    _tbr_pdf_exists = bool(_tbr_pdf_path)
+                    _tbr_pdf_exists = bool(_tbr_pdf_path) and Path(_tbr_pdf_path).exists()
                     _tbr_pdf_key    = f"tbr_pdf_{cid}"
                     _tbr_pdf_label  = "📄 Hide" if st.session_state.get(_tbr_pdf_key) else "📄 PDF"
 
@@ -965,7 +969,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 )
 
                         if _colored_btn(_btn2, "📤 Send to Accounting", key=f"gen_{cid}", color="#198754", width="stretch"):
-                            inv_id  = dm.next_client_invoice_number(ci.get("client_name", ""))
+                            inv_id  = ci.get("quickbooks_invoice_number") or dm.next_client_invoice_number(ci.get("client_name", ""))
                             charges = calculate_charges(
                                 dm=dm,
                                 service_type=svc,
@@ -1011,7 +1015,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             ci_updated = dm.get_client_invoice_by_id(cid)
                             if ci_updated:
                                 try:
-                                    _pdf_bytes = _generate_pdf(ci_updated, prov.get("pdf_local_path"))
+                                    _ci_for_pdf = {**ci_updated, "provider_invoice_number": prov.get("invoice_number", "")}
+                                    _pdf_bytes = _generate_pdf(_ci_for_pdf, prov.get("pdf_local_path"))
                                     _upload_pdf_bytes(f"{inv_id}-invoice.pdf", _pdf_bytes)
                                 except Exception as _e:
                                     logger.warning("Could not upload generated invoice PDF: %s", _e)
@@ -1078,21 +1083,22 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             ]
 
             st.caption(f"{len(filtered)} of {len(sent)} invoice(s)")
-            hdr = st.columns([1, 1.2, 1.4, 2, 1, 0.8, 1.4, 0.8])
-            for col, label in zip(hdr, ["QB #", "Date Received", "Sent On", "Client", "Total", "Net Days", "Status", "PDF"]):
+            hdr = st.columns([1, 1.2, 1.4, 1.4, 2, 1, 1.4, 0.8])
+            for col, label in zip(hdr, ["QB #", "Service #", "Date Received", "Sent On", "Client", "Total", "Status", "PDF"]):
                 col.markdown(f"**{label}**")
             st.divider()
             for ci in filtered:
                 cid  = ci["id"]
                 prov = prov_by_id.get(ci.get("provider_invoice_id", ""))
                 qb   = ci.get("quickbooks_invoice_number") or "—"
-                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1, 1.2, 1.4, 2, 1, 0.8, 1.4, 0.8])
+                svc_num = (prov or {}).get("invoice_number", "—") or "—"
+                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1, 1.2, 1.4, 1.4, 2, 1, 1.4, 0.8])
                 c1.write(qb)
-                c2.write(ci.get("invoice_date", "—"))
-                c3.write(ci.get("sent_to_accounting_at", "—"))
-                c4.write(ci.get("client_name", "—"))
-                c5.write(f"${ci.get('total', 0):,.2f}")
-                c6.write(str(ci.get("net_days", "—")))
+                c2.write(svc_num)
+                c3.write(ci.get("invoice_date", "—"))
+                c4.write(ci.get("sent_to_accounting_at", "—"))
+                c5.write(ci.get("client_name", "—"))
+                c6.write(f"${ci.get('total', 0):,.2f}")
                 c7.write("Exported to QB" if ci.get("quickbooks_exported") else "In Accounting")
                 try:
                     pdf_bytes = _admin_cached_pdf(*_admin_pdf_args(ci, prov))
