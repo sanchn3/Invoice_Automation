@@ -18,7 +18,10 @@ import httpx
 
 from config import DATA_DIR, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
-# ── Supabase helpers (used by BOL methods only) ────────────────────────────────
+# ── Supabase helpers ──────────────────────────────────────────────────────────
+
+import logging as _logging
+_sb_logger = _logging.getLogger(__name__)
 
 def _sb_headers(prefer: str = "return=representation") -> dict:
     return {
@@ -30,6 +33,77 @@ def _sb_headers(prefer: str = "return=representation") -> dict:
 
 def _sb_url(table: str) -> str:
     return f"{SUPABASE_URL}/rest/v1/{table}"
+
+
+_SB_CI_TABLE = "pipeline_client_invoices"
+_SB_PI_TABLE = "pipeline_provider_invoices"
+
+
+def _sb_upsert_record(table: str, local_id: str, record: dict) -> None:
+    """Upsert a single pipeline record to Supabase. Silently logs on failure."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return
+    try:
+        resp = httpx.post(
+            f"{_sb_url(table)}?on_conflict=local_id",
+            headers=_sb_headers("resolution=merge-duplicates,return=minimal"),
+            content=json.dumps({"local_id": local_id, "data": record,
+                                "updated_at": _now()}),
+            timeout=8,
+        )
+        if resp.status_code not in (200, 201):
+            _sb_logger.warning("_sb_upsert_record %s/%s: HTTP %s %s",
+                               table, local_id, resp.status_code, resp.text[:200])
+    except Exception as exc:
+        _sb_logger.warning("_sb_upsert_record %s/%s: %s", table, local_id, exc)
+
+
+def _sb_delete_record(table: str, local_id: str) -> None:
+    """Delete a single pipeline record from Supabase. Silently logs on failure."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return
+    try:
+        resp = httpx.delete(
+            f"{_sb_url(table)}?local_id=eq.{local_id}",
+            headers=_sb_headers("return=minimal"),
+            timeout=8,
+        )
+        if resp.status_code not in (200, 204):
+            _sb_logger.warning("_sb_delete_record %s/%s: HTTP %s %s",
+                               table, local_id, resp.status_code, resp.text[:200])
+    except Exception as exc:
+        _sb_logger.warning("_sb_delete_record %s/%s: %s", table, local_id, exc)
+
+
+def _restore_pipeline_from_supabase() -> None:
+    """
+    Pull all pipeline invoice records from Supabase and write them to the
+    local JSON files.  Called at startup when the files are freshly created
+    (i.e. after a Render redeploy wiped the ephemeral filesystem).
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return
+    for file_path, table in (
+        (_PROVIDER_INVOICES_FILE, _SB_PI_TABLE),
+        (_CLIENT_INVOICES_FILE,   _SB_CI_TABLE),
+    ):
+        try:
+            resp = httpx.get(
+                f"{_sb_url(table)}?select=data&order=updated_at.asc",
+                headers=_sb_headers(),
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                rows = resp.json()
+                records = [r["data"] for r in rows if isinstance(r.get("data"), dict)]
+                if records:
+                    _write_json(file_path, records)
+                    _sb_logger.info("_restore_pipeline: restored %d records from %s",
+                                    len(records), table)
+            else:
+                _sb_logger.warning("_restore_pipeline %s: HTTP %s", table, resp.status_code)
+        except Exception as exc:
+            _sb_logger.warning("_restore_pipeline %s: %s", table, exc)
 
 # File paths
 _EMAIL_LOG_FILE          = DATA_DIR / "email_intake_log.json"
@@ -175,12 +249,18 @@ def _write_json(path: Path, data: Any) -> None:
 
 
 def _ensure_defaults() -> None:
-    """Write default JSON files to disk if they don't exist.
-    Called once at import time so Render always has the files after a fresh deploy."""
+    """Write default JSON files to disk if they don't exist, then restore
+    pipeline invoice data from Supabase when the files were freshly created
+    (i.e. after a Render redeploy wiped the ephemeral filesystem)."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    pipeline_files_created = False
     for path, default in _JSON_DEFAULTS.items():
         if not path.exists():
             _write_json(path, default)
+            if path in (_CLIENT_INVOICES_FILE, _PROVIDER_INVOICES_FILE):
+                pipeline_files_created = True
+    if pipeline_files_created:
+        _restore_pipeline_from_supabase()
 
 
 _ensure_defaults()
@@ -244,13 +324,15 @@ class DataManager:
             record.setdefault("created_at", _now())
             invoices.append(record)
             _write_json(_PROVIDER_INVOICES_FILE, invoices)
-            return record
+        _sb_upsert_record(_SB_PI_TABLE, record["id"], record)
+        return record
 
     def delete_provider_invoice(self, id: str) -> None:
         with _lock:
             invoices = _read_json(_PROVIDER_INVOICES_FILE)
             invoices = [inv for inv in invoices if inv["id"] != id]
             _write_json(_PROVIDER_INVOICES_FILE, invoices)
+        _sb_delete_record(_SB_PI_TABLE, id)
 
     def update_provider_invoice(self, id: str, updates: dict) -> dict:
         with _lock:
@@ -259,8 +341,12 @@ class DataManager:
                 if inv["id"] == id:
                     invoices[i].update(updates)
                     _write_json(_PROVIDER_INVOICES_FILE, invoices)
-                    return invoices[i]
-            raise KeyError(f"Provider invoice {id} not found.")
+                    updated = invoices[i]
+                    break
+            else:
+                raise KeyError(f"Provider invoice {id} not found.")
+        _sb_upsert_record(_SB_PI_TABLE, id, updated)
+        return updated
 
     def get_provider_invoice_by_id(self, id: str) -> dict | None:
         for inv in self.get_provider_invoices():
@@ -283,7 +369,8 @@ class DataManager:
             record.setdefault("created_at", _now())
             invoices.append(record)
             _write_json(_CLIENT_INVOICES_FILE, invoices)
-            return record
+        _sb_upsert_record(_SB_CI_TABLE, record["id"], record)
+        return record
 
     def update_client_invoice(self, id: str, updates: dict) -> dict:
         with _lock:
@@ -292,8 +379,12 @@ class DataManager:
                 if inv["id"] == id:
                     invoices[i].update(updates)
                     _write_json(_CLIENT_INVOICES_FILE, invoices)
-                    return invoices[i]
-            raise KeyError(f"Client invoice {id} not found.")
+                    updated = invoices[i]
+                    break
+            else:
+                raise KeyError(f"Client invoice {id} not found.")
+        _sb_upsert_record(_SB_CI_TABLE, id, updated)
+        return updated
 
     def get_client_invoice_by_id(self, id: str) -> dict | None:
         for inv in self.get_client_invoices():
@@ -306,6 +397,7 @@ class DataManager:
             invoices = _read_json(_CLIENT_INVOICES_FILE)
             invoices = [inv for inv in invoices if inv["id"] != id]
             _write_json(_CLIENT_INVOICES_FILE, invoices)
+        _sb_delete_record(_SB_CI_TABLE, id)
 
     def get_client_invoice_by_provider_invoice_id(self, provider_invoice_id: str) -> dict | None:
         for inv in self.get_client_invoices():
