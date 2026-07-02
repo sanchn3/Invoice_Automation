@@ -205,13 +205,17 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         line_items = ci.get("line_items", [])
                         if line_items:
                             with st.expander("Line Items"):
-                                for li in line_items:
-                                    st.text(
-                                        f"{li.get('description', '—'):<40}"
-                                        f"  qty: {li.get('quantity', '')}  "
-                                        f"  rate: ${li.get('unit_price', 0):,.2f}  "
-                                        f"  total: ${li.get('total', 0):,.2f}"
-                                    )
+                                import pandas as pd
+                                st.dataframe(
+                                    pd.DataFrame([{
+                                        "Line Item" : li.get("description", "—"),
+                                        "Qty"       : li.get("quantity", ""),
+                                        "Rate ($)"  : f"{li.get('unit_price', 0):,.2f}",
+                                        "Total ($)" : f"{li.get('total', 0):,.2f}",
+                                    } for li in line_items]),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
 
                         if st.session_state.get(pdf_key):
                             from streamlit_pdf_viewer import pdf_viewer
@@ -615,9 +619,11 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     c5.write("❌")
 
                 if exported:
+                    _prov_iif = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
+                    _ci_iif   = {**ci, "provider_invoice_number": _prov_iif.get("invoice_number", "")}
                     c6.download_button(
                         "✅ IIF",
-                        data=build_iif_content(ci),
+                        data=build_iif_content(_ci_iif),
                         file_name=f"{qb}-export.iif",
                         mime="text/plain",
                         key=f"proc_iif_{cid}",

@@ -43,7 +43,7 @@ def build_iif_content(inv: dict) -> str:
     inv_date   = _fmt_date(inv.get("invoice_date", inv.get("created_at", "")))
     total      = float(inv.get("total", 0))
     line_items = inv.get("line_items", [])
-    memo       = f"Service: {inv.get('service_type', '').replace('_', '-').title()}"
+    memo       = inv.get("provider_invoice_number", "")
 
     lines.append(
         f"TRNS\t\tINVOICE\t{inv_date}\tAccounts Receivable\t"
@@ -74,7 +74,7 @@ def build_multi_iif_content(invoices: list[dict]) -> str:
         inv_date  = _fmt_date(inv.get("invoice_date", inv.get("created_at", "")))
         total     = float(inv.get("total", 0))
         line_items: list[dict] = inv.get("line_items", [])
-        memo      = f"Service: {inv.get('service_type', '').replace('_', '-').title()}"
+        memo      = inv.get("provider_invoice_number", "")
         lines.append(
             f"TRNS\t\tINVOICE\t{inv_date}\tAccounts Receivable\t"
             f"{client}\t{_CLASS}\t{total:.2f}\t{qb_num}\t{memo}"
@@ -129,6 +129,8 @@ def generate_iif(client_invoice_ids: list[str], dm: DataManager) -> list[dict]:
     results: list[dict] = []
     for inv in invoices_to_export:
         qb_num   = inv.get("quickbooks_invoice_number", inv["id"])
+        prov     = dm.get_provider_invoice_by_id(inv.get("provider_invoice_id", ""))
+        inv      = {**inv, "provider_invoice_number": (prov or {}).get("invoice_number", "")}
         content  = build_iif_content(inv)
         filename = EXPORTS_DIR / f"{qb_num}_{timestamp}.iif"
         filename.write_text(content, encoding="utf-8")
