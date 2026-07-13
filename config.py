@@ -18,10 +18,6 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 SUPABASE_URL              = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
-# Outlook folders to poll
-OUTLOOK_INVOICE_FOLDER = os.getenv("OUTLOOK_INVOICE_FOLDER", "Provider Invoices")
-OUTLOOK_BOL_FOLDER     = os.getenv("OUTLOOK_BOL_FOLDER", "BILL OF LADING")
-
 # Paths
 BASE_DIR    = Path(__file__).parent
 DATA_DIR    = BASE_DIR / "data"

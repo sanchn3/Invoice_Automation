@@ -3,8 +3,9 @@ auth.py
 =======
 Lightweight authentication for the INCO Streamlit app.
 
-Users are stored in data/users.json:
-  [{"username": "...", "password_hash": "...", "salt": "...", "role": "..."}]
+Users are stored in the Supabase `staff_users` table.
+To change a password, run this in the Supabase SQL editor:
+    SELECT set_staff_password('username', 'NewPassword123');
 
 Roles map to dashboards:
   admin       → Administrator
@@ -14,12 +15,13 @@ Roles map to dashboards:
 """
 
 import hashlib
-import json
 import os
 import secrets
-from pathlib import Path
 
-_USERS_FILE = Path(__file__).parent.parent / "data" / "users.json"
+import httpx
+
+_SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+_SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 ROLE_LABELS = {
     "admin"      : "Administrator",
@@ -29,25 +31,39 @@ ROLE_LABELS = {
 }
 
 
+# ── Supabase helpers ──────────────────────────────────────────────────────────
+
+def _sb_headers() -> dict:
+    return {
+        "apikey"       : _SUPABASE_KEY,
+        "Authorization": f"Bearer {_SUPABASE_KEY}",
+        "Content-Type" : "application/json",
+    }
+
+
+def _load_users() -> list[dict]:
+    """Fetch all staff_users rows from Supabase."""
+    try:
+        resp = httpx.get(
+            f"{_SUPABASE_URL}/rest/v1/staff_users",
+            headers=_sb_headers(),
+            params={"select": "username,password_hash,salt,role"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return []
+
+
 # ── Credential helpers ────────────────────────────────────────────────────────
 
 def _hash_password(password: str, salt: str) -> str:
     return hashlib.sha256((salt + password).encode()).hexdigest()
 
 
-def _load_users() -> list[dict]:
-    if not _USERS_FILE.exists():
-        return []
-    try:
-        return json.loads(_USERS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-
 def verify_login(username: str, password: str) -> dict | None:
-    """
-    Return the user record if credentials are valid, else None.
-    """
+    """Return the user record if credentials are valid, else None."""
     for user in _load_users():
         if user.get("username", "").lower() == username.strip().lower():
             expected = _hash_password(password, user.get("salt", ""))
@@ -57,20 +73,21 @@ def verify_login(username: str, password: str) -> dict | None:
 
 
 def create_user(username: str, password: str, role: str) -> None:
-    """
-    Add or overwrite a user in data/users.json.
-    Call this once from a setup script or the Streamlit admin panel.
-    """
-    users = [u for u in _load_users() if u.get("username", "").lower() != username.lower()]
+    """Add or overwrite a user in Supabase staff_users."""
     salt = secrets.token_hex(16)
-    users.append({
+    payload = {
         "username"     : username.lower(),
         "password_hash": _hash_password(password, salt),
         "salt"         : salt,
         "role"         : role,
-    })
-    _USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _USERS_FILE.write_text(json.dumps(users, indent=2), encoding="utf-8")
+    }
+    headers = {**_sb_headers(), "Prefer": "resolution=merge-duplicates,return=representation"}
+    httpx.post(
+        f"{_SUPABASE_URL}/rest/v1/staff_users",
+        headers=headers,
+        json=payload,
+        timeout=10,
+    ).raise_for_status()
 
 
 # ── Session state helpers ─────────────────────────────────────────────────────

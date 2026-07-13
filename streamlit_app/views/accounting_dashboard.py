@@ -4,16 +4,36 @@ accounting_dashboard.py
 Accounting dashboard: Invoice Review, Import to QuickBooks, and Email Clients.
 """
 
+import logging
 import streamlit as st
 from collections import defaultdict
 from datetime import datetime, timedelta
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
 from invoice_logic.iif_exporter import generate_iif, build_iif_content
 from invoice_logic.pdf_generator import generate_pdf
 from scheduler.supabase_sync import patch_invoice_paid
+
+
+def _build_eml(to_addr: str, subject: str, body: str, attachments: list[tuple[str, bytes]]) -> bytes:
+    """Build a RFC 2822 .eml file with PDF attachments.
+    Opens in Outlook as a pre-filled compose window ready to send."""
+    msg = MIMEMultipart()
+    msg["To"]      = to_addr
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+    for filename, pdf_bytes in attachments:
+        part = MIMEApplication(pdf_bytes, _subtype="pdf")
+        part.add_header("Content-Disposition", "attachment", filename=filename)
+        msg.attach(part)
+    return msg.as_bytes()
 
 
 @st.cache_data(show_spinner=False)
@@ -34,6 +54,8 @@ def _cached_pdf(
 def _pdf_args(ci: dict, prov: dict | None) -> tuple:
     """Return the positional args for _cached_pdf from a client invoice + provider record."""
     _pdf_path = (prov or {}).get("pdf_local_path", "")
+    _prov_inv_num = (prov or {}).get("invoice_number", "")
+    _ci_for_pdf = {**ci, "provider_invoice_number": _prov_inv_num}
     return (
         ci["id"],
         ci.get("quickbooks_invoice_number", ""),
@@ -42,7 +64,7 @@ def _pdf_args(ci: dict, prov: dict | None) -> tuple:
         ci.get("invoice_date", ""),
         ci.get("due_date", ""),
         ci.get("po_number", ""),
-        ci,
+        _ci_for_pdf,
     )
 
 
@@ -183,13 +205,17 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         line_items = ci.get("line_items", [])
                         if line_items:
                             with st.expander("Line Items"):
-                                for li in line_items:
-                                    st.text(
-                                        f"{li.get('description', '—'):<40}"
-                                        f"  qty: {li.get('quantity', '')}  "
-                                        f"  rate: ${li.get('unit_price', 0):,.2f}  "
-                                        f"  total: ${li.get('total', 0):,.2f}"
-                                    )
+                                import pandas as pd
+                                st.dataframe(
+                                    pd.DataFrame([{
+                                        "Line Item" : li.get("description", "—"),
+                                        "Qty"       : li.get("quantity", ""),
+                                        "Rate ($)"  : f"{li.get('unit_price', 0):,.2f}",
+                                        "Total ($)" : f"{li.get('total', 0):,.2f}",
+                                    } for li in line_items]),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
 
                         if st.session_state.get(pdf_key):
                             from streamlit_pdf_viewer import pdf_viewer
@@ -217,6 +243,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 st.rerun()
                             if rfe_clicked:
                                 dm.update_client_invoice(cid, {"ready_for_export": True})
+                                _ci_updated = dm.get_client_invoice_by_id(cid)
+                                if _ci_updated:
+                                    try:
+                                        from scheduler.supabase_sync import sync_single_invoice as _sync_inv
+                                        _sync_inv(_ci_updated)
+                                    except Exception as _e:
+                                        logger.warning("Supabase sync failed: %s", _e)
                                 st.rerun()
 
 
@@ -297,6 +330,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         st.rerun()
                     if rte_clicked:
                         dm.update_client_invoice(ci["id"], {"ready_to_email": True})
+                        _ci_updated = dm.get_client_invoice_by_id(ci["id"])
+                        if _ci_updated:
+                            try:
+                                from scheduler.supabase_sync import sync_single_invoice as _sync_inv
+                                _sync_inv(_ci_updated)
+                            except Exception as _e:
+                                logger.warning("Supabase sync failed: %s", _e)
                         st.rerun()
 
             if selected_ids:
@@ -412,7 +452,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             f" — {ci.get('invoice_date','—')}"
                             for ci in invoices
                         )
-                        default_subject = f"Invoices — INCO Group, Inc. — {cname}"
+                        _inv_nums = [ci.get("quickbooks_invoice_number", "") for ci in invoices]
+                        _inv_label = (
+                            f"Invoice #{_inv_nums[0]}"
+                            if len(_inv_nums) == 1
+                            else "Invoices #" + ", #".join(_inv_nums)
+                        )
+                        default_subject = f"{_inv_label} — INCO Group, Inc. — {cname}"
                         default_body = (
                             f"Dear {cname},\n\n"
                             f"Please find attached the following invoice(s):\n\n"
@@ -437,7 +483,31 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             height=180,
                             key=f"email_body_{cname}",
                         )
-                        st.caption("Download PDFs above to attach to your email.")
+                        # Build .eml with all invoice PDFs attached
+                        _eml_attachments = []
+                        for _ci in invoices:
+                            _qb  = _ci.get("quickbooks_invoice_number", "invoice")
+                            _pe  = prov_by_id.get(_ci.get("provider_invoice_id", ""), {})
+                            _eml_attachments.append((
+                                f"{_qb}.pdf",
+                                _cached_pdf(*_pdf_args(_ci, _pe)),
+                            ))
+                        _eml_bytes = _build_eml(
+                            st.session_state.get(f"email_to_{cname}",   client_email or ""),
+                            st.session_state.get(f"email_subj_{cname}", default_subject),
+                            st.session_state.get(f"email_body_{cname}", default_body),
+                            _eml_attachments,
+                        )
+                        _latest_qb = invoices[-1].get("quickbooks_invoice_number", "") if invoices else ""
+                        _eml_name  = f"Invoice_{_latest_qb}.eml" if _latest_qb else "Invoice.eml"
+                        st.download_button(
+                            "📎 Download Email Draft (.eml)",
+                            data=_eml_bytes,
+                            file_name=_eml_name,
+                            mime="message/rfc822",
+                            key=f"dl_eml_{cname}",
+                            use_container_width=True,
+                        )
 
                         mc1, mc2 = st.columns(2)
                         if mc1.button(
@@ -448,6 +518,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         ):
                             for ci in invoices:
                                 dm.update_client_invoice(ci["id"], {"emailed": True})
+                                _ci_updated = dm.get_client_invoice_by_id(ci["id"])
+                                if _ci_updated:
+                                    try:
+                                        from scheduler.supabase_sync import sync_single_invoice as _sync_inv
+                                        _sync_inv(_ci_updated)
+                                    except Exception as _e:
+                                        logger.warning("Supabase sync failed: %s", _e)
                             st.session_state.pop(prep_key, None)
                             st.rerun()
                         if mc2.button(
@@ -542,9 +619,11 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     c5.write("❌")
 
                 if exported:
+                    _prov_iif = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
+                    _ci_iif   = {**ci, "provider_invoice_number": _prov_iif.get("invoice_number", "")}
                     c6.download_button(
                         "✅ IIF",
-                        data=build_iif_content(ci),
+                        data=build_iif_content(_ci_iif),
                         file_name=f"{qb}-export.iif",
                         mime="text/plain",
                         key=f"proc_iif_{cid}",

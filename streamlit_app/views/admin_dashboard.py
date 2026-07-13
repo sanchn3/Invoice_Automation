@@ -7,12 +7,16 @@ QuickBooks export, reporting, and rate card editor.
 
 import json
 import logging
+import os
+import time
 import streamlit as st
 from datetime import datetime, timedelta, timezone
 
 from pathlib import Path
 
-from config import DATA_DIR as _DATA_DIR
+from config import DATA_DIR as _DATA_DIR, PDFS_DIR as _PDFS_DIR
+
+_IS_PRODUCTION = os.environ.get("RENDER") == "true"
 from data_manager import DataManager
 from invoice_logic.charge_calculator import calculate_charges
 from invoice_logic.pdf_generator import generate_pdf as _generate_pdf
@@ -29,19 +33,6 @@ logger = logging.getLogger(__name__)
 
 _STUCK_HOURS = 24
 
-_FOLDER_POLL_CFG = _DATA_DIR / "folder_poll_config.json"
-
-
-def _load_folder_cfg() -> dict:
-    try:
-        return json.loads(_FOLDER_POLL_CFG.read_text("utf-8"))
-    except Exception:
-        return {}
-
-
-def _save_folder_cfg(data: dict) -> None:
-    _FOLDER_POLL_CFG.write_text(json.dumps(data, indent=2), "utf-8")
-
 
 def _colored_btn(container, label: str, key: str, color: str, **kwargs) -> bool:
     """Render a button with a custom background color using a CSS anchor approach."""
@@ -49,6 +40,15 @@ def _colored_btn(container, label: str, key: str, color: str, **kwargs) -> bool:
     container.markdown(
         f"<span id='{anchor}'></span>"
         f"<style>"
+        f"div[data-testid='stMarkdown']:has(span#{anchor}),"
+        f"div[data-testid='element-container']:has(span#{anchor})"
+        f"{{height:0!important;min-height:0!important;margin:0!important;"
+        f"padding:0!important;overflow:hidden!important;line-height:0!important;}}"
+        f"[data-testid='stColumns']:has(span#{anchor}) [data-testid='stButton']>button,"
+        f"[data-testid='stHorizontalBlock']:has(span#{anchor}) [data-testid='stButton']>button"
+        f"{{padding:0.25rem 0.75rem!important;min-height:2.375rem!important;"
+        f"font-size:0.875rem!important;border-width:1px!important;"
+        f"border-style:solid!important;border-radius:0.5rem!important;}}"
         f"[data-testid='stColumn']:has(span#{anchor}) [data-testid='stButton']>button,"
         f"[data-testid='stVerticalBlock']:has(>[data-testid='element-container']"
         f">[data-testid='stMarkdown'] span#{anchor})"
@@ -77,6 +77,8 @@ def _admin_cached_pdf(
 
 def _admin_pdf_args(ci: dict, prov: dict | None) -> tuple:
     _pdf_path = (prov or {}).get("pdf_local_path", "")
+    _prov_inv_num = (prov or {}).get("invoice_number", "")
+    _ci_for_pdf = {**ci, "provider_invoice_number": _prov_inv_num}
     return (
         ci["id"],
         ci.get("quickbooks_invoice_number", ""),
@@ -85,7 +87,7 @@ def _admin_pdf_args(ci: dict, prov: dict | None) -> tuple:
         ci.get("invoice_date", ""),
         ci.get("due_date", ""),
         ci.get("po_number", ""),
-        ci,
+        _ci_for_pdf,
     )
 
 
@@ -288,99 +290,46 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_pipeline:
         st.subheader("Invoice Validation")
 
-        _epoll_col, _fpoll_col, _ = st.columns([1, 1, 3])
+        _upload_col, _ = st.columns([1, 2])
 
-        # ── Email Inbox Poll ──────────────────────────────────────────────────
-        with _epoll_col:
+        # ── Invoice Upload ────────────────────────────────────────────────────
+        with _upload_col:
             with st.container(border=True):
-                st.markdown("**📧 Email Inbox Poll**")
-                st.caption("Polls the Outlook BOL inbox folder")
-                if st.button("🔄 Poll Inbox", width="stretch"):
-                    from email_pipeline.outlook_listener import poll_inbox
-                    with st.spinner("Polling inbox..."):
-                        new_count = poll_inbox(dm, alert_manager)
-                    st.success(f"Poll complete — {new_count} new email(s) processed.")
+                st.markdown("**📁 Invoice Upload**")
+                if st.session_state.get("upload_success"):
+                    st.success(f"Invoice successfully uploaded ({st.session_state.pop('upload_success')} processed)")
+                if "inv_upload_key" not in st.session_state:
+                    st.session_state.inv_upload_key = 0
+                _uploaded = st.file_uploader(
+                    "Upload PDF(s)",
+                    type="pdf",
+                    accept_multiple_files=True,
+                    key=f"inv_pdf_uploader_{st.session_state.inv_upload_key}",
+                    label_visibility="collapsed",
+                )
+                if st.button("⬆️ Process Uploads", key="fpoll_btn", width="stretch", disabled=not _uploaded):
+                    _am    = alert_manager or AlertManager()
+                    _ok    = 0
+                    _known = {log.get("pdf_local_path", "") for log in email_logs}
+                    with st.spinner(f"Processing {len(_uploaded)} PDF(s)…"):
+                        for _uf in _uploaded:
+                            _dest = _PDFS_DIR / _uf.name
+                            if str(_dest) in _known:
+                                continue
+                            _dest.write_bytes(_uf.getvalue())
+                            _log_rec = dm.add_email_log({
+                                "source"        : "upload",
+                                "sender"        : "upload",
+                                "subject"       : _uf.name,
+                                "received_at"   : datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                                "pdf_local_path": str(_dest),
+                                "status"        : "pending_review",
+                            })
+                            if process_pdf_from_path(str(_dest), _log_rec["id"], dm, _am, sender="upload"):
+                                _ok += 1
+                    st.session_state.inv_upload_key += 1
+                    st.session_state.upload_success = _ok
                     st.rerun()
-
-        # ── Invoice Folder Poll ───────────────────────────────────────────────
-        _fcfg        = _load_folder_cfg()
-        _fpath_saved = _fcfg.get("folder_path", "")
-        _fedit_key   = "folder_poll_edit_mode"
-
-        with _fpoll_col:
-            with st.container(border=True):
-                st.markdown("**📁 Invoice Folder Poll**")
-
-                if st.session_state.get(_fedit_key):
-                    # Edit mode: path text input + Save / Cancel
-                    _new_fpath = st.text_input(
-                        "Folder path",
-                        value=_fpath_saved,
-                        key="folder_poll_path_input",
-                        label_visibility="collapsed",
-                        placeholder=r"e.g. C:\invoices",
-                    )
-                    _fsv1, _fsv2 = st.columns(2)
-                    if _fsv1.button("💾 Save", key="fpoll_save", width="stretch"):
-                        _save_folder_cfg({"folder_path": _new_fpath.strip()})
-                        st.session_state.pop(_fedit_key, None)
-                        st.rerun()
-                    if _fsv2.button("✕ Cancel", key="fpoll_cancel", width="stretch"):
-                        st.session_state.pop(_fedit_key, None)
-                        st.rerun()
-                else:
-                    # Normal mode: show saved path, Poll + Edit buttons
-                    if _fpath_saved:
-                        st.caption(f"`{_fpath_saved}`")
-                    else:
-                        st.caption("*No folder configured*")
-
-                    _fp1, _fp2 = st.columns([3, 1])
-                    if _fp1.button(
-                        "🔄 Poll Folder", key="fpoll_btn",
-                        width="stretch", disabled=not _fpath_saved,
-                    ):
-                        _folder = Path(_fpath_saved)
-                        if not _folder.is_dir():
-                            st.error(f"Directory not found:\n{_fpath_saved}")
-                        else:
-                            _known = {
-                                log.get("pdf_local_path", "")
-                                for log in email_logs
-                            }
-                            _pdfs = sorted(_folder.glob("*.pdf"))
-                            _am   = alert_manager or AlertManager()
-                            _ok   = 0
-                            _skip = 0
-                            with st.spinner(f"Processing {len(_pdfs)} PDF(s)…"):
-                                for _pdf in _pdfs:
-                                    if str(_pdf) in _known:
-                                        _skip += 1
-                                        continue
-                                    _log_rec = dm.add_email_log({
-                                        "source"        : "folder_poll",
-                                        "sender"        : "folder_poll",
-                                        "subject"       : _pdf.name,
-                                        "received_at"   : datetime.utcnow().isoformat() + "Z",
-                                        "pdf_local_path": str(_pdf),
-                                        "status"        : "pending_review",
-                                    })
-                                    if process_pdf_from_path(
-                                        str(_pdf), _log_rec["id"], dm, _am
-                                    ):
-                                        _ok += 1
-                            _msg = f"{_ok} new invoice(s) added"
-                            if _skip:
-                                _msg += f", {_skip} already known"
-                            st.success(f"Folder poll complete — {_msg}.")
-                            st.rerun()
-
-                    if _fp2.button(
-                        "✏️", key="fpoll_edit", width="stretch",
-                        help="Set folder path",
-                    ):
-                        st.session_state[_fedit_key] = True
-                        st.rerun()
 
         pending_review = [log for log in email_logs if log.get("status") == "pending_review"]
         if pending_review:
@@ -513,7 +462,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "extra_charges"  : [],
                                 "pallet_count"   : 0,
                                 "damaged_pallets": 0,
-                                "broken_pallets" : 0,
                                 "worker_notes"   : "",
                                 "photo_paths"    : [],
                                 "line_items"     : [],
@@ -582,6 +530,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 dm.update_client_invoice(linked_ci["id"], {
                                     "client_name" : canonical,
                                     "invoice_date": new_date.strip(),
+                                    "total"       : new_total,
+                                    "subtotal"    : new_total,
                                 })
                             st.session_state.pop(edit_key, None)
                             st.rerun()
@@ -680,7 +630,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     ic4.write(f"${ci.get('total', 0):,.2f}")
                     # Action buttons
                     _tbr_pdf_path   = prov_pi.get("pdf_local_path", "")
-                    _tbr_pdf_exists = bool(_tbr_pdf_path)
+                    _tbr_pdf_exists = bool(_tbr_pdf_path) and Path(_tbr_pdf_path).exists()
                     _tbr_pdf_key    = f"tbr_pdf_{cid}"
                     _tbr_pdf_label  = "📄 Hide" if st.session_state.get(_tbr_pdf_key) else "📄 PDF"
 
@@ -800,7 +750,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
 
                     # ── Row 2: temp recorder + actions ────────────────────
-                    r2a, r2c, r2d = st.columns([2.5, 0.8, 0.8])
+                    r2a, r2c, r2d = st.columns([2.5, 0.8, 0.8], vertical_alignment="bottom")
 
                     with r2a:
                         _TR_TO_LBL = {"hardware_installation": "Hardware & Installation",
@@ -829,7 +779,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         if st.session_state.get(confirm_key):
                             st.caption("⚠️ Sure?")
                         else:
-                            if st.button("🗑 Delete", key=f"del_{cid}", width='stretch'):
+                            if _colored_btn(r2d, "🗑 Delete", key=f"del_{cid}", color="#dc3545", width='stretch'):
                                 st.session_state[confirm_key] = True
                                 st.rerun()
 
@@ -861,180 +811,234 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         else:
                             st.warning("PDF not available.")
 
-                    # ── Job details form + Generate Invoice ───────────────
-                    _TR_OPTS   = ["Hardware & Installation", "Installation Only"]
-                    _TR_TO_KEY = {"Hardware & Installation": "hardware_installation",
-                                  "Installation Only"      : "installation_only"}
-                    _TR_TO_LBL = {"hardware_installation": "Hardware & Installation",
-                                  "installation_only"    : "Installation Only"}
-
-                    st.markdown("---")
-                    st.caption("Job Details")
-
-                    _cl_rates  = dm.get_rates_for_client(ci.get("client_name", ""))
-                    _cbp       = bool(_cl_rates.get("charged_by_pallet", True))
-                    _fixed_pal = int(_cl_rates.get("fixed_pallet_count", 0) or 0)
-                    if _cbp:
-                        _pa, _pb, _pc = st.columns(3)
-                        _pal_default = _fixed_pal if _fixed_pal > 0 else int(ci.get("pallet_count", 1) or 1)
-                        _pal_label   = f"Total Pallets (fixed: {_fixed_pal})" if _fixed_pal > 0 else "Total Pallets"
-                        _pal = _pa.number_input(_pal_label, min_value=1, step=1, value=_pal_default, key=f"val_pal_{cid}")
-                        _dmg = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
-                        _brk = _pc.number_input("Broken Pallets",  min_value=0, step=1, value=int(ci.get("broken_pallets", 0) or 0), key=f"val_brk_{cid}")
+                    # ── Approve Invoice toggle ────────────────────────────
+                    _approve_key = f"approve_open_{cid}"
+                    if not st.session_state.get(_approve_key):
+                        _approve_col, = st.columns(1)
+                        if _colored_btn(_approve_col, "Approve Invoice", key=f"approve_btn_{cid}", color="#198754", use_container_width=True):
+                            st.session_state[_approve_key] = True
+                            st.rerun()
                     else:
-                        st.info("Billing is per truck — no pallet count required.")
-                        _pal = 1
-                        _pb, _pc = st.columns(2)
-                        _dmg = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
-                        _brk = _pc.number_input("Broken Pallets",  min_value=0, step=1, value=int(ci.get("broken_pallets", 0) or 0), key=f"val_brk_{cid}")
+                        if st.button("▲ Collapse", key=f"approve_collapse_{cid}"):
+                            st.session_state[_approve_key] = False
+                            st.rerun()
 
-                    _new_extras: list[str] = []
+                    if st.session_state.get(_approve_key):
+                        # ── Job details form + Generate Invoice ───────────────
+                        _TR_OPTS   = ["None", "Hardware & Installation", "Installation Only"]
+                        _TR_TO_KEY = {"None"                  : None,
+                                      "Hardware & Installation": "hardware_installation",
+                                      "Installation Only"      : "installation_only"}
+                        _TR_TO_LBL = {None                    : "None",
+                                      "hardware_installation"  : "Hardware & Installation",
+                                      "installation_only"      : "Installation Only"}
 
-                    _stored_tr = ci.get("temp_recorder", "hardware_installation")
-                    if _stored_tr is True:
-                        _stored_tr = "hardware_installation"
-                    _tr_default = _TR_TO_LBL.get(_stored_tr, "Hardware & Installation") if _stored_tr else "Hardware & Installation"
-                    _tr_sel = st.radio(
-                        "Pulp Temperature",
-                        options=_TR_OPTS,
-                        index=_TR_OPTS.index(_tr_default),
-                        horizontal=True,
-                        key=f"val_tr_{cid}",
-                    )
-                    _new_tr = _TR_TO_KEY[_tr_sel]
+                        st.markdown("---")
+                        st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Job Details</p>', unsafe_allow_html=True)
 
-                    st.caption("Temperature Input")
-                    _producto_caliente = st.checkbox(
-                        "Producto Caliente",
-                        value=bool(ci.get("producto_caliente", False)),
-                        key=f"val_pc_{cid}",
-                    )
-                    _t1, _t2, _t3 = st.columns(3)
-                    _temp1 = _t1.text_input("Temperature 1 (°F)", value=ci.get("temp_f1", ""), key=f"val_t1_{cid}")
-                    _temp2 = _t2.text_input("Temperature 2 (°F)", value=ci.get("temp_f2", ""), key=f"val_t2_{cid}")
-                    _temp3 = _t3.text_input("Temperature 3 (°F)", value=ci.get("temp_f3", ""), key=f"val_t3_{cid}")
-
-                    _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
-
-                    # ── Save / Send buttons ───────────────────────────────────
-                    _save_pdf_key = f"save_pdf_{cid}"
-                    _save_ok_key  = f"save_ok_{cid}"
-                    _btn0, _btn1, _btn2 = st.columns([1.5, 1, 2])
-
-                    if _btn0.button("↩ Return to Received", key=f"return_rcv_{cid}", type="primary", width="stretch"):
-                        dm.update_client_invoice(cid, {
-                            "status"       : "to_be_received",
-                            "received_date": None,
-                        })
-                        for _k in (_save_pdf_key, _save_ok_key):
-                            st.session_state.pop(_k, None)
-                        st.rerun()
-
-                    if _btn1.button("💾 Save", key=f"savebtn_{cid}", width='stretch'):
-                        # 1. Persist all form fields — no status change, no QB number
-                        dm.update_client_invoice(cid, {
-                            "pallet_count"     : int(_pal),
-                            "damaged_pallets"  : int(_dmg),
-                            "broken_pallets"   : int(_brk),
-                            "temp_recorder"    : _new_tr,
-                            "producto_caliente": _producto_caliente,
-                            "temp_f1"          : _temp1.strip(),
-                            "temp_f2"          : _temp2.strip(),
-                            "temp_f3"          : _temp3.strip(),
-                            "worker_notes"     : _new_notes.strip(),
-                        })
-                        # 2. Stamp temperature data onto the provider PDF (lower-right)
-                        #    Only applied when at least one field is filled.
-                        _has_temp_data = (
-                            bool(_temp1.strip() or _temp2.strip() or _temp3.strip())
-                            or _producto_caliente
+                        _cl_rates    = dm.get_rates_for_client(ci.get("client_name", ""))
+                        _rate_card   = dm.get_rate_card()
+                        _default_cbp = _rate_card.get("default_billing_basis", "Pallet") == "Pallet"
+                        _cbp         = bool(_cl_rates.get("charged_by_pallet", _default_cbp))
+                        _fixed_pal = int(_cl_rates.get("fixed_pallet_count", 0) or 0)
+                        _seal = st.checkbox(
+                            "Seal",
+                            value=bool("stamps" in (ci.get("extra_charges") or [])),
+                            key=f"val_seal_{cid}",
                         )
-                        _prov_path = prov.get("pdf_local_path", "")
-                        _stamped_bytes = None
-                        if _has_temp_data and _prov_path:
-                            _raw = _get_pdf_bytes(_prov_path)
-                            if _raw:
-                                try:
-                                    from invoice_logic.stamp_pdf import stamp_temperature as _stamp_temp
-                                    _stamped_bytes = _stamp_temp(
-                                        _raw,
-                                        [_temp1.strip(), _temp2.strip(), _temp3.strip()],
-                                        _producto_caliente,
-                                    )
-                                except Exception as _se:
-                                    logger.warning("Temperature stamp failed: %s", _se)
-                        if _stamped_bytes:
-                            _overwrite_provider_pdf(_prov_path, _stamped_bytes)
-                            st.session_state[_save_pdf_key] = (_stamped_bytes, cid)
-                        st.session_state[_save_ok_key] = True
-                        st.rerun()
+                        if _cbp and svc != "transfer":
+                            _pa, _pb, _pc, _pd = st.columns(4)
+                            _pal_default = _fixed_pal if _fixed_pal > 0 else int(ci.get("pallet_count", 1) or 1)
+                            _pal_label   = f"Total Pallets (fixed: {_fixed_pal})" if _fixed_pal > 0 else "Total Pallets"
+                            _pal            = _pa.number_input(_pal_label,       min_value=1, step=1, value=_pal_default,                                    key=f"val_pal_{cid}")
+                            _dmg            = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0),          key=f"val_dmg_{cid}")
+                            _hours_overtime = _pc.number_input("Hours Overtime",  min_value=0, step=1, value=int(ci.get("hours_overtime",  0) or 0),          key=f"val_ot_{cid}")
+                            _restack_count  = _pd.number_input("Restack",         min_value=0, step=1, value=int(ci.get("restack_count",   0) or 0),          key=f"val_rs_{cid}")
+                        else:
+                            if not _cbp:
+                                st.info("Billing is per truck — no pallet count required.")
+                            _pal = 1
+                            _pb, _pc, _pd = st.columns(3)
+                            _dmg            = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0),          key=f"val_dmg_{cid}")
+                            _hours_overtime = _pc.number_input("Hours Overtime",  min_value=0, step=1, value=int(ci.get("hours_overtime",  0) or 0),          key=f"val_ot_{cid}")
+                            _restack_count  = _pd.number_input("Restack",         min_value=0, step=1, value=int(ci.get("restack_count",   0) or 0),          key=f"val_rs_{cid}")
 
-                    # ── Download row (visible after Save) ─────────────────────
-                    if st.session_state.get(_save_ok_key):
-                        _saved_bytes, _saved_stem = st.session_state.get(
-                            _save_pdf_key, (None, None)
+                        _new_extras: list[str] = []
+                        if _seal:
+                            _new_extras.append("stamps")
+
+                        st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Pulp Temperature</p>', unsafe_allow_html=True)
+                        _producto_caliente = st.checkbox(
+                            "Producto Caliente",
+                            value=bool(ci.get("producto_caliente", False)),
+                            key=f"val_pc_{cid}",
                         )
-                        _dl1, _dl2 = st.columns([2, 1])
-                        _dl1.success("Temperature data saved. Click 📄 PDF to review.")
-                        if _saved_bytes:
-                            _dl2.download_button(
-                                "⬇ Download",
-                                data=_saved_bytes,
-                                file_name=f"{_saved_stem}-stamped.pdf",
-                                mime="application/pdf",
-                                key=f"dl_saved_{cid}",
+                        _t1, _t2, _t3 = st.columns(3)
+                        _temp1 = _t1.text_input("Temperature 1 (°F)", value=ci.get("temp_f1", ""), key=f"val_t1_{cid}")
+                        _temp2 = _t2.text_input("Temperature 2 (°F)", value=ci.get("temp_f2", ""), key=f"val_t2_{cid}")
+                        _temp3 = _t3.text_input("Temperature 3 (°F)", value=ci.get("temp_f3", ""), key=f"val_t3_{cid}")
+
+                        _stored_tr = ci.get("temp_recorder")
+                        if _stored_tr is True:
+                            _stored_tr = "hardware_installation"
+                        _tr_default = _TR_TO_LBL.get(_stored_tr, "None")
+                        st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Temperature Recorder</p>', unsafe_allow_html=True)
+                        _tr_sel = st.radio(
+                            "Temperature Recorder",
+                            options=_TR_OPTS,
+                            index=_TR_OPTS.index(_tr_default),
+                            horizontal=True,
+                            key=f"val_tr_{cid}",
+                            label_visibility="collapsed",
+                        )
+                        _new_tr = _TR_TO_KEY[_tr_sel]
+
+                        _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
+
+                        # ── Save / Send buttons ───────────────────────────────────
+                        _save_pdf_key = f"save_pdf_{cid}"
+                        _save_ok_key  = f"save_ok_{cid}"
+                        _btn0, _btn1, _btn2 = st.columns([1.5, 1, 2])
+
+                        if _colored_btn(_btn0, "↩ Return to Received", key=f"return_rcv_{cid}", color="#6c757d", width="stretch"):
+                            dm.update_client_invoice(cid, {
+                                "status"       : "to_be_received",
+                                "received_date": None,
+                            })
+                            for _k in (_save_pdf_key, _save_ok_key, _approve_key):
+                                st.session_state.pop(_k, None)
+                            st.rerun()
+
+                        if _colored_btn(_btn1, "💾 Save", key=f"savebtn_{cid}", color="#0068c9", width='stretch'):
+                            # 1. Persist all form fields — no status change, no QB number
+                            dm.update_client_invoice(cid, {
+                                "pallet_count"     : int(_pal),
+                                "damaged_pallets"  : int(_dmg),
+                                "hours_overtime"   : int(_hours_overtime),
+                                "restack_count"    : int(_restack_count),
+                                "extra_charges"    : _new_extras,
+                                "temp_recorder"    : _new_tr,
+                                "producto_caliente": _producto_caliente,
+                                "temp_f1"          : _temp1.strip(),
+                                "temp_f2"          : _temp2.strip(),
+                                "temp_f3"          : _temp3.strip(),
+                                "worker_notes"     : _new_notes.strip(),
+                            })
+                            # 2. Stamp temperature data onto the provider PDF (lower-right)
+                            #    Only applied when at least one field is filled.
+                            _has_temp_data = (
+                                bool(_temp1.strip() or _temp2.strip() or _temp3.strip())
+                                or _producto_caliente
+                                or bool(_new_notes.strip())
                             )
+                            _prov_path = prov.get("pdf_local_path", "")
+                            _stamped_bytes = None
+                            if _has_temp_data and _prov_path:
+                                _raw = _get_pdf_bytes(_prov_path)
+                                if _raw:
+                                    try:
+                                        from invoice_logic.stamp_pdf import stamp_temperature as _stamp_temp
+                                        _stamped_bytes = _stamp_temp(
+                                            _raw,
+                                            [_temp1.strip(), _temp2.strip(), _temp3.strip()],
+                                            _producto_caliente,
+                                            _new_notes.strip(),
+                                        )
+                                    except Exception as _se:
+                                        logger.warning("Temperature stamp failed: %s", _se)
+                            if _stamped_bytes:
+                                _overwrite_provider_pdf(_prov_path, _stamped_bytes)
+                                st.session_state[_save_pdf_key] = (_stamped_bytes, cid)
+                            st.session_state[_save_ok_key] = True
+                            st.rerun()
 
-                    if _colored_btn(_btn2, "📤 Send to Accounting", key=f"gen_{cid}", color="#198754", width="stretch"):
-                        inv_id  = dm.next_client_invoice_number(ci.get("client_name", ""))
-                        charges = calculate_charges(
-                            dm=dm,
-                            service_type=svc,
-                            pallet_count=int(_pal),
-                            temp_recorder=_new_tr,
-                            extra_charges=_new_extras,
-                            damaged_pallets=int(_dmg),
-                            broken_pallets=int(_brk),
-                            client_name=ci.get("client_name", ""),
-                        )
-                        client_rates = dm.get_rates_for_client(ci.get("client_name", ""))
-                        billing_addr = dm.get_client_address(ci.get("client_name", ""))
-                        dm.update_client_invoice(cid, {
-                            "quickbooks_invoice_number": inv_id,
-                            "service_type"    : svc,
-                            "pallet_count"    : int(_pal),
-                            "damaged_pallets" : int(_dmg),
-                            "broken_pallets"  : int(_brk),
-                            "extra_charges"   : _new_extras,
-                            "temp_recorder"      : _new_tr,
-                            "producto_caliente"  : _producto_caliente,
-                            "temp_f1"            : _temp1.strip(),
-                            "temp_f2"            : _temp2.strip(),
-                            "temp_f3"            : _temp3.strip(),
-                            "worker_notes"       : _new_notes.strip(),
-                            "line_items"      : charges["line_items"],
-                            "subtotal"        : charges["subtotal"],
-                            "total"           : charges["total"],
-                            "net_days"        : int(client_rates.get("net_days", 30)),
-                            "billing_address" : billing_addr,
-                            "status"          : "invoiced",
-                            "invoice_date"    : datetime.utcnow().date().isoformat(),
-                        })
-                        if prov.get("email_intake_id"):
-                            dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
-                        if prov.get("pdf_local_path"):
-                            _move_to_processed(prov["pdf_local_path"])
-                        ci_updated = dm.get_client_invoice_by_id(cid)
-                        if ci_updated:
-                            try:
-                                _pdf_bytes = _generate_pdf(ci_updated, prov.get("pdf_local_path"))
-                                _upload_pdf_bytes(f"{inv_id}-invoice.pdf", _pdf_bytes)
-                            except Exception as _e:
-                                logger.warning("Could not upload generated invoice PDF: %s", _e)
-                        st.session_state.pop(_save_pdf_key, None)
-                        st.session_state.pop(_save_ok_key, None)
-                        st.success(f"Invoice #{inv_id} generated! Total: ${charges['total']:,.2f}")
-                        st.rerun()
+                        # ── Download row (visible after Save) ─────────────────────
+                        if st.session_state.get(_save_ok_key):
+                            _saved_bytes, _saved_stem = st.session_state.get(
+                                _save_pdf_key, (None, None)
+                            )
+                            _dl1, _dl2 = st.columns([2, 1])
+                            _dl1.success("Temperature data saved. Click 📄 PDF to review.")
+                            if _saved_bytes:
+                                _dl2.download_button(
+                                    "⬇ Download",
+                                    data=_saved_bytes,
+                                    file_name=f"{_saved_stem}-stamped.pdf",
+                                    mime="application/pdf",
+                                    key=f"dl_saved_{cid}",
+                                )
+
+                        if _colored_btn(_btn2, "📤 Send to Accounting", key=f"gen_{cid}", color="#198754", width="stretch"):
+                            inv_id  = ci.get("quickbooks_invoice_number") or dm.next_client_invoice_number(ci.get("client_name", ""))
+                            charges = calculate_charges(
+                                dm=dm,
+                                service_type=svc,
+                                pallet_count=int(_pal),
+                                temp_recorder=_new_tr,
+                                extra_charges=_new_extras,
+                                damaged_pallets=int(_dmg),
+                                hours_overtime=int(_hours_overtime),
+                                restack_count=int(_restack_count),
+                                client_name=ci.get("client_name", ""),
+                            )
+                            client_rates = dm.get_rates_for_client(ci.get("client_name", ""))
+                            billing_addr = dm.get_client_address(ci.get("client_name", ""))
+                            billing_rfc  = dm.get_client_rfc(ci.get("client_name", ""))
+                            dm.update_client_invoice(cid, {
+                                "quickbooks_invoice_number": inv_id,
+                                "service_type"    : svc,
+                                "pallet_count"    : int(_pal),
+                                "damaged_pallets" : int(_dmg),
+                                "hours_overtime"  : int(_hours_overtime),
+                                "restack_count"   : int(_restack_count),
+                                "extra_charges"   : _new_extras,
+                                "temp_recorder"      : _new_tr,
+                                "producto_caliente"  : _producto_caliente,
+                                "temp_f1"            : _temp1.strip(),
+                                "temp_f2"            : _temp2.strip(),
+                                "temp_f3"            : _temp3.strip(),
+                                "worker_notes"       : _new_notes.strip(),
+                                "line_items"      : charges["line_items"],
+                                "subtotal"        : charges["subtotal"],
+                                "total"           : charges["total"],
+                                "net_days"        : int(client_rates.get("net_days", 30)),
+                                "billing_address" : billing_addr,
+                                "client_rfc"      : billing_rfc,
+                                "status"              : "invoiced",
+                                "invoice_date"        : datetime.utcnow().date().isoformat(),
+                                "sent_to_accounting_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                            })
+                            if prov.get("email_intake_id"):
+                                dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
+                            if prov.get("pdf_local_path"):
+                                _move_to_processed(prov["pdf_local_path"])
+                            ci_updated = dm.get_client_invoice_by_id(cid)
+                            if ci_updated:
+                                try:
+                                    _ci_for_pdf = {**ci_updated, "provider_invoice_number": prov.get("invoice_number", "")}
+                                    _pdf_bytes = _generate_pdf(_ci_for_pdf, prov.get("pdf_local_path"))
+                                    _upload_pdf_bytes(f"{inv_id}-invoice.pdf", _pdf_bytes)
+                                except Exception as _e:
+                                    logger.warning("Could not upload generated invoice PDF: %s", _e)
+                                try:
+                                    from scheduler.supabase_sync import sync_single_invoice as _sync_inv
+                                    _sync_inv(ci_updated)
+                                except Exception as _e:
+                                    logger.warning("Supabase sync failed: %s", _e)
+                            st.session_state.pop(_save_pdf_key, None)
+                            st.session_state.pop(_save_ok_key, None)
+                            st.session_state.pop(_approve_key, None)
+                            _notif = st.empty()
+                            _notif.markdown(
+                                '<div style="background:#d1e7dd;border:1px solid #198754;'
+                                'border-radius:6px;padding:12px 16px;font-size:1rem;'
+                                'color:#0a3622;font-weight:600;text-align:center;">'
+                                '✅ Invoice Successfully Submitted to Accounting</div>',
+                                unsafe_allow_html=True,
+                            )
+                            time.sleep(3)
+                            _notif.empty()
+                            st.rerun()
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 3 — SENT TO ACCOUNTING
@@ -1079,24 +1083,26 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             ]
 
             st.caption(f"{len(filtered)} of {len(sent)} invoice(s)")
-            hdr = st.columns([1, 1.2, 2, 1, 0.8, 1.4, 0.8])
-            for col, label in zip(hdr, ["QB #", "Date", "Client", "Total", "Net Days", "Status", "PDF"]):
+            hdr = st.columns([1, 1.2, 1.4, 1.4, 2, 1, 1.4, 0.8])
+            for col, label in zip(hdr, ["QB #", "Service #", "Date Received", "Sent On", "Client", "Total", "Status", "PDF"]):
                 col.markdown(f"**{label}**")
             st.divider()
             for ci in filtered:
                 cid  = ci["id"]
                 prov = prov_by_id.get(ci.get("provider_invoice_id", ""))
                 qb   = ci.get("quickbooks_invoice_number") or "—"
-                c1, c2, c3, c4, c5, c6, c7 = st.columns([1, 1.2, 2, 1, 0.8, 1.4, 0.8])
+                svc_num = (prov or {}).get("invoice_number", "—") or "—"
+                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1, 1.2, 1.4, 1.4, 2, 1, 1.4, 0.8])
                 c1.write(qb)
-                c2.write(ci.get("invoice_date", "—"))
-                c3.write(ci.get("client_name", "—"))
-                c4.write(f"${ci.get('total', 0):,.2f}")
-                c5.write(str(ci.get("net_days", "—")))
-                c6.write("Exported to QB" if ci.get("quickbooks_exported") else "In Accounting")
+                c2.write(svc_num)
+                c3.write(ci.get("invoice_date", "—"))
+                c4.write(ci.get("sent_to_accounting_at", "—"))
+                c5.write(ci.get("client_name", "—"))
+                c6.write(f"${ci.get('total', 0):,.2f}")
+                c7.write("Exported to QB" if ci.get("quickbooks_exported") else "In Accounting")
                 try:
                     pdf_bytes = _admin_cached_pdf(*_admin_pdf_args(ci, prov))
-                    c7.download_button(
+                    c8.download_button(
                         "⬇ PDF",
                         data=pdf_bytes,
                         file_name=f"{qb}-invoice.pdf",
@@ -1104,7 +1110,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         key=f"adm_pdf_{cid}",
                     )
                 except Exception:
-                    c7.caption("—")
+                    c8.caption("—")
 
     # ── Button colour overrides (injected outside all tabs so the iframe
     #    doesn't taint any tab's background; MutationObserver watches the

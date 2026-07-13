@@ -14,7 +14,6 @@ from alerting.alert_manager import AlertManager
 logger = logging.getLogger(__name__)
 
 STUCK_THRESHOLD_HOURS = 24
-_TERMINAL_STATUSES    = {"invoiced", "exported_to_qb"}
 
 
 def check_stuck_invoices(dm: DataManager, alert_manager: AlertManager) -> None:
@@ -23,14 +22,10 @@ def check_stuck_invoices(dm: DataManager, alert_manager: AlertManager) -> None:
     status for longer than STUCK_THRESHOLD_HOURS and send an admin alert.
     """
     threshold  = datetime.now(timezone.utc) - timedelta(hours=STUCK_THRESHOLD_HOURS)
-    logs       = dm.get_email_logs()
+    logs       = dm.get_nonterminal_email_logs()
     stuck: list[dict] = []
 
     for log in logs:
-        status = log.get("status", "")
-        if status in _TERMINAL_STATUSES:
-            continue
-
         created_at_str = log.get("created_at", "")
         if not created_at_str:
             continue

@@ -6,8 +6,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
+from utils.supabase_log_handler import setup_supabase_logging
+setup_supabase_logging()
+
 import streamlit as st
-from streamlit_cookies_manager import EncryptedCookieManager
+import streamlit.components.v1 as _components
+
+# ── Production sign-out destination — DO NOT CHANGE ──────────────────────────
+_SIGN_OUT_URL = "https://incogrp.com/staff-login"
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
@@ -21,14 +27,28 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Persistent cookie session ─────────────────────────────────────────────────
-
-_cookies = EncryptedCookieManager(
-    prefix="inco_",
-    password=os.environ.get("SECRET_KEY", "dev-fallback-key"),
+# Disable browser autocomplete on every input across the entire app.
+_components.html(
+    """
+    <script>
+    (function () {
+        function off() {
+            window.parent.document.querySelectorAll('input').forEach(function (el) {
+                if (el.getAttribute('autocomplete') !== 'off') {
+                    el.setAttribute('autocomplete', 'off');
+                }
+            });
+        }
+        off();
+        new MutationObserver(off).observe(
+            window.parent.document.body,
+            { childList: true, subtree: true }
+        );
+    })();
+    </script>
+    """,
+    height=0,
 )
-if not _cookies.ready():
-    st.stop()
 
 # Shared instances (cached across reruns)
 @st.cache_resource
@@ -38,27 +58,6 @@ def get_dm() -> DataManager:
 @st.cache_resource
 def get_alert_manager() -> AlertManager:
     return AlertManager()
-
-
-def _save_cookie(user: dict) -> None:
-    _cookies["role"]     = user["role"]
-    _cookies["username"] = user["username"]
-    _cookies.save()
-
-
-def _clear_cookie() -> None:
-    _cookies["role"]     = ""
-    _cookies["username"] = ""
-    _cookies.save()
-
-
-# ── Restore session from cookie on refresh ────────────────────────────────────
-
-if not auth.is_authenticated():
-    _saved_role = _cookies.get("role", "")
-    _saved_user = _cookies.get("username", "")
-    if _saved_role and _saved_user:
-        auth.login({"role": _saved_role, "username": _saved_user})
 
 
 # ── Login form ────────────────────────────────────────────────────────────────
@@ -80,7 +79,6 @@ if not auth.is_authenticated():
                 _user = auth.verify_login(_username.strip(), _password)
                 if _user:
                     auth.login(_user)
-                    _save_cookie(_user)
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
@@ -100,12 +98,20 @@ st.sidebar.markdown(f"**{auth.ROLE_LABELS.get(role, role)}**  \n`{username}`")
 st.sidebar.markdown("---")
 
 if st.sidebar.button("🚪 Sign Out", use_container_width=True):
-    _clear_cookie()
     auth.logout()
-    st.rerun()
+    _components.html(
+        f'<script>window.top.location.replace("{_SIGN_OUT_URL}");</script>',
+        height=1,
+    )
+    st.markdown(
+        f'Signed out. <a href="{_SIGN_OUT_URL}" target="_top">'
+        f"Return to staff login →</a>",
+        unsafe_allow_html=True,
+    )
+    st.stop()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("INCO Logistics • Invoice Automation v1.0")
+st.sidebar.caption("INCO Logistics • Invoice Automation v1.02")
 
 # Route to the dashboard matching the user's role
 if role == "admin":

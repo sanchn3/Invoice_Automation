@@ -180,10 +180,29 @@ def stamp_pdf(pdf_path: str | Path, received_date: date) -> str:
     return str(pdf_path)
 
 
+def _wrap_note(text: str, max_chars: int) -> list[str]:
+    """Word-wrap note text into lines of at most max_chars, respecting newlines."""
+    lines: list[str] = []
+    for paragraph in text.splitlines():
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        while len(paragraph) > max_chars:
+            split_at = paragraph.rfind(" ", 0, max_chars)
+            if split_at <= 0:
+                split_at = max_chars
+            lines.append(paragraph[:split_at])
+            paragraph = paragraph[split_at:].lstrip()
+        if paragraph:
+            lines.append(paragraph)
+    return lines
+
+
 def stamp_temperature(
     pdf_bytes: bytes,
     temps: list[str],
     producto_caliente: bool,
+    notes: str = "",
 ) -> bytes:
     """
     Overlay a PULP TEMPERATURE RECORD block onto the lower-right corner of the
@@ -194,6 +213,7 @@ def stamp_temperature(
     pdf_bytes         : raw bytes of the original provider PDF
     temps             : list of up to 3 temperature strings (empty strings ignored)
     producto_caliente : whether to show the 'Producto Caliente' label
+    notes             : optional admin notes rendered below the temperature rows
 
     Returns
     -------
@@ -213,9 +233,10 @@ def stamp_temperature(
     page_h = float(page0.mediabox.height)
 
     filled_temps = [t for t in temps if t and t.strip()]
+    note_lines   = _wrap_note(notes, 30) if notes.strip() else []
     n_items      = len(filled_temps) + (1 if producto_caliente else 0)
 
-    if n_items == 0:
+    if n_items == 0 and not note_lines:
         return pdf_bytes  # nothing to stamp
 
     # ── Layout ────────────────────────────────────────────────────────────────
@@ -224,7 +245,10 @@ def stamp_temperature(
     line_g   = 0.165 * inch
     head_h   = 0.38 * inch          # space for heading + rule
     pad      = 0.12 * inch          # top/bottom internal padding
-    box_h    = pad + head_h + n_items * line_g + pad
+
+    # Extra height needed for notes: "Notes:" label line + each note line
+    notes_h  = (line_g + len(note_lines) * line_g + 0.04 * inch) if note_lines else 0
+    box_h    = pad + head_h + n_items * line_g + notes_h + pad
 
     sec_x = page_w - margin - box_w  # left edge of the block
     sec_y = margin + box_h            # top edge of the block (ReportLab y up)
@@ -267,6 +291,20 @@ def stamp_temperature(
         c.setFillColor(DARK)
         c.setFont("Helvetica-Bold", 8)
         c.drawString(sec_x, item_y, "Producto Caliente")
+        item_y -= line_g
+
+    # Notes section
+    if note_lines:
+        item_y -= 0.04 * inch   # small gap before notes
+        c.setFillColor(LABEL_GRAY)
+        c.setFont("Helvetica", 6.5)
+        c.drawString(sec_x, item_y, "Notes:")
+        item_y -= line_g
+        for line in note_lines:
+            c.setFillColor(DARK)
+            c.setFont("Helvetica", 7)
+            c.drawString(sec_x, item_y, line)
+            item_y -= line_g
 
     c.save()
 

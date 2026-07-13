@@ -6,6 +6,8 @@ Uses client-credentials OAuth2 flow directly with requests.
 """
 
 import logging
+import threading
+
 import requests
 
 from config import MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT_ID, ADMIN_EMAIL, WORKER_EMAIL
@@ -35,9 +37,17 @@ class AlertManager:
         return resp.json()["access_token"]
 
     def _send_email(self, subject: str, body: str) -> None:
+        """Fire-and-forget: sends the email in a daemon thread so callers are not blocked."""
         if not ADMIN_EMAIL or not WORKER_EMAIL:
             logger.warning("Alert skipped — ADMIN_EMAIL or WORKER_EMAIL not configured.")
             return
+        threading.Thread(
+            target=self._send_email_sync,
+            args=(subject, body),
+            daemon=True,
+        ).start()
+
+    def _send_email_sync(self, subject: str, body: str) -> None:
         try:
             token = self._get_token()
             payload = {
@@ -69,28 +79,6 @@ class AlertManager:
                 f"Provider : {provider}\n"
                 f"Client   : {client}\n\n"
                 f"Log in to the admin dashboard to review and set service details."
-            ),
-        )
-
-    def parsing_failed(self, subject: str, email_log_id: str) -> None:
-        self._send_email(
-            subject="Invoice parsing failed — manual review needed",
-            body=(
-                f"An invoice email could not be parsed automatically.\n\n"
-                f"Email subject : {subject}\n"
-                f"Log ID        : {email_log_id}\n\n"
-                f"Please review this email manually in the admin dashboard."
-            ),
-        )
-
-    def worker_submitted(self, client_name: str, job_id: str) -> None:
-        self._send_email(
-            subject=f"Worker submitted job — {client_name}",
-            body=(
-                f"A warehouse worker has submitted job completion details.\n\n"
-                f"Client : {client_name}\n"
-                f"Job ID : {job_id}\n\n"
-                f"The invoice is now ready for your review and approval."
             ),
         )
 

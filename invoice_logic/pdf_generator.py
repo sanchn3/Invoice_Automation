@@ -45,19 +45,30 @@ _LOGO_EXISTS = Path(LOGO_PATH).exists()
 _img_cache: dict = {}
 
 
+_LOGO_MAX_PX = 440  # max width in pixels (2.2 in × 200 DPI — good PDF quality)
+
+
 def _rounded_image_reader(path: str, radius_px: int = 18) -> ImageReader:
     """Return an ImageReader of the logo with rounded corners (RGBA PNG in memory).
+    Downscaled to _LOGO_MAX_PX wide before encoding to keep PDF size small.
     Cached by path + radius + mtime so the image is only processed once per file version."""
     _key = (path, radius_px, Path(path).stat().st_mtime)
     if _key not in _img_cache:
         img = Image.open(path).convert("RGBA")
+        # Downscale to a PDF-appropriate resolution before embedding
+        if img.width > _LOGO_MAX_PX:
+            scale = _LOGO_MAX_PX / img.width
+            img = img.resize(
+                (int(img.width * scale), int(img.height * scale)),
+                Image.LANCZOS,
+            )
         mask = Image.new("L", img.size, 0)
         draw = ImageDraw.Draw(mask)
         draw.rounded_rectangle([(0, 0), (img.width - 1, img.height - 1)],
                                 radius=radius_px, fill=255)
         img.putalpha(mask)
         buf = BytesIO()
-        img.save(buf, format="PNG")
+        img.save(buf, format="PNG", optimize=True)
         buf.seek(0)
         _img_cache[_key] = buf.read()
     return ImageReader(BytesIO(_img_cache[_key]))
@@ -115,6 +126,8 @@ def _photo_page_bytes(photos: list[bytes]) -> bytes | None:
 
         try:
             img    = Image.open(BytesIO(photo_bytes))
+            # Cap photo resolution to reduce embedded size
+            img.thumbnail((1200, 1200), Image.LANCZOS)
             img_w, img_h = img.size
             scale  = min((cell_w - 2 * pad) / img_w, (cell_h - 2 * pad) / img_h)
             draw_w = img_w * scale
@@ -125,7 +138,7 @@ def _photo_page_bytes(photos: list[bytes]) -> bytes | None:
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
             rgb_buf = BytesIO()
-            img.save(rgb_buf, format="JPEG", quality=85)
+            img.save(rgb_buf, format="JPEG", quality=72, optimize=True)
             rgb_buf.seek(0)
             c.drawImage(ImageReader(rgb_buf), draw_x, draw_y, width=draw_w, height=draw_h)
             any_drawn = True
@@ -195,13 +208,26 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     c.setFillColor(BLUE)
     c.roundRect(inv_x, inv_y, inv_w, inv_h, r, fill=1, stroke=0)
 
-    c.setFillColor(colors.white)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(inv_x + 0.15 * inch, inv_y + 0.57 * inch, "INVOICE")
+    inv_right = inv_x + inv_w - 0.15 * inch   # right-align anchor
 
+    # Row 1 — INVOICE label (left) | invoice number (right)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(inv_x + 0.15 * inch, inv_y + 0.63 * inch, "INVOICE")
     qb_num = invoice.get("quickbooks_invoice_number", "")
-    c.setFont("Helvetica-Bold", 13)
-    c.drawString(inv_x + 0.15 * inch, inv_y + 0.22 * inch, f"#{qb_num}")
+    c.drawRightString(inv_right, inv_y + 0.63 * inch, f"#{qb_num}")
+
+    # Thin white divider
+    c.setStrokeColor(colors.white)
+    c.setLineWidth(0.5)
+    c.line(inv_x + 0.10 * inch, inv_y + 0.47 * inch,
+           inv_x + inv_w - 0.10 * inch, inv_y + 0.47 * inch)
+
+    # Row 2 — SERVICE label (left) | provider invoice number (right)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(inv_x + 0.15 * inch, inv_y + 0.22 * inch, "SERVICE")
+    prov_inv_num = invoice.get("provider_invoice_number", "")
+    c.drawRightString(inv_right, inv_y + 0.22 * inch, prov_inv_num)
 
     # ── BLUE RULE ─────────────────────────────────────────────────────────────
     rule_y = logo_y - 0.14 * inch
@@ -262,9 +288,14 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     _label(col_x[1] + pad, box_top - 0.18 * inch, "BILL TO")
     _value(col_x[1] + pad, box_top - 0.36 * inch, invoice.get("client_name", ""), bold=True)
     billing_address = invoice.get("billing_address", "")
-    if billing_address:
-        for _i, _line in enumerate(billing_address.splitlines()[:3]):
-            _value(col_x[1] + pad, box_top - (0.51 + _i * 0.13) * inch, _line.strip())
+    _addr_lines = billing_address.splitlines()[:3] if billing_address else []
+    for _i, _line in enumerate(_addr_lines):
+        _value(col_x[1] + pad, box_top - (0.51 + _i * 0.13) * inch, _line.strip())
+    client_rfc = invoice.get("client_rfc", "").strip()
+    if client_rfc:
+        _rfc_y = box_top - (0.51 + len(_addr_lines) * 0.13) * inch
+        _label(col_x[1] + pad,              _rfc_y + 0.01 * inch, "RFC")
+        _value(col_x[1] + pad + 0.22 * inch, _rfc_y + 0.01 * inch, client_rfc)
 
     # INVOICE DATE / DUE DATE
     inv_date_str = invoice.get("invoice_date", datetime.utcnow().date().isoformat())
@@ -371,8 +402,7 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     sub_h = 0.28 * inch
     tot_h = 0.35 * inch
 
-    subtotal = float(invoice.get("subtotal", 0))
-    total    = float(invoice.get("total", 0))
+    total = float(invoice.get("total", 0))
 
     def _total_row(y_top, label, value_str, highlight=False):
         h = tot_h if highlight else sub_h
@@ -393,12 +423,10 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
         return y_top - h
 
     t_y = row_top
-    t_y = _total_row(t_y, "Subtotal",  f"${subtotal:,.2f}")
-    t_y = _total_row(t_y, "Tax (0%)", "$0.00")
-    _total_row(t_y, "TOTAL DUE", f"${total:,.2f}", highlight=True)
+    t_y = _total_row(t_y, "TOTAL DUE", f"${total:,.2f}", highlight=True)
 
     # ── PAYMENT METHODS ───────────────────────────────────────────────────────
-    _tots_bottom = t_y - tot_h
+    _tots_bottom = t_y
     pay_top = _tots_bottom - 0.20 * inch
     pay_h   = 0.35 * inch
     lbl_w   = 1.45 * inch
@@ -458,6 +486,7 @@ def generate_pdf(invoice: dict, provider_pdf_path: str | None = None) -> bytes:
     except Exception as e:
         logger.warning("generate_pdf: could not append provider PDF '%s': %s", provider_pdf_path, e)
 
+    writer.compress_identical_objects(remove_identicals=True, remove_orphans=True)
     out = BytesIO()
     writer.write(out)
     out.seek(0)
@@ -479,6 +508,7 @@ def append_photos_to_pdf(pdf_bytes: bytes, photo_bytes_list: list[bytes]) -> byt
         writer.add_page(page)
     for page in PdfReader(BytesIO(photo_pdf)).pages:
         writer.add_page(page)
+    writer.compress_identical_objects(remove_identicals=True, remove_orphans=True)
     out = BytesIO()
     writer.write(out)
     out.seek(0)
@@ -504,6 +534,7 @@ def merge_with_provider_pdf(invoice_bytes: bytes, provider_pdf_path: str) -> byt
     for page in PdfReader(str(provider_path)).pages:
         writer.add_page(page)
 
+    writer.compress_identical_objects(remove_identicals=True, remove_orphans=True)
     out = BytesIO()
     writer.write(out)
     out.seek(0)
