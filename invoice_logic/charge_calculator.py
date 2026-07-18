@@ -27,6 +27,8 @@ def calculate_charges(
     hours_overtime: int = 0,
     restack_count: int = 0,
     client_name: str = "",
+    temp_recorder_count: int = 1,
+    seal_count: int = 1,
 ) -> dict:
     """
     Calculate all charges for a client invoice.
@@ -87,10 +89,10 @@ def calculate_charges(
         }
         line_items.append({
             "description": _tr_labels.get(_tr_type, "Temperature Recorder"),
-            "quantity"   : 1,
+            "quantity"   : temp_recorder_count,
             "unit"       : "ea",
             "unit_price" : fee,
-            "total"      : round(fee, 2),
+            "total"      : round(fee * temp_recorder_count, 2),
         })
 
     # ── Extra charges ─────────────────────────────────────────────────────────
@@ -98,12 +100,13 @@ def calculate_charges(
         if charge_key in _EXTRA_CHARGE_MAP:
             rate_key, label = _EXTRA_CHARGE_MAP[charge_key]
             fee = float(rates.get(rate_key, 0))
+            qty = seal_count if charge_key == "stamps" else 1
             line_items.append({
                 "description": label,
-                "quantity"   : 1,
+                "quantity"   : qty,
                 "unit"       : "ea",
                 "unit_price" : fee,
-                "total"      : round(fee, 2),
+                "total"      : round(fee * qty, 2),
             })
 
     # ── Hours Overtime ────────────────────────────────────────────────────────
