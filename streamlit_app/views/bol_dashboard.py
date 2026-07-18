@@ -142,19 +142,21 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
                 st.rerun()
 
     with st.expander("➕ Add BOL Manually"):
-        f1, f2 = st.columns(2)
-        new_po     = f1.text_input("PO Number", key="new_bol_po")
-        new_date   = f2.text_input(
-            "Date Received",
-            value=datetime.utcnow().date().isoformat(),
-            key="new_bol_date",
-        )
-        new_client = st.text_input(
-            "Customer Name (optional — helps driver identify shipment at kiosk)",
-            key="new_bol_client",
-            placeholder="e.g. Walmart, Costco…",
-        )
-        if st.button("Add BOL", key="add_bol_btn", type="primary", width='stretch'):
+        with st.form("add_bol_form", clear_on_submit=True):
+            f1, f2 = st.columns(2)
+            new_po     = f1.text_input("PO Number", key="new_bol_po")
+            new_date   = f2.text_input(
+                "Date Received",
+                value=datetime.utcnow().date().isoformat(),
+                key="new_bol_date",
+            )
+            new_client = st.text_input(
+                "Customer Name (optional — helps driver identify shipment at kiosk)",
+                key="new_bol_client",
+                placeholder="e.g. Walmart, Costco…",
+            )
+            submitted = st.form_submit_button("Add BOL", type="primary", use_container_width=True)
+        if submitted:
             if not new_po.strip():
                 st.error("PO Number is required.")
             else:
@@ -168,10 +170,6 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
                     "checkin_at"      : None,
                     "checkin_notified": False,
                 })
-                # Reset form so the next entry starts blank
-                st.session_state["new_bol_po"]     = ""
-                st.session_state["new_bol_client"]  = ""
-                st.session_state["new_bol_date"]    = datetime.now(timezone.utc).date().isoformat()
                 st.success(f"BOL {new_po.strip().upper()} added.")
                 st.rerun()
 
