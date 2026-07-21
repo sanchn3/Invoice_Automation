@@ -52,7 +52,7 @@ def _fire_notification(po_number: str, driver_name: str) -> None:
         from plyer import notification  # type: ignore
         notification.notify(
             title="Driver Checked In — INCO",
-            message=f"Driver {driver_name} checked in for PO {po_number}.",
+            message=f"Driver {driver_name} checked in for Pickup Number {po_number}.",
             app_name="INCO Invoice Automation",
             timeout=10,
         )
@@ -144,7 +144,7 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
     with st.expander("➕ Add BOL Manually"):
         with st.form("add_bol_form", clear_on_submit=True):
             f1, f2 = st.columns(2)
-            new_po     = f1.text_input("PO Number", key="new_bol_po")
+            new_po     = f1.text_input("Pickup Number", key="new_bol_po")
             new_date   = f2.text_input(
                 "Date Received",
                 value=datetime.utcnow().date().isoformat(),
@@ -158,7 +158,7 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
             submitted = st.form_submit_button("Add BOL", type="primary", use_container_width=True)
         if submitted:
             if not new_po.strip():
-                st.error("PO Number is required.")
+                st.error("Pickup Number is required.")
             else:
                 dm.add_bol_record({
                     "po_number"       : new_po.strip().upper(),
@@ -197,27 +197,24 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
         received   = bol.get("received_at", "—")[:10]
 
         with st.container(border=True):
-            st.markdown(f"**PO Number:** {bol.get('po_number', '—')}")
+            st.markdown(f"**Pickup Number:** {bol.get('po_number', '—')}")
             _client = bol.get("client_name") or ""
             st.caption(f"📅 Date Received: {received}" + (f"  |  🏢 {_client}" if _client else ""))
 
             if st.session_state.get(edit_key):
                 ep1, ep2 = st.columns(2)
-                edit_po     = ep1.text_input("PO Number",     value=bol.get("po_number", ""),   key=f"epo_{bid}")
+                edit_po     = ep1.text_input("Pickup Number",     value=bol.get("po_number", ""),   key=f"epo_{bid}")
                 edit_date   = ep2.text_input("Date Received",  value=received,                   key=f"edt_{bid}")
-                edit_client = st.text_input("Customer Name",   value=_client,                    key=f"ecli_{bid}",
-                                            placeholder="e.g. Walmart, Costco…")
                 es1, es2 = st.columns(2)
                 if es1.button("💾 Save", key=f"esave_{bid}", type="primary", width='stretch'):
                     dm.update_bol_record(bid, {
                         "po_number"  : edit_po.strip().upper(),
                         "received_at": edit_date.strip() + "T00:00:00Z",
-                        "client_name": edit_client.strip() or None,
                     })
                     st.session_state.pop(edit_key, None)
                     st.rerun()
                 if es2.button("✗ Cancel", key=f"ecancel_{bid}", width='stretch'):
-                    for _k in (edit_key, f"epo_{bid}", f"edt_{bid}", f"ecli_{bid}"):
+                    for _k in (edit_key, f"epo_{bid}", f"edt_{bid}"):
                         st.session_state.pop(_k, None)
                     st.rerun()
 
@@ -302,7 +299,7 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
                     width='stretch',
                 ):
                     if not bol.get("po_number", "").strip():
-                        st.error("⚠️ Cannot validate: PO Number is required. Click ✏️ Edit to add it.")
+                        st.error("⚠️ Cannot validate: Pickup Number is required. Click ✏️ Edit to add it.")
                     else:
                         dm.update_bol_record(bid, {"status": "pending_checkin"})
                         st.success(f"BOL {bol.get('po_number')} moved to Pending Trucker Check-In.")
@@ -338,7 +335,7 @@ def _render_checkin_tab(dm: DataManager, bol_records: list) -> None:
                 f'<div style="background:#fff3cd;border:2px solid #ffc107;'
                 f'border-radius:8px;padding:12px 16px;margin-bottom:8px;color:#000;">'
                 f'<div style="font-weight:700;font-size:1.05em;margin-bottom:6px;color:#000;">'
-                f'PO Number: {po_num}</div>'
+                f'Pickup Number: {po_num}</div>'
                 f'<div style="font-size:0.9em;margin-bottom:8px;color:#000;">📅 Date Received: {received}'
                 + (f'&nbsp;&nbsp;|&nbsp;&nbsp;🏢 {client_name}' if client_name else '')
                 + f'</div>'
@@ -363,7 +360,7 @@ def _render_checkin_tab(dm: DataManager, bol_records: list) -> None:
                 f'<div style="background:#d1e7dd;border:2px solid #198754;'
                 f'border-radius:8px;padding:12px 16px;margin-bottom:8px;">'
                 f'<div style="font-weight:700;font-size:1.05em;margin-bottom:6px;">'
-                f'PO Number: {po_num}</div>'
+                f'Pickup Number: {po_num}</div>'
                 f'<div style="font-size:0.9em;margin-bottom:4px;">'
                 f'📅 Date Received: {received}&nbsp;&nbsp;|&nbsp;&nbsp;'
                 f'🚛 <strong>{driver}</strong></div>'
@@ -634,7 +631,7 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
             if user_objects:
                 st.session_state[obj_key] = user_objects
 
-    st.markdown(f"#### ✏️ PDF Edit Mode — PO {po_num}")
+    st.markdown(f"#### ✏️ PDF Edit Mode — Pickup Number {po_num}")
     st.caption(
         "**Drag & Drop** — the signature is pre-placed on the PDF. "
         "Select it and drag it to the correct position.  "
@@ -985,7 +982,7 @@ def _render_inspection_tab(dm: DataManager, bol_records: list) -> None:
 
         with st.container(border=True):
             h1, h2 = st.columns([4, 1])
-            h1.markdown(f"**PO Number:** {po_num}")
+            h1.markdown(f"**Pickup Number:** {po_num}")
             h1.caption(
                 f"🚛 Driver: {driver}  |  📅 Received: {received}"
                 + ("  |  ✅ Annotations saved" if bol.get("annotations_saved_at") else "")
@@ -993,7 +990,7 @@ def _render_inspection_tab(dm: DataManager, bol_records: list) -> None:
 
             if st.session_state.get(edit_key):
                 ep1, ep2 = st.columns(2)
-                edit_po   = ep1.text_input("PO Number",    value=bol.get("po_number", ""), key=f"insp_epo_{bid}")
+                edit_po   = ep1.text_input("Pickup Number",    value=bol.get("po_number", ""), key=f"insp_epo_{bid}")
                 edit_date = ep2.text_input("Date Received", value=received,                 key=f"insp_edt_{bid}")
                 es1, es2  = st.columns(2)
                 if es1.button("💾 Save", key=f"insp_esave_{bid}", type="primary", width='stretch'):
@@ -1124,7 +1121,7 @@ def _render_printed_tab(dm: DataManager, bol_records: list) -> None:
 
     # Header row
     h1, h2, h3, h4, h5, h6 = st.columns([2, 2, 2, 2, 1, 1])
-    h1.markdown("**PO Number**")
+    h1.markdown("**Pickup Number**")
     h2.markdown("**Client**")
     h3.markdown("**Date Received**")
     h4.markdown("**Shipped Date**")
@@ -1203,7 +1200,7 @@ def render(dm: DataManager) -> None:
     if _any_editing:
         _edit_pos = ", ".join(r.get("po_number", "?") for r in _editing_bols)
         st.warning(
-            f"⚠️ **PDF edit in progress — PO(s): {_edit_pos}** — "
+            f"⚠️ **PDF edit in progress — Pickup Number(s): {_edit_pos}** — "
             f"Open the **BOL Inspection** tab to finish or cancel your edits "
             f"before switching pages.",
         )
