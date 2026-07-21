@@ -201,7 +201,7 @@ def _wrap_note(text: str, max_chars: int) -> list[str]:
 def stamp_temperature(
     pdf_bytes: bytes,
     temps: list[str],
-    producto_caliente: bool,
+    producto_caliente: str | bool | None,
     notes: str = "",
 ) -> bytes:
     """
@@ -212,7 +212,7 @@ def stamp_temperature(
     ----------
     pdf_bytes         : raw bytes of the original provider PDF
     temps             : list of up to 3 temperature strings (empty strings ignored)
-    producto_caliente : whether to show the 'Producto Caliente' label
+    producto_caliente : "caliente", "congelado", True (legacy), or None/False
     notes             : optional admin notes rendered below the temperature rows
 
     Returns
@@ -231,6 +231,10 @@ def stamp_temperature(
     page0  = reader.pages[0]
     page_w = float(page0.mediabox.width)
     page_h = float(page0.mediabox.height)
+
+    # backwards-compat: legacy bool True → "caliente"
+    if producto_caliente is True:
+        producto_caliente = "caliente"
 
     filled_temps = [t for t in temps if t and t.strip()]
     note_lines   = _wrap_note(notes, 30) if notes.strip() else []
@@ -286,11 +290,16 @@ def stamp_temperature(
         c.drawString(sec_x + 0.50 * inch, item_y, f"{t} \u00b0F")
         item_y -= line_g
 
-    # Producto Caliente (only when active)
-    if producto_caliente:
+    # Producto type label (only when active)
+    if producto_caliente == "caliente":
         c.setFillColor(DARK)
         c.setFont("Helvetica-Bold", 8)
         c.drawString(sec_x, item_y, "Producto Caliente")
+        item_y -= line_g
+    elif producto_caliente == "congelado":
+        c.setFillColor(DARK)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(sec_x, item_y, "Producto Congelado")
         item_y -= line_g
 
     # Notes section

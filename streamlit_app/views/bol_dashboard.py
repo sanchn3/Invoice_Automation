@@ -52,7 +52,7 @@ def _fire_notification(po_number: str, driver_name: str) -> None:
         from plyer import notification  # type: ignore
         notification.notify(
             title="Driver Checked In — INCO",
-            message=f"Driver {driver_name} checked in for PO {po_number}.",
+            message=f"Driver {driver_name} checked in for Pickup Number {po_number}.",
             app_name="INCO Invoice Automation",
             timeout=10,
         )
@@ -142,21 +142,23 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
                 st.rerun()
 
     with st.expander("➕ Add BOL Manually"):
-        f1, f2 = st.columns(2)
-        new_po     = f1.text_input("PO Number", key="new_bol_po")
-        new_date   = f2.text_input(
-            "Date Received",
-            value=datetime.utcnow().date().isoformat(),
-            key="new_bol_date",
-        )
-        new_client = st.text_input(
-            "Customer Name (optional — helps driver identify shipment at kiosk)",
-            key="new_bol_client",
-            placeholder="e.g. Walmart, Costco…",
-        )
-        if st.button("Add BOL", key="add_bol_btn", type="primary", width='stretch'):
+        with st.form("add_bol_form", clear_on_submit=True):
+            f1, f2 = st.columns(2)
+            new_po     = f1.text_input("Pickup Number", key="new_bol_po")
+            new_date   = f2.text_input(
+                "Date Received",
+                value=datetime.utcnow().date().isoformat(),
+                key="new_bol_date",
+            )
+            new_client = st.text_input(
+                "Customer Name (optional — helps driver identify shipment at kiosk)",
+                key="new_bol_client",
+                placeholder="e.g. Walmart, Costco…",
+            )
+            submitted = st.form_submit_button("Add BOL", type="primary", use_container_width=True)
+        if submitted:
             if not new_po.strip():
-                st.error("PO Number is required.")
+                st.error("Pickup Number is required.")
             else:
                 dm.add_bol_record({
                     "po_number"       : new_po.strip().upper(),
@@ -168,10 +170,6 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
                     "checkin_at"      : None,
                     "checkin_notified": False,
                 })
-                # Reset form so the next entry starts blank
-                st.session_state["new_bol_po"]     = ""
-                st.session_state["new_bol_client"]  = ""
-                st.session_state["new_bol_date"]    = datetime.now(timezone.utc).date().isoformat()
                 st.success(f"BOL {new_po.strip().upper()} added.")
                 st.rerun()
 
@@ -199,27 +197,24 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
         received   = bol.get("received_at", "—")[:10]
 
         with st.container(border=True):
-            st.markdown(f"**PO Number:** {bol.get('po_number', '—')}")
+            st.markdown(f"**Pickup Number:** {bol.get('po_number', '—')}")
             _client = bol.get("client_name") or ""
             st.caption(f"📅 Date Received: {received}" + (f"  |  🏢 {_client}" if _client else ""))
 
             if st.session_state.get(edit_key):
                 ep1, ep2 = st.columns(2)
-                edit_po     = ep1.text_input("PO Number",     value=bol.get("po_number", ""),   key=f"epo_{bid}")
+                edit_po     = ep1.text_input("Pickup Number",     value=bol.get("po_number", ""),   key=f"epo_{bid}")
                 edit_date   = ep2.text_input("Date Received",  value=received,                   key=f"edt_{bid}")
-                edit_client = st.text_input("Customer Name",   value=_client,                    key=f"ecli_{bid}",
-                                            placeholder="e.g. Walmart, Costco…")
                 es1, es2 = st.columns(2)
                 if es1.button("💾 Save", key=f"esave_{bid}", type="primary", width='stretch'):
                     dm.update_bol_record(bid, {
                         "po_number"  : edit_po.strip().upper(),
                         "received_at": edit_date.strip() + "T00:00:00Z",
-                        "client_name": edit_client.strip() or None,
                     })
                     st.session_state.pop(edit_key, None)
                     st.rerun()
                 if es2.button("✗ Cancel", key=f"ecancel_{bid}", width='stretch'):
-                    for _k in (edit_key, f"epo_{bid}", f"edt_{bid}", f"ecli_{bid}"):
+                    for _k in (edit_key, f"epo_{bid}", f"edt_{bid}"):
                         st.session_state.pop(_k, None)
                     st.rerun()
 
@@ -255,12 +250,20 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
                         label_visibility="collapsed",
                     )
                     if _up is not None:
-                        from config import BOLS_DIR
-                        _dest = BOLS_DIR / (Path(pdf_path).name if pdf_exists else f"BOL_{bol.get('po_number','unknown')}_{bid[:8]}.pdf")
-                        _dest.write_bytes(_up.read())
-                        dm.update_bol_record(bid, {"pdf_local_path": str(_dest)})
-                        st.success(f"PDF saved: {_dest.name}")
-                        st.rerun()
+                        try:
+                            _BOLS_DIR.mkdir(exist_ok=True)
+                            if pdf_exists:
+                                _filename = Path(pdf_path).name or f"BOL_{bid[:8]}.pdf"
+                            else:
+                                _safe_po = "".join(c if c.isalnum() or c in "-_." else "_" for c in (bol.get("po_number") or "unknown"))
+                                _filename = f"BOL_{_safe_po}_{bid[:8]}.pdf"
+                            _dest = _BOLS_DIR / _filename
+                            _dest.write_bytes(_up.read())
+                            dm.update_bol_record(bid, {"pdf_local_path": str(_dest)})
+                            st.success(f"PDF saved: {_dest.name}")
+                            st.rerun()
+                        except Exception as _exc:
+                            st.error(f"Failed to save PDF: {_exc}")
 
                 if st.session_state.get(del_key):
                     b3.caption("⚠️ Sure?")
@@ -296,7 +299,7 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
                     width='stretch',
                 ):
                     if not bol.get("po_number", "").strip():
-                        st.error("⚠️ Cannot validate: PO Number is required. Click ✏️ Edit to add it.")
+                        st.error("⚠️ Cannot validate: Pickup Number is required. Click ✏️ Edit to add it.")
                     else:
                         dm.update_bol_record(bid, {"status": "pending_checkin"})
                         st.success(f"BOL {bol.get('po_number')} moved to Pending Trucker Check-In.")
@@ -332,7 +335,7 @@ def _render_checkin_tab(dm: DataManager, bol_records: list) -> None:
                 f'<div style="background:#fff3cd;border:2px solid #ffc107;'
                 f'border-radius:8px;padding:12px 16px;margin-bottom:8px;color:#000;">'
                 f'<div style="font-weight:700;font-size:1.05em;margin-bottom:6px;color:#000;">'
-                f'PO Number: {po_num}</div>'
+                f'Pickup Number: {po_num}</div>'
                 f'<div style="font-size:0.9em;margin-bottom:8px;color:#000;">📅 Date Received: {received}'
                 + (f'&nbsp;&nbsp;|&nbsp;&nbsp;🏢 {client_name}' if client_name else '')
                 + f'</div>'
@@ -341,7 +344,11 @@ def _render_checkin_tab(dm: DataManager, bol_records: list) -> None:
                 f'</div>',
                 unsafe_allow_html=True,
             )
-            st.caption("Waiting for driver to check in via kiosk — this tab updates automatically.")
+            _col_cap, _col_btn = st.columns([3, 1])
+            _col_cap.caption("Waiting for driver to check in via kiosk — this tab updates automatically.")
+            if _col_btn.button("↩ Back to Validation", key=f"back_to_val_{bid}", use_container_width=True):
+                dm.update_bol_record(bid, {"status": "bol_inbox"})
+                st.rerun()
 
         elif status == "checked_in":
             driver     = bol.get("driver_name", "—")
@@ -353,7 +360,7 @@ def _render_checkin_tab(dm: DataManager, bol_records: list) -> None:
                 f'<div style="background:#d1e7dd;border:2px solid #198754;'
                 f'border-radius:8px;padding:12px 16px;margin-bottom:8px;">'
                 f'<div style="font-weight:700;font-size:1.05em;margin-bottom:6px;">'
-                f'PO Number: {po_num}</div>'
+                f'Pickup Number: {po_num}</div>'
                 f'<div style="font-size:0.9em;margin-bottom:4px;">'
                 f'📅 Date Received: {received}&nbsp;&nbsp;|&nbsp;&nbsp;'
                 f'🚛 <strong>{driver}</strong></div>'
@@ -624,7 +631,7 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
             if user_objects:
                 st.session_state[obj_key] = user_objects
 
-    st.markdown(f"#### ✏️ PDF Edit Mode — PO {po_num}")
+    st.markdown(f"#### ✏️ PDF Edit Mode — Pickup Number {po_num}")
     st.caption(
         "**Drag & Drop** — the signature is pre-placed on the PDF. "
         "Select it and drag it to the correct position.  "
@@ -972,11 +979,10 @@ def _render_inspection_tab(dm: DataManager, bol_records: list) -> None:
         pdf_exists = bool(pdf_path)
         pdf_key    = f"bol_insp_pdf_{bid}"
         edit_key   = f"bol_insp_edit_{bid}"
-        form_key   = f"bol_insp_form_{bid}"
 
         with st.container(border=True):
             h1, h2 = st.columns([4, 1])
-            h1.markdown(f"**PO Number:** {po_num}")
+            h1.markdown(f"**Pickup Number:** {po_num}")
             h1.caption(
                 f"🚛 Driver: {driver}  |  📅 Received: {received}"
                 + ("  |  ✅ Annotations saved" if bol.get("annotations_saved_at") else "")
@@ -984,7 +990,7 @@ def _render_inspection_tab(dm: DataManager, bol_records: list) -> None:
 
             if st.session_state.get(edit_key):
                 ep1, ep2 = st.columns(2)
-                edit_po   = ep1.text_input("PO Number",    value=bol.get("po_number", ""), key=f"insp_epo_{bid}")
+                edit_po   = ep1.text_input("Pickup Number",    value=bol.get("po_number", ""), key=f"insp_epo_{bid}")
                 edit_date = ep2.text_input("Date Received", value=received,                 key=f"insp_edt_{bid}")
                 es1, es2  = st.columns(2)
                 if es1.button("💾 Save", key=f"insp_esave_{bid}", type="primary", width='stretch'):
@@ -1004,7 +1010,7 @@ def _render_inspection_tab(dm: DataManager, bol_records: list) -> None:
 
             else:
                 # ── Action buttons row ───────────────────────────────────────
-                b1, b2, b3, b4 = st.columns(4)
+                b1, b3, b4 = st.columns(3)
 
                 # Detect corrupted/empty PDF (< 5 KB)
                 _insp_pdf_corrupt = False
@@ -1021,16 +1027,6 @@ def _render_inspection_tab(dm: DataManager, bol_records: list) -> None:
                         st.rerun()
                 else:
                     b1.button("📄 View PDF", key=f"insp_pdf_na_{bid}", disabled=True, width='stretch')
-
-                form_label = "📝 Hide Form" if st.session_state.get(form_key) else "📝 Complete Form"
-                if b2.button(form_label, key=f"insp_form_btn_{bid}", width='stretch'):
-                    _was_open = st.session_state.get(form_key, False)
-                    st.session_state[form_key] = not _was_open
-                    if _was_open:  # closing — discard any unsaved typed values
-                        for _k in (f"f_carrier_{bid}", f"f_trailer_{bid}", f"f_seal_{bid}",
-                                   f"f_pallets_{bid}", f"f_temp_{bid}", f"f_notes_{bid}"):
-                            st.session_state.pop(_k, None)
-                    st.rerun()
 
                 another_open = active_pdf_edit_id is not None and active_pdf_edit_id != bid
                 if b3.button("🖊 Edit PDF", key=f"insp_pdfedit_{bid}", width='stretch',
@@ -1051,12 +1047,20 @@ def _render_inspection_tab(dm: DataManager, bol_records: list) -> None:
                         label_visibility="collapsed",
                     )
                     if _insp_up is not None:
-                        from config import BOLS_DIR
-                        _dest = BOLS_DIR / (Path(pdf_path).name if pdf_exists else f"BOL_{po_num}_{bid[:8]}.pdf")
-                        _dest.write_bytes(_insp_up.read())
-                        dm.update_bol_record(bid, {"pdf_local_path": str(_dest)})
-                        st.success(f"PDF saved: {_dest.name}")
-                        st.rerun()
+                        try:
+                            _BOLS_DIR.mkdir(exist_ok=True)
+                            if pdf_exists:
+                                _filename = Path(pdf_path).name or f"BOL_{bid[:8]}.pdf"
+                            else:
+                                _safe_po = "".join(c if c.isalnum() or c in "-_." else "_" for c in (po_num or "unknown"))
+                                _filename = f"BOL_{_safe_po}_{bid[:8]}.pdf"
+                            _dest = _BOLS_DIR / _filename
+                            _dest.write_bytes(_insp_up.read())
+                            dm.update_bol_record(bid, {"pdf_local_path": str(_dest)})
+                            st.success(f"PDF saved: {_dest.name}")
+                            st.rerun()
+                        except Exception as _exc:
+                            st.error(f"Failed to save PDF: {_exc}")
 
                 # ── PDF viewer ───────────────────────────────────────────────
                 if st.session_state.get(pdf_key) and pdf_exists and not _insp_pdf_corrupt:
@@ -1066,89 +1070,6 @@ def _render_inspection_tab(dm: DataManager, bol_records: list) -> None:
                         pdf_viewer(_b, key=f"insp_pdfview_{bid}")
                     else:
                         st.warning("PDF not available.")
-
-                # ── Admin completion form ────────────────────────────────────
-                if st.session_state.get(form_key):
-                    st.markdown("---")
-                    st.markdown("##### 📋 Complete Remaining BOL Fields")
-                    st.caption(
-                        "Fill in any remaining information and click **Save Annotations** "
-                        "to append a notes page to the BOL PDF."
-                    )
-
-                    prev = bol.get("admin_annotations") or {}
-
-                    fc1, fc2 = st.columns(2)
-                    carrier     = fc1.text_input("Carrier / Transportista",
-                                                  key=f"f_carrier_{bid}",
-                                                  value=prev.get("carrier", ""),
-                                                  placeholder="e.g. XPO Logistics")
-                    trailer_num = fc2.text_input("Trailer # / Número de Remolque",
-                                                  key=f"f_trailer_{bid}",
-                                                  value=prev.get("trailer_num", ""),
-                                                  placeholder="e.g. TR-44821")
-                    seal_num    = fc1.text_input("Seal # / Número de Sello",
-                                                  key=f"f_seal_{bid}",
-                                                  value=prev.get("seal_num", ""),
-                                                  placeholder="e.g. S-1234")
-                    num_pallets = fc2.text_input("# Pallets",
-                                                  key=f"f_pallets_{bid}",
-                                                  value=prev.get("num_pallets", ""),
-                                                  placeholder="e.g. 24")
-                    temp_req    = fc1.text_input("Temp Requirement / Temperatura Requerida",
-                                                  key=f"f_temp_{bid}",
-                                                  value=prev.get("temp_req", ""),
-                                                  placeholder="e.g. 34–38°F")
-                    notes       = st.text_area("Special Instructions / Instrucciones Especiales",
-                                               key=f"f_notes_{bid}",
-                                               value=prev.get("notes", ""),
-                                               height=90)
-
-                    save_col, dl_col, _ = st.columns([1, 1, 2])
-
-                    if save_col.button("💾 Save Annotations", key=f"f_save_{bid}",
-                                       type="primary", width='stretch'):
-                        ann = {
-                            "carrier":     carrier.strip(),
-                            "trailer_num": trailer_num.strip(),
-                            "seal_num":    seal_num.strip(),
-                            "num_pallets": num_pallets.strip(),
-                            "temp_req":    temp_req.strip(),
-                            "notes":       notes.strip(),
-                        }
-                        if not any(ann.values()):
-                            st.warning("Please fill in at least one field before saving.")
-                        else:
-                            try:
-                                new_path = _append_admin_annotations(
-                                    pdf_path, po_num, driver, ann
-                                )
-                                dm.update_bol_record(bid, {
-                                    "pdf_local_path"      : new_path,
-                                    "admin_annotations"   : ann,
-                                    "annotations_saved_at": _now_str(),
-                                })
-                                # Clear field keys so form re-opens clean from saved values
-                                for _k in (f"f_carrier_{bid}", f"f_trailer_{bid}", f"f_seal_{bid}",
-                                           f"f_pallets_{bid}", f"f_temp_{bid}", f"f_notes_{bid}"):
-                                    st.session_state.pop(_k, None)
-                                st.session_state[form_key] = False
-                                st.success("✅ Annotations appended to BOL PDF.")
-                                st.rerun()
-                            except Exception as exc:
-                                st.error(f"Error saving annotations: {exc}")
-
-                    # Download the current PDF (with or without annotations)
-                    if pdf_exists:
-                        _dl = _get_pdf_bytes(pdf_path)
-                        if _dl:
-                            dl_col.download_button(
-                                "⬇ Download PDF",
-                                _dl,
-                                file_name=f"BOL_{po_num}.pdf",
-                                mime="application/pdf",
-                                key=f"insp_dl_{bid}",
-                            )
 
                 st.markdown("---")
                 print_col, _ = st.columns([1, 2])
@@ -1200,7 +1121,7 @@ def _render_printed_tab(dm: DataManager, bol_records: list) -> None:
 
     # Header row
     h1, h2, h3, h4, h5, h6 = st.columns([2, 2, 2, 2, 1, 1])
-    h1.markdown("**PO Number**")
+    h1.markdown("**Pickup Number**")
     h2.markdown("**Client**")
     h3.markdown("**Date Received**")
     h4.markdown("**Shipped Date**")
@@ -1279,7 +1200,7 @@ def render(dm: DataManager) -> None:
     if _any_editing:
         _edit_pos = ", ".join(r.get("po_number", "?") for r in _editing_bols)
         st.warning(
-            f"⚠️ **PDF edit in progress — PO(s): {_edit_pos}** — "
+            f"⚠️ **PDF edit in progress — Pickup Number(s): {_edit_pos}** — "
             f"Open the **BOL Inspection** tab to finish or cancel your edits "
             f"before switching pages.",
         )
