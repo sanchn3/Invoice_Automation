@@ -24,6 +24,7 @@ from email_pipeline.attachment_handler import process_pdf_from_path
 from alerting.alert_manager import AlertManager
 from utils.pdf_storage import (
     get_pdf_bytes as _get_pdf_bytes,
+    fetch_pdf_bytes as _fetch_pdf_bytes,
     move_to_processed as _move_to_processed,
     upload_pdf_bytes as _upload_pdf_bytes,
     overwrite_provider_pdf as _overwrite_provider_pdf,
@@ -1132,7 +1133,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 c6.write(f"${ci.get('total', 0):,.2f}")
                 c7.write("Exported to QB" if ci.get("quickbooks_exported") else "In Accounting")
                 try:
-                    pdf_bytes = _admin_cached_pdf(*_admin_pdf_args(ci, prov))
+                    _stored_pdf = _fetch_pdf_bytes(f"{qb}-invoice.pdf")
+                    pdf_bytes = _stored_pdf if _stored_pdf else _admin_cached_pdf(*_admin_pdf_args(ci, prov))
                     c8.download_button(
                         "⬇ PDF",
                         data=pdf_bytes,
