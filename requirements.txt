@@ -32,6 +32,7 @@ msal==1.35.1
 narwhals==2.18.1
 numpy==2.4.4
 o365==2.1.9
+openpyxl==3.1.5
 packaging==26.0
 pandas==3.0.2
 pdfminer.six==20251230
