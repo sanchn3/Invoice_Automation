@@ -424,7 +424,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         "Fill in the invoice details manually."
                     )
                     me1, me2 = st.columns(2)
-                    m_num    = me1.text_input("Invoice #",        key=f"m_num_{iid}")
+                    m_num    = me1.text_input("Service #",        key=f"m_num_{iid}")
                     m_date   = me2.text_input("Date (YYYY-MM-DD)", key=f"m_date_{iid}")
                     _saved_clients_m = sorted(dm.get_client_rates().keys())
                     if _saved_clients_m:
@@ -521,7 +521,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     if st.session_state.get(edit_key):
                         pi = item
                         e1, e2 = st.columns(2)
-                        new_num    = e1.text_input("Invoice #", value=pi.get("invoice_number", ""), key=f"en_{iid}")
+                        new_num    = e1.text_input("Service #", value=pi.get("invoice_number", ""), key=f"en_{iid}")
                         new_date   = e2.text_input("Date",      value=pi.get("invoice_date",   ""), key=f"ed_{iid}")
                         _saved_clients_e  = sorted(dm.get_client_rates().keys())
                         _existing_client  = pi.get("client_name", "")
