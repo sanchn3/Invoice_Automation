@@ -426,7 +426,22 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     me1, me2 = st.columns(2)
                     m_num    = me1.text_input("Invoice #",        key=f"m_num_{iid}")
                     m_date   = me2.text_input("Date (YYYY-MM-DD)", key=f"m_date_{iid}")
-                    m_client = me1.text_input("Client",           key=f"m_client_{iid}")
+                    _saved_clients_m = sorted(dm.get_client_rates().keys())
+                    if _saved_clients_m:
+                        _client_opts_m = _saved_clients_m + ["Other…"]
+                        _client_sel_m  = me1.selectbox(
+                            "Client",
+                            options=_client_opts_m,
+                            index=None,
+                            placeholder="Select client…",
+                            key=f"m_client_sel_{iid}",
+                        )
+                        if _client_sel_m == "Other…":
+                            m_client = me1.text_input("Custom name", key=f"m_client_{iid}", placeholder="Type client name")
+                        else:
+                            m_client = _client_sel_m or ""
+                    else:
+                        m_client = me1.text_input("Client", key=f"m_client_{iid}")
                     m_total  = me2.number_input(
                         "Total ($)", min_value=0.0, step=0.01,
                         format="%.2f", key=f"m_total_{iid}",
@@ -508,7 +523,32 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         e1, e2 = st.columns(2)
                         new_num    = e1.text_input("Invoice #", value=pi.get("invoice_number", ""), key=f"en_{iid}")
                         new_date   = e2.text_input("Date",      value=pi.get("invoice_date",   ""), key=f"ed_{iid}")
-                        new_client = e1.text_input("Client",    value=pi.get("client_name",    ""), key=f"ec_{iid}")
+                        _saved_clients_e  = sorted(dm.get_client_rates().keys())
+                        _existing_client  = pi.get("client_name", "")
+                        if _saved_clients_e:
+                            _client_opts_e = _saved_clients_e + ["Other…"]
+                            _client_idx_e  = (
+                                _saved_clients_e.index(_existing_client)
+                                if _existing_client in _saved_clients_e
+                                else len(_saved_clients_e)
+                            )
+                            _client_sel_e = e1.selectbox(
+                                "Client",
+                                options=_client_opts_e,
+                                index=_client_idx_e,
+                                key=f"ec_sel_{iid}",
+                            )
+                            if _client_sel_e == "Other…":
+                                new_client = e1.text_input(
+                                    "Custom name",
+                                    value=_existing_client if _existing_client not in _saved_clients_e else "",
+                                    key=f"ec_{iid}",
+                                    placeholder="Type client name",
+                                )
+                            else:
+                                new_client = _client_sel_e
+                        else:
+                            new_client = e1.text_input("Client", value=_existing_client, key=f"ec_{iid}")
                         new_total  = e2.number_input(
                             "Total ($)", value=float(pi.get("total", 0)),
                             min_value=0.0, step=0.01, format="%.2f", key=f"et_{iid}",
