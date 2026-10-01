@@ -277,9 +277,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     client_invs_list = dm.get_client_invoices()
     prov_by_id       = {pi["id"]: pi for pi in provider_invs}
 
-    tab_pipeline, tab_received, tab_approve, tab_export = st.tabs([
+    tab_pipeline, tab_approve, tab_export = st.tabs([
         "🗂 Validate",
-        "📦 To Be Received",
         "✅ Approve & Invoice",
         "📤 Sent to Accounting",
     ])
@@ -590,96 +589,42 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             else:
                                 st.warning("PDF not available.")
 
-                        # ── Validate action ───────────────────────────────
+                        # ── Confirm action ────────────────────────────────
                         st.markdown("---")
-                        val_col, _ = st.columns([1, 2])
-                        if val_col.button("✅ Validate", key=f"validate_{iid}", type="primary", width='stretch'):
+                        _rcv_col, _btn_col, _ = st.columns([1, 1, 1], vertical_alignment="bottom")
+                        _rcv_col.caption("Received date")
+                        _rcv_date = _rcv_col.date_input(
+                            "Received date",
+                            value=datetime.utcnow().date(),
+                            key=f"rcv_date_{iid}",
+                            label_visibility="collapsed",
+                        )
+                        if _btn_col.button("✅ Confirm", key=f"validate_{iid}", type="primary", width='stretch'):
                             linked_ci = _ci_by_prov_id.get(iid)
                             if linked_ci:
-                                dm.update_client_invoice(linked_ci["id"], {"status": "to_be_received"})
-                                st.success("Invoice validated — now visible in To Be Received tab.")
-                                st.rerun()
+                                from invoice_logic.stamp_pdf import stamp_pdf as _stamp_pdf
+                                _stamp_error = None
+                                if pdf_exists:
+                                    try:
+                                        _stamp_pdf(pdf_path, _rcv_date)
+                                    except Exception as _se:
+                                        _stamp_error = str(_se)
+                                if _stamp_error:
+                                    st.error(
+                                        f"⚠️ PDF stamp failed — invoice NOT confirmed. "
+                                        f"Fix the issue and try again.\n\n`{_stamp_error}`"
+                                    )
+                                else:
+                                    dm.update_client_invoice(linked_ci["id"], {
+                                        "status"       : "validated",
+                                        "received_date": _rcv_date.isoformat(),
+                                    })
+                                    st.rerun()
                             else:
                                 st.error("No linked client invoice found.")
 
     # ──────────────────────────────────────────────────────────────────────────
-    # TAB 2 — TO BE RECEIVED
-    # ──────────────────────────────────────────────────────────────────────────
-    with tab_received:
-        st.subheader("To Be Received")
-
-        tbr_invoices = sorted(
-            [ci for ci in client_invs_list if ci.get("status") == "to_be_received"],
-            key=lambda x: x.get("created_at", ""),
-            reverse=True,
-        )
-
-        if not tbr_invoices:
-            st.info("No invoices awaiting receipt.")
-        else:
-            st.caption(f"{len(tbr_invoices)} invoice(s) — newest first")
-            for ci in tbr_invoices:
-                cid     = ci["id"]
-                prov_pi = prov_by_id.get(ci.get("provider_invoice_id"), {})
-                with st.container(border=True):
-                    # Info row
-                    ic1, ic2, ic3, ic4 = st.columns([1.2, 1, 2, 1])
-                    ic1.markdown(f"**{prov_pi.get('invoice_number', ci.get('invoice_number', '—'))}**")
-                    ic2.write(ci.get("invoice_date", "—"))
-                    ic3.write(ci.get("client_name", "—"))
-                    ic4.write(f"${ci.get('total', 0):,.2f}")
-                    # Action buttons
-                    _tbr_pdf_path   = prov_pi.get("pdf_local_path", "")
-                    _tbr_pdf_exists = bool(_tbr_pdf_path) and Path(_tbr_pdf_path).exists()
-                    _tbr_pdf_key    = f"tbr_pdf_{cid}"
-                    _tbr_pdf_label  = "📄 Hide" if st.session_state.get(_tbr_pdf_key) else "📄 PDF"
-
-                    bc1, bc2, bc_date, bc3 = st.columns([1.5, 0.8, 1.2, 1])
-                    if bc1.button("↩ Return to Validation", key=f"tbr_return_{cid}", width='stretch'):
-                        dm.update_client_invoice(cid, {"status": "pending_validation"})
-                        st.rerun()
-                    if _tbr_pdf_exists:
-                        if bc2.button(_tbr_pdf_label, key=f"tbr_pdfbtn_{cid}", width='stretch'):
-                            st.session_state[_tbr_pdf_key] = not st.session_state.get(_tbr_pdf_key, False)
-                            st.rerun()
-                    else:
-                        bc2.button("📄 PDF", key=f"tbr_pdfbtn_na_{cid}", disabled=True, width='stretch')
-                    _rcv_date = bc_date.date_input(
-                        "Received date",
-                        value=datetime.utcnow().date(),
-                        key=f"tbr_rcv_date_{cid}",
-                        label_visibility="collapsed",
-                    )
-                    if bc3.button("✅ Received", key=f"tbr_received_{cid}", width='stretch'):
-                        from invoice_logic.stamp_pdf import stamp_pdf as _stamp_pdf
-                        _stamp_error = None
-                        if _tbr_pdf_exists:
-                            try:
-                                _stamp_pdf(_tbr_pdf_path, _rcv_date)
-                            except Exception as _e:
-                                _stamp_error = str(_e)
-                        if _stamp_error:
-                            st.error(
-                                f"⚠️ PDF stamp failed — invoice NOT moved forward. "
-                                f"Fix the issue and try again.\n\n`{_stamp_error}`"
-                            )
-                        else:
-                            dm.update_client_invoice(cid, {
-                                "status"       : "validated",
-                                "received_date": _rcv_date.isoformat(),
-                            })
-                            st.rerun()
-
-                    if st.session_state.get(_tbr_pdf_key) and _tbr_pdf_exists:
-                        from streamlit_pdf_viewer import pdf_viewer
-                        _b = _get_pdf_bytes(_tbr_pdf_path)
-                        if _b:
-                            pdf_viewer(_b, key=f"tbr_pdfview_{cid}")
-                        else:
-                            st.warning("PDF not available.")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # TAB 3 — APPROVE & GENERATE INVOICE
+    # TAB 2 — APPROVE & GENERATE INVOICE
     # ──────────────────────────────────────────────────────────────────────────
     with tab_approve:
         st.subheader("Approve & Invoice")
@@ -1119,18 +1064,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     _components.html("""<script>
 (function () {
     function applyColors() {
-        window.parent.document.querySelectorAll('button').forEach(function (btn) {
-            var t = btn.innerText.trim();
-            if (t.indexOf('Return to Validation') !== -1) {
-                btn.style.setProperty('background-color', '#dc3545', 'important');
-                btn.style.setProperty('border-color',     '#dc3545', 'important');
-                btn.style.setProperty('color',            '#fff',    'important');
-            } else if (t === '\u2705 Received') {
-                btn.style.setProperty('background-color', '#198754', 'important');
-                btn.style.setProperty('border-color',     '#198754', 'important');
-                btn.style.setProperty('color',            '#fff',    'important');
-            }
-        });
+        // reserved for future button colour overrides
     }
     applyColors();
     new MutationObserver(applyColors).observe(
