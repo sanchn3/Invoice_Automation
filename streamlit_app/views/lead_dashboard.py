@@ -299,8 +299,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         # All billing fields always shown in default rates
         billing_labels = {
-            "in_out"   : "In-Out Storage (per pallet)",
-            "transfer" : "Transfer per Truck",
+            "in_out"           : "In-Out Storage (per pallet)",
+            "transfer"         : "Transfer per Truck",
+            "extended_storage" : "Extended Storage (per pallet / week)",
         }
 
         # Non-billing labels are the same regardless of mode — reused in all loops
@@ -431,6 +432,12 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             min_value=0.0, step=0.25, format="%.2f",
             key="new_cr_transfer",
         )
+        _new_extended_storage = new_col2.number_input(
+            "Extended Storage (per pallet / week) ($)",
+            value=float(default_rates.get("extended_storage", 0)),
+            min_value=0.0, step=0.25, format="%.2f",
+            key="new_cr_extended_storage",
+        )
 
         st.caption("Truck Rates")
         _new_cost_per_truck = st.number_input(
@@ -442,10 +449,11 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         # Non-billing fees — always shown
         new_client_overrides: dict = {
-            "charged_by_pallet": new_cbp,
-            "in_out"           : _new_in_out,
-            "transfer"         : _new_transfer,
-            "cost_per_truck"   : _new_cost_per_truck,
+            "charged_by_pallet" : new_cbp,
+            "in_out"            : _new_in_out,
+            "transfer"          : _new_transfer,
+            "extended_storage"  : _new_extended_storage,
+            "cost_per_truck"    : _new_cost_per_truck,
         }
         _nb_new_items = list(_non_billing_labels.items())
         nb_new_col1, nb_new_col2 = st.columns(2)
@@ -653,6 +661,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         key=f"cr_{cname}_transfer",
                         help="Default: ${:.2f}".format(_def_transfer),
                     )
+                    _def_extended    = float(default_rates.get("extended_storage", 0))
+                    _client_extended = override_col1.number_input(
+                        "Extended Storage (per pallet / week) ($)" + (" ✏️" if "extended_storage" in crates else ""),
+                        value=float(crates.get("extended_storage", _def_extended)),
+                        min_value=0.0, step=0.25, format="%.2f",
+                        key=f"cr_{cname}_extended_storage",
+                        help="Default: ${:.2f}".format(_def_extended),
+                    )
 
                     st.caption("Truck Rates")
                     _def_cpt    = float(default_rates.get("cost_per_truck", 0))
@@ -665,10 +681,11 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     )
 
                     new_overrides: dict = {
-                        "charged_by_pallet": client_cbp,
-                        "in_out"           : _client_in_out,
-                        "transfer"         : _client_transfer,
-                        "cost_per_truck"   : _client_cpt,
+                        "charged_by_pallet" : client_cbp,
+                        "in_out"            : _client_in_out,
+                        "transfer"          : _client_transfer,
+                        "extended_storage"  : _client_extended,
+                        "cost_per_truck"    : _client_cpt,
                     }
 
                     # Non-billing fees — always shown

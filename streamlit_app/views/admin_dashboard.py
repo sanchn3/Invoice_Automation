@@ -250,13 +250,114 @@ def _render_operation_photos() -> None:
         st.markdown("---")
 
 
+def _render_extended_storage(dm: DataManager) -> None:
+    st.subheader("Extended Storage Invoice")
+
+    all_clients = sorted(dm.get_client_rates().keys())
+    if not all_clients:
+        st.info("No clients found. Add clients in the Rate Card first.")
+        return
+
+    es_client = st.selectbox("Client", options=all_clients, key="es_client")
+    es_rate   = float(dm.get_rates_for_client(es_client).get("extended_storage", 0))
+
+    if es_rate == 0:
+        st.warning(
+            f"⚠️ No Extended Storage rate set for **{es_client}**. "
+            "Set one in the Rate Card before generating an invoice."
+        )
+
+    es_col1, es_col2 = st.columns(2)
+    es_pallets = es_col1.number_input("Number of Pallets", min_value=1, step=1, value=1, key="es_pallets")
+    es_weeks   = es_col2.number_input("Number of Weeks",   min_value=1, step=1, value=1, key="es_weeks")
+
+    es_total = round(es_rate * int(es_pallets) * int(es_weeks), 2)
+    st.markdown(
+        f"**Rate:** ${es_rate:,.2f} / pallet-week &nbsp;·&nbsp; "
+        f"**Total:** ${es_total:,.2f} &nbsp; "
+        f"({int(es_pallets)} pallets × {int(es_weeks)} weeks × ${es_rate:,.2f})"
+    )
+
+    if _colored_btn(st, "📤 Generate & Send to Accounting", key="es_generate", color="#198754"):
+        if es_rate == 0:
+            st.error("Cannot generate invoice — Extended Storage rate is $0.00 for this client.")
+        else:
+            inv_num = dm.next_client_invoice_number(es_client)
+            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            today   = datetime.utcnow().date().isoformat()
+            cr      = dm.get_rates_for_client(es_client)
+            new_ci  = dm.add_client_invoice({
+                "quickbooks_invoice_number" : inv_num,
+                "client_name"               : es_client,
+                "invoice_date"              : today,
+                "received_date"             : today,
+                "sent_to_accounting_at"     : now_iso,
+                "service_type"              : "extended_storage",
+                "pallet_count"              : int(es_pallets),
+                "damaged_pallets"           : 0,
+                "hours_overtime"            : 0,
+                "restack_count"             : 0,
+                "extra_charges"             : [],
+                "temp_recorder"             : False,
+                "producto_caliente"         : False,
+                "temp_f1": "", "temp_f2": "", "temp_f3": "",
+                "worker_notes"              : (
+                    f"Extended storage: {int(es_pallets)} pallets "
+                    f"× {int(es_weeks)} weeks"
+                ),
+                "photo_paths"               : [],
+                "line_items"                : [{
+                    "description" : "Extended Storage",
+                    "quantity"    : int(es_pallets) * int(es_weeks),
+                    "unit"        : "pallet-week",
+                    "unit_price"  : es_rate,
+                    "total"       : es_total,
+                }],
+                "subtotal"                  : es_total,
+                "total"                     : es_total,
+                "billing_address"           : dm.get_client_address(es_client) or "",
+                "client_rfc"                : dm.get_client_rfc(es_client) or "",
+                "net_days"                  : int(cr.get("net_days", 30)),
+                "provider_invoice_id"       : None,
+                "quickbooks_exported"       : False,
+                "status"                    : "invoiced",
+            })
+            # Generate & upload PDF invoice
+            try:
+                _pdf_bytes = _generate_pdf(
+                    {**new_ci, "provider_invoice_number": ""},
+                    None,
+                )
+                _upload_pdf_bytes(f"{inv_num}-invoice.pdf", _pdf_bytes)
+            except Exception as _e:
+                logger.warning("Extended storage PDF generation failed: %s", _e)
+            # Supabase sync
+            try:
+                from scheduler.supabase_sync import sync_single_invoice as _sync_inv
+                _sync_inv(new_ci)
+            except Exception as _e:
+                logger.warning("Supabase sync failed: %s", _e)
+
+            _notif = st.empty()
+            _notif.markdown(
+                '<div style="background:#d1e7dd;border:1px solid #198754;'
+                'border-radius:6px;padding:12px 16px;font-size:1rem;'
+                'color:#0a3622;font-weight:600;text-align:center;">'
+                f'✅ Invoice {inv_num} submitted to Accounting</div>',
+                unsafe_allow_html=True,
+            )
+            time.sleep(3)
+            _notif.empty()
+            st.rerun()
+
+
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("📦 Administrator")
 
     # ── Mode selector ─────────────────────────────────────────────────────────
     mode = st.radio(
         "Mode",
-        ["In", "Out", "📷 Operation Photos"],
+        ["In", "Out", "📷 Operation Photos", "📦 Extended Storage"],
         horizontal=True,
         key="admin_mode",
         label_visibility="collapsed",
@@ -269,6 +370,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
     if mode == "📷 Operation Photos":
         _render_operation_photos()
+        return
+
+    if mode == "📦 Extended Storage":
+        _render_extended_storage(dm)
         return
 
     # Fetch all data once per render — reused across all three tabs.
