@@ -424,8 +424,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         "Fill in the invoice details manually."
                     )
                     me1, me2 = st.columns(2)
-                    m_num    = me1.text_input("Service #",        key=f"m_num_{iid}")
-                    m_date   = me2.text_input("Date (YYYY-MM-DD)", key=f"m_date_{iid}")
+                    m_num      = me1.text_input("Service #", key=f"m_num_{iid}")
+                    m_rcv_date = me2.date_input("Received date", value=datetime.utcnow().date(), key=f"m_rcv_date_{iid}")
                     _saved_clients_m = sorted(dm.get_client_rates().keys())
                     if _saved_clients_m:
                         _client_opts_m = _saved_clients_m + ["Other…"]
@@ -447,17 +447,18 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         format="%.2f", key=f"m_total_{iid}",
                     )
                     ms1, ms2 = st.columns(2)
-                    if ms1.button("💾 Create Invoice", key=f"m_save_{iid}", type="primary", width='stretch'):
+                    if ms1.button("✅ Confirm", key=f"m_save_{iid}", type="primary", width='stretch'):
                         if not m_num.strip() or not m_client.strip():
-                            st.error("Invoice # and Client are required.")
+                            st.error("Service # and Client are required.")
                         else:
-                            _now      = datetime.utcnow().isoformat() + "Z"
+                            _now       = datetime.utcnow().isoformat() + "Z"
                             _canonical = m_client.strip().upper()
+                            _rcv_iso   = m_rcv_date.isoformat()
                             _prov_inv  = dm.add_provider_invoice({
                                 "provider_name"  : log.get("sender", ""),
                                 "client_name"    : _canonical,
                                 "invoice_number" : m_num.strip(),
-                                "invoice_date"   : m_date.strip() or _now[:10],
+                                "invoice_date"   : _rcv_iso,
                                 "line_items"     : [],
                                 "subtotal"       : float(m_total),
                                 "taxes"          : 0.0,
@@ -467,27 +468,41 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "parsed_at"      : _now,
                                 "status"         : "parsed",
                             })
-                            dm.add_client_invoice({
-                                "quickbooks_invoice_number": None,
-                                "client_name"    : _canonical,
-                                "invoice_date"   : m_date.strip() or _now[:10],
-                                "service_type"   : None,
-                                "temp_recorder"  : False,
-                                "extra_charges"  : [],
-                                "pallet_count"   : 0,
-                                "damaged_pallets": 0,
-                                "worker_notes"   : "",
-                                "photo_paths"    : [],
-                                "line_items"     : [],
-                                "subtotal"       : float(m_total),
-                                "total"          : float(m_total),
-                                "provider_invoice_id": _prov_inv["id"],
-                                "quickbooks_exported": False,
-                                "status"         : "pending_validation",
-                            })
-                            dm.update_email_log(iid, {"status": "parsed", "error_text": None})
-                            st.session_state.pop(f"manual_entry_{iid}", None)
-                            st.rerun()
+                            from invoice_logic.stamp_pdf import stamp_pdf as _stamp_pdf
+                            _stamp_error = None
+                            if pdf_exists:
+                                try:
+                                    _stamp_pdf(pdf_path, m_rcv_date)
+                                except Exception as _se:
+                                    _stamp_error = str(_se)
+                            if _stamp_error:
+                                st.error(
+                                    f"⚠️ PDF stamp failed — invoice NOT confirmed. "
+                                    f"Fix the issue and try again.\n\n`{_stamp_error}`"
+                                )
+                            else:
+                                dm.add_client_invoice({
+                                    "quickbooks_invoice_number": None,
+                                    "client_name"    : _canonical,
+                                    "invoice_date"   : _rcv_iso,
+                                    "service_type"   : None,
+                                    "temp_recorder"  : False,
+                                    "extra_charges"  : [],
+                                    "pallet_count"   : 0,
+                                    "damaged_pallets": 0,
+                                    "worker_notes"   : "",
+                                    "photo_paths"    : [],
+                                    "line_items"     : [],
+                                    "subtotal"       : float(m_total),
+                                    "total"          : float(m_total),
+                                    "provider_invoice_id": _prov_inv["id"],
+                                    "quickbooks_exported": False,
+                                    "status"         : "validated",
+                                    "received_date"  : _rcv_iso,
+                                })
+                                dm.update_email_log(iid, {"status": "parsed", "error_text": None})
+                                st.session_state.pop(f"manual_entry_{iid}", None)
+                                st.rerun()
                     if ms2.button("✗ Cancel", key=f"m_cancel_{iid}", width='stretch'):
                         st.session_state.pop(f"manual_entry_{iid}", None)
                         st.rerun()
@@ -515,153 +530,110 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
             # ── PARSED item: bordered container ────────────────────────────────
             else:
-                edit_key = f"edit_prov_{iid}"
                 with st.container(border=True):
+                    pi = item
+                    _edit_pdf_path   = pi.get("pdf_local_path", "")
+                    _edit_pdf_exists = bool(_edit_pdf_path) and Path(_edit_pdf_path).exists()
 
-                    if st.session_state.get(edit_key):
-                        pi = item
-                        e1, e2 = st.columns(2)
-                        new_num    = e1.text_input("Service #", value=pi.get("invoice_number", ""), key=f"en_{iid}")
-                        new_date   = e2.text_input("Date",      value=pi.get("invoice_date",   ""), key=f"ed_{iid}")
-                        _saved_clients_e  = sorted(dm.get_client_rates().keys())
-                        _existing_client  = pi.get("client_name", "")
-                        if _saved_clients_e:
-                            _client_opts_e = _saved_clients_e + ["Other…"]
-                            _client_idx_e  = (
-                                _saved_clients_e.index(_existing_client)
-                                if _existing_client in _saved_clients_e
-                                else len(_saved_clients_e)
-                            )
-                            _client_sel_e = e1.selectbox(
-                                "Client",
-                                options=_client_opts_e,
-                                index=_client_idx_e,
-                                key=f"ec_sel_{iid}",
-                            )
-                            if _client_sel_e == "Other…":
-                                new_client = e1.text_input(
-                                    "Custom name",
-                                    value=_existing_client if _existing_client not in _saved_clients_e else "",
-                                    key=f"ec_{iid}",
-                                    placeholder="Type client name",
-                                )
-                            else:
-                                new_client = _client_sel_e
-                        else:
-                            new_client = e1.text_input("Client", value=_existing_client, key=f"ec_{iid}")
-                        new_total  = e2.number_input(
-                            "Total ($)", value=float(pi.get("total", 0)),
-                            min_value=0.0, step=0.01, format="%.2f", key=f"et_{iid}",
+                    # Header row: invoice # / client name | X delete button
+                    _hdr_col, _x_col = st.columns([11, 1])
+                    _hdr_col.markdown(f"**{pi.get('invoice_number', '—')}** &nbsp; {pi.get('client_name', '—')}")
+                    if _x_col.button("✕", key=f"xdel_{iid}", width='stretch'):
+                        _lci = dm.get_client_invoice_by_provider_invoice_id(iid)
+                        if _lci:
+                            dm.delete_client_invoice(_lci["id"])
+                        dm.delete_provider_invoice(iid)
+                        st.rerun()
+
+                    e1, e2 = st.columns(2)
+                    new_num    = e1.text_input("Service #", value=pi.get("invoice_number", ""), key=f"en_{iid}")
+                    try:
+                        _rcv_default = datetime.strptime(pi.get("invoice_date", "")[:10], "%Y-%m-%d").date()
+                    except (ValueError, TypeError):
+                        _rcv_default = datetime.utcnow().date()
+                    new_rcv_date = e2.date_input("Received date", value=_rcv_default, key=f"ed_{iid}")
+                    _saved_clients_e  = sorted(dm.get_client_rates().keys())
+                    _existing_client  = pi.get("client_name", "")
+                    if _saved_clients_e:
+                        _client_opts_e = _saved_clients_e + ["Other…"]
+                        _client_idx_e  = (
+                            _saved_clients_e.index(_existing_client)
+                            if _existing_client in _saved_clients_e
+                            else len(_saved_clients_e)
                         )
-                        s1, s2 = st.columns(2)
-                        if s1.button("💾 Save", key=f"esave_{iid}", type="primary", width='stretch'):
-                            canonical = new_client.strip().upper()
-                            dm.update_provider_invoice(iid, {
-                                "invoice_number": new_num.strip(),
-                                "invoice_date"  : new_date.strip(),
-                                "client_name"   : canonical,
-                                "total"         : new_total,
-                                "subtotal"      : new_total,
-                            })
-                            # Keep the linked client invoice in sync
+                        _client_sel_e = e1.selectbox(
+                            "Client",
+                            options=_client_opts_e,
+                            index=_client_idx_e,
+                            key=f"ec_sel_{iid}",
+                        )
+                        if _client_sel_e == "Other…":
+                            new_client = e1.text_input(
+                                "Custom name",
+                                value=_existing_client if _existing_client not in _saved_clients_e else "",
+                                key=f"ec_{iid}",
+                                placeholder="Type client name",
+                                label_visibility="collapsed",
+                            )
+                        else:
+                            new_client = _client_sel_e
+                    else:
+                        new_client = e1.text_input("Client", value=_existing_client, key=f"ec_{iid}")
+                    new_total  = e2.number_input(
+                        "Total ($)", value=float(pi.get("total", 0)),
+                        min_value=0.0, step=0.01, format="%.2f", key=f"et_{iid}",
+                    )
+                    s1, s2 = st.columns(2)
+                    if s1.button("✅ Confirm", key=f"esave_{iid}", type="primary", width='stretch'):
+                        canonical = new_client.strip().upper()
+                        _rcv_iso  = new_rcv_date.isoformat()
+                        dm.update_provider_invoice(iid, {
+                            "invoice_number": new_num.strip(),
+                            "invoice_date"  : _rcv_iso,
+                            "client_name"   : canonical,
+                            "total"         : new_total,
+                            "subtotal"      : new_total,
+                        })
+                        from invoice_logic.stamp_pdf import stamp_pdf as _stamp_pdf
+                        _stamp_error = None
+                        if _edit_pdf_exists:
+                            try:
+                                _stamp_pdf(_edit_pdf_path, new_rcv_date)
+                            except Exception as _se:
+                                _stamp_error = str(_se)
+                        if _stamp_error:
+                            st.error(
+                                f"⚠️ PDF stamp failed — invoice NOT confirmed. "
+                                f"Fix the issue and try again.\n\n`{_stamp_error}`"
+                            )
+                        else:
                             linked_ci = dm.get_client_invoice_by_provider_invoice_id(iid)
                             if linked_ci:
                                 dm.update_client_invoice(linked_ci["id"], {
-                                    "client_name" : canonical,
-                                    "invoice_date": new_date.strip(),
-                                    "total"       : new_total,
-                                    "subtotal"    : new_total,
+                                    "client_name"  : canonical,
+                                    "invoice_date" : _rcv_iso,
+                                    "total"        : new_total,
+                                    "subtotal"     : new_total,
+                                    "status"       : "validated",
+                                    "received_date": _rcv_iso,
                                 })
-                            st.session_state.pop(edit_key, None)
                             st.rerun()
-                        if s2.button("✗ Cancel", key=f"ecancel_{iid}", width='stretch'):
-                            st.session_state.pop(edit_key, None)
+                    _pdf_lbl = "📄 Hide PDF" if st.session_state.get(pdf_key) else "📄 View PDF"
+                    if _edit_pdf_exists:
+                        if s2.button(_pdf_lbl, key=f"epdf_{iid}", width='stretch'):
+                            st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
                             st.rerun()
-
                     else:
-                        pi = item
-                        pdf_path   = pi.get("pdf_local_path", "")
-                        pdf_exists = bool(pdf_path)
-                        pdf_label  = "📄 Hide" if st.session_state.get(pdf_key) else "📄 PDF"
+                        s2.button("📄 View PDF", key=f"epdf_na_{iid}", disabled=True, width='stretch')
 
-                        c1, c2, c3, c4, c5, c6, c7 = st.columns([1.2, 1, 2, 1, 0.6, 0.6, 0.6])
-                        c1.markdown(f"**{pi.get('invoice_number', '—')}**")
-                        c2.write(pi.get("invoice_date", "—"))
-                        c3.write(pi.get("client_name", "—"))
-                        c4.write(f"${pi.get('total', 0):,.2f}")
-
-                        if c5.button("✏️ Edit", key=f"ebtn_{iid}", width='stretch'):
-                            st.session_state[edit_key] = True
-                            st.rerun()
-
-                        if pdf_exists:
-                            if c6.button(pdf_label, key=f"epdf_{iid}", width='stretch'):
-                                st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
-                                st.rerun()
+                    if st.session_state.get(pdf_key) and _edit_pdf_exists:
+                        from streamlit_pdf_viewer import pdf_viewer
+                        _b = _get_pdf_bytes(_edit_pdf_path)
+                        if _b:
+                            pdf_viewer(_b, key=f"pdfview_{iid}")
                         else:
-                            c6.button("📄 PDF", key=f"epdf_na_{iid}", disabled=True, width='stretch')
+                            st.warning("PDF not available.")
 
-                        if st.session_state.get(del_key):
-                            c7.caption("⚠️ Sure?")
-                        else:
-                            if c7.button("🗑 TRASH", key=f"delbtn_{iid}", width='stretch'):
-                                st.session_state[del_key] = True
-                                st.rerun()
-
-                        if st.session_state.get(del_key):
-                            dc1, dc2 = st.columns(2)
-                            if dc1.button("✅ Yes, delete", key=f"delyes_{iid}", type="primary", width='stretch'):
-                                linked_ci = dm.get_client_invoice_by_provider_invoice_id(iid)
-                                if linked_ci:
-                                    dm.delete_client_invoice(linked_ci["id"])
-                                dm.delete_provider_invoice(iid)
-                                st.session_state.pop(del_key, None)
-                                st.rerun()
-                            if dc2.button("✗ Cancel", key=f"delno_{iid}", width='stretch'):
-                                st.session_state.pop(del_key, None)
-                                st.rerun()
-
-                        if st.session_state.get(pdf_key) and pdf_exists:
-                            from streamlit_pdf_viewer import pdf_viewer
-                            _b = _get_pdf_bytes(pdf_path)
-                            if _b:
-                                pdf_viewer(_b, key=f"pdfview_{iid}")
-                            else:
-                                st.warning("PDF not available.")
-
-                        # ── Confirm action ────────────────────────────────
-                        st.markdown("---")
-                        _rcv_col, _btn_col, _ = st.columns([1, 1, 1], vertical_alignment="bottom")
-                        _rcv_col.caption("Received date")
-                        _rcv_date = _rcv_col.date_input(
-                            "Received date",
-                            value=datetime.utcnow().date(),
-                            key=f"rcv_date_{iid}",
-                            label_visibility="collapsed",
-                        )
-                        if _btn_col.button("✅ Confirm", key=f"validate_{iid}", type="primary", width='stretch'):
-                            linked_ci = _ci_by_prov_id.get(iid)
-                            if linked_ci:
-                                from invoice_logic.stamp_pdf import stamp_pdf as _stamp_pdf
-                                _stamp_error = None
-                                if pdf_exists:
-                                    try:
-                                        _stamp_pdf(pdf_path, _rcv_date)
-                                    except Exception as _se:
-                                        _stamp_error = str(_se)
-                                if _stamp_error:
-                                    st.error(
-                                        f"⚠️ PDF stamp failed — invoice NOT confirmed. "
-                                        f"Fix the issue and try again.\n\n`{_stamp_error}`"
-                                    )
-                                else:
-                                    dm.update_client_invoice(linked_ci["id"], {
-                                        "status"       : "validated",
-                                        "received_date": _rcv_date.isoformat(),
-                                    })
-                                    st.rerun()
-                            else:
-                                st.error("No linked client invoice found.")
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 2 — APPROVE & GENERATE INVOICE
@@ -1104,7 +1076,23 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     _components.html("""<script>
 (function () {
     function applyColors() {
-        // reserved for future button colour overrides
+        window.parent.document.querySelectorAll('button').forEach(function (btn) {
+            var t = btn.innerText.trim();
+            if (t === '\u2715' && !btn.dataset.xStyled) {
+                btn.dataset.xStyled = '1';
+                btn.style.setProperty('transition', 'background-color 0.15s, border-color 0.15s', 'important');
+                btn.addEventListener('mouseenter', function () {
+                    this.style.setProperty('background-color', '#dc3545', 'important');
+                    this.style.setProperty('border-color',     '#dc3545', 'important');
+                    this.style.setProperty('color',            '#fff',    'important');
+                });
+                btn.addEventListener('mouseleave', function () {
+                    this.style.removeProperty('background-color');
+                    this.style.removeProperty('border-color');
+                    this.style.removeProperty('color');
+                });
+            }
+        });
     }
     applyColors();
     new MutationObserver(applyColors).observe(
