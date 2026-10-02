@@ -193,7 +193,7 @@ if st.sidebar.button("🚪 Sign Out", use_container_width=True):
         st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("INCO Logistics • Invoice Automation v1.02")
+st.sidebar.caption("INCO Logistics • Invoice Automation v1.03")
 
 # Route to the dashboard matching the user's role
 if role == "admin":

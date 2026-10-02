@@ -172,6 +172,24 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "due_date"    : new_due_date.strip(),
                                 "po_number"   : new_po.strip(),
                             })
+                            # Re-generate and re-upload the stored PDF so the
+                            # email attachment reflects the updated invoice fields.
+                            _ci_saved = dm.get_client_invoice_by_id(cid)
+                            if _ci_saved:
+                                try:
+                                    _prov_s = prov_by_id.get(_ci_saved.get("provider_invoice_id", ""), {})
+                                    _ci_for_pdf = {**_ci_saved, "provider_invoice_number": _prov_s.get("invoice_number", "")}
+                                    _ppath = _prov_s.get("pdf_local_path", "")
+                                    _pdf_bytes = generate_pdf(
+                                        _ci_for_pdf,
+                                        _ppath if _ppath and Path(_ppath).exists() else None,
+                                    )
+                                    _qb_s = _ci_saved.get("quickbooks_invoice_number", "")
+                                    if _qb_s:
+                                        from utils.pdf_storage import upload_pdf_bytes as _upload_pdf_bytes
+                                        _upload_pdf_bytes(f"{_qb_s}-invoice.pdf", _pdf_bytes)
+                                except Exception as _e:
+                                    logger.warning("Could not re-upload invoice PDF after edit: %s", _e)
                             st.session_state.pop(edit_key, None)
                             st.rerun()
                         if s2.button("✗ Cancel", key=f"acc_ecancel_{cid}", width="stretch"):
@@ -484,13 +502,16 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             key=f"email_body_{cname}",
                         )
                         # Build .eml with all invoice PDFs attached
+                        # Use the stored generated PDF (same source as admin's Sent to Accounting download)
+                        from utils.pdf_storage import fetch_pdf_bytes as _fetch_pdf_bytes
                         _eml_attachments = []
                         for _ci in invoices:
                             _qb  = _ci.get("quickbooks_invoice_number", "invoice")
                             _pe  = prov_by_id.get(_ci.get("provider_invoice_id", ""), {})
+                            _stored = _fetch_pdf_bytes(f"{_qb}-invoice.pdf")
                             _eml_attachments.append((
                                 f"{_qb}.pdf",
-                                _cached_pdf(*_pdf_args(_ci, _pe)),
+                                _stored if _stored else _cached_pdf(*_pdf_args(_ci, _pe)),
                             ))
                         _eml_bytes = _build_eml(
                             st.session_state.get(f"email_to_{cname}",   client_email or ""),
