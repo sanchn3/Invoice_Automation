@@ -24,6 +24,7 @@ from email_pipeline.attachment_handler import process_pdf_from_path
 from alerting.alert_manager import AlertManager
 from utils.pdf_storage import (
     get_pdf_bytes as _get_pdf_bytes,
+    fetch_pdf_bytes as _fetch_pdf_bytes,
     move_to_processed as _move_to_processed,
     upload_pdf_bytes as _upload_pdf_bytes,
     overwrite_provider_pdf as _overwrite_provider_pdf,
@@ -903,9 +904,12 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _default_cbp = _rate_card.get("default_billing_basis", "Pallet") == "Pallet"
                         _cbp         = bool(_cl_rates.get("charged_by_pallet", _default_cbp))
                         _fixed_pal = int(_cl_rates.get("fixed_pallet_count", 0) or 0)
-                        _seal = st.checkbox(
-                            "Seal",
-                            value=bool("stamps" in (ci.get("extra_charges") or [])),
+                        _stamps_in_extras = "stamps" in (ci.get("extra_charges") or [])
+                        _seal_count = st.number_input(
+                            "Seals",
+                            min_value=0,
+                            step=1,
+                            value=int(ci.get("seal_count") or (1 if _stamps_in_extras else 0)),
                             key=f"val_seal_{cid}",
                         )
                         if _cbp and svc != "transfer":
@@ -926,15 +930,24 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             _restack_count  = _pd.number_input("Restack",         min_value=0, step=1, value=int(ci.get("restack_count",   0) or 0),          key=f"val_rs_{cid}")
 
                         _new_extras: list[str] = []
-                        if _seal:
+                        if _seal_count > 0:
                             _new_extras.append("stamps")
 
                         st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Pulp Temperature</p>', unsafe_allow_html=True)
-                        _producto_caliente = st.checkbox(
-                            "Producto Caliente",
-                            value=bool(ci.get("producto_caliente", False)),
+                        _PC_OPTS   = ["None", "Producto Caliente", "Producto Congelado"]
+                        _PC_TO_KEY = {"None": None, "Producto Caliente": "caliente", "Producto Congelado": "congelado"}
+                        _PC_TO_LBL = {None: "None", "caliente": "Producto Caliente", "congelado": "Producto Congelado", True: "Producto Caliente"}
+                        _stored_pc  = ci.get("producto_caliente")
+                        _pc_default = _PC_TO_LBL.get(_stored_pc, "None")
+                        _pc_sel = st.radio(
+                            "Pulp Temperature Type",
+                            options=_PC_OPTS,
+                            index=_PC_OPTS.index(_pc_default),
+                            horizontal=True,
                             key=f"val_pc_{cid}",
+                            label_visibility="collapsed",
                         )
+                        _producto_caliente = _PC_TO_KEY[_pc_sel]
                         _t1, _t2, _t3 = st.columns(3)
                         _temp1 = _t1.text_input("Temperature 1 (°F)", value=ci.get("temp_f1", ""), key=f"val_t1_{cid}")
                         _temp2 = _t2.text_input("Temperature 2 (°F)", value=ci.get("temp_f2", ""), key=f"val_t2_{cid}")
@@ -954,6 +967,16 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             label_visibility="collapsed",
                         )
                         _new_tr = _TR_TO_KEY[_tr_sel]
+                        if _new_tr:
+                            _tr_count = st.number_input(
+                                "Temperature Recorder Quantity",
+                                min_value=1,
+                                step=1,
+                                value=int(ci.get("temp_recorder_count") or 1),
+                                key=f"val_tr_count_{cid}",
+                            )
+                        else:
+                            _tr_count = 0
 
                         _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
 
@@ -974,17 +997,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         if _colored_btn(_btn1, "💾 Save", key=f"savebtn_{cid}", color="#0068c9", width='stretch'):
                             # 1. Persist all form fields — no status change, no QB number
                             dm.update_client_invoice(cid, {
-                                "pallet_count"     : int(_pal),
-                                "damaged_pallets"  : int(_dmg),
-                                "hours_overtime"   : int(_hours_overtime),
-                                "restack_count"    : int(_restack_count),
-                                "extra_charges"    : _new_extras,
-                                "temp_recorder"    : _new_tr,
-                                "producto_caliente": _producto_caliente,
-                                "temp_f1"          : _temp1.strip(),
-                                "temp_f2"          : _temp2.strip(),
-                                "temp_f3"          : _temp3.strip(),
-                                "worker_notes"     : _new_notes.strip(),
+                                "pallet_count"        : int(_pal),
+                                "damaged_pallets"     : int(_dmg),
+                                "hours_overtime"      : int(_hours_overtime),
+                                "restack_count"       : int(_restack_count),
+                                "extra_charges"       : _new_extras,
+                                "seal_count"          : int(_seal_count),
+                                "temp_recorder"       : _new_tr,
+                                "temp_recorder_count" : int(_tr_count),
+                                "producto_caliente"   : _producto_caliente,
+                                "temp_f1"             : _temp1.strip(),
+                                "temp_f2"             : _temp2.strip(),
+                                "temp_f3"             : _temp3.strip(),
+                                "worker_notes"        : _new_notes.strip(),
                             })
                             # 2. Stamp temperature data onto the provider PDF (lower-right)
                             #    Only applied when at least one field is filled.
@@ -1042,36 +1067,43 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 hours_overtime=int(_hours_overtime),
                                 restack_count=int(_restack_count),
                                 client_name=ci.get("client_name", ""),
+                                temp_recorder_count=int(_tr_count),
+                                seal_count=int(_seal_count),
                             )
                             client_rates = dm.get_rates_for_client(ci.get("client_name", ""))
                             billing_addr = dm.get_client_address(ci.get("client_name", ""))
                             billing_rfc  = dm.get_client_rfc(ci.get("client_name", ""))
                             dm.update_client_invoice(cid, {
                                 "quickbooks_invoice_number": inv_id,
-                                "service_type"    : svc,
-                                "pallet_count"    : int(_pal),
-                                "damaged_pallets" : int(_dmg),
-                                "hours_overtime"  : int(_hours_overtime),
-                                "restack_count"   : int(_restack_count),
-                                "extra_charges"   : _new_extras,
-                                "temp_recorder"      : _new_tr,
-                                "producto_caliente"  : _producto_caliente,
-                                "temp_f1"            : _temp1.strip(),
-                                "temp_f2"            : _temp2.strip(),
-                                "temp_f3"            : _temp3.strip(),
-                                "worker_notes"       : _new_notes.strip(),
-                                "line_items"      : charges["line_items"],
-                                "subtotal"        : charges["subtotal"],
-                                "total"           : charges["total"],
-                                "net_days"        : int(client_rates.get("net_days", 30)),
-                                "billing_address" : billing_addr,
-                                "client_rfc"      : billing_rfc,
+                                "service_type"        : svc,
+                                "pallet_count"        : int(_pal),
+                                "damaged_pallets"     : int(_dmg),
+                                "hours_overtime"      : int(_hours_overtime),
+                                "restack_count"       : int(_restack_count),
+                                "extra_charges"       : _new_extras,
+                                "seal_count"          : int(_seal_count),
+                                "temp_recorder"       : _new_tr,
+                                "temp_recorder_count" : int(_tr_count),
+                                "producto_caliente"   : _producto_caliente,
+                                "temp_f1"             : _temp1.strip(),
+                                "temp_f2"             : _temp2.strip(),
+                                "temp_f3"             : _temp3.strip(),
+                                "worker_notes"        : _new_notes.strip(),
+                                "line_items"          : charges["line_items"],
+                                "subtotal"            : charges["subtotal"],
+                                "total"               : charges["total"],
+                                "net_days"            : int(client_rates.get("net_days", 30)),
+                                "billing_address"     : billing_addr,
+                                "client_rfc"          : billing_rfc,
                                 "status"              : "invoiced",
                                 "invoice_date"        : datetime.utcnow().date().isoformat(),
                                 "sent_to_accounting_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
                             })
                             if prov.get("email_intake_id"):
-                                dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
+                                try:
+                                    dm.update_email_log(prov["email_intake_id"], {"status": "invoiced"})
+                                except KeyError:
+                                    pass
                             if prov.get("pdf_local_path"):
                                 _move_to_processed(prov["pdf_local_path"])
                             ci_updated = dm.get_client_invoice_by_id(cid)
@@ -1163,7 +1195,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 c6.write(f"${ci.get('total', 0):,.2f}")
                 c7.write("Exported to QB" if ci.get("quickbooks_exported") else "In Accounting")
                 try:
-                    pdf_bytes = _admin_cached_pdf(*_admin_pdf_args(ci, prov))
+                    _stored_pdf = _fetch_pdf_bytes(f"{qb}-invoice.pdf")
+                    pdf_bytes = _stored_pdf if _stored_pdf else _admin_cached_pdf(*_admin_pdf_args(ci, prov))
                     c8.download_button(
                         "⬇ PDF",
                         data=pdf_bytes,

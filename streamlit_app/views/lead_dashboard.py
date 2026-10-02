@@ -161,8 +161,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         if not all_ci:
             st.info("No invoice data yet.")
         else:
-            # ── By client ─────────────────────────────────────────────────────
-            st.markdown("#### Invoices by Client")
+            # ── Client KPI summary ────────────────────────────────────────────
             client_counts: dict[str, int] = defaultdict(int)
             client_totals: dict[str, float] = defaultdict(float)
             for ci in all_ci:
@@ -170,12 +169,16 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 client_counts[client] += 1
                 client_totals[client] += float(ci.get("total", 0))
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.bar_chart(client_counts)
-            with col2:
-                for client, total in sorted(client_totals.items(), key=lambda x: -x[1]):
-                    st.metric(client, f"${total:,.2f}")
+            _sorted_clients = sorted(client_totals.items(), key=lambda x: -x[1])
+            _kpi_cols = st.columns(5)
+            for _i, (_client, _total) in enumerate(_sorted_clients):
+                _kpi_cols[_i % 5].metric(_client, f"${_total:,.2f}")
+
+            st.markdown("---")
+
+            # ── By client ─────────────────────────────────────────────────────
+            st.markdown("#### Invoices by Client")
+            st.bar_chart(client_counts)
 
             st.markdown("---")
 
@@ -185,10 +188,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             for ci in all_ci:
                 svc = ci.get("service_type") or "not_set"
                 svc_counts[svc] += 1
-            c1, c2, c3 = st.columns(3)
+            c1, c2 = st.columns(2)
             c1.metric("In-Out",   svc_counts.get("in_out", 0))
             c2.metric("Transfer", svc_counts.get("transfer", 0))
-            c3.metric("Not Set",  svc_counts.get("not_set", 0))
 
             st.markdown("---")
 
@@ -236,8 +238,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         "Invoice ID"     : ci.get("quickbooks_invoice_number", ""),
                         "Service Number" : prov.get("invoice_number", ""),
                         "Client"         : ci.get("client_name", ""),
-                        "Cost ($)"       : ci.get("total", 0),
-                        "PO Number"      : ci.get("po_number", ""),
+                        "Charged ($)"    : ci.get("total", 0),
+                        "Pickup Number"  : ci.get("po_number", ""),
                         "Due Date"       : due_date,
                         "Paid"           : "Yes" if ci.get("paid") else "No",
                     })
@@ -252,7 +254,69 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         ws.column_dimensions[col[0].column_letter].width = max_len + 4
                 return buf.getvalue()
 
-            _exp_col1, _exp_col2, _ = st.columns([1, 1, 3])
+            def _build_detailed_excel(invoices: list[dict], providers: dict) -> bytes:
+                import io
+                import pandas as pd
+
+                # Collect all unique service descriptions in encounter order
+                _seen_descs: set[str] = set()
+                _all_descs: list[str] = []
+                for _ci in invoices:
+                    for _item in (_ci.get("line_items") or []):
+                        _d = _item.get("description", "")
+                        if _d and _d not in _seen_descs:
+                            _all_descs.append(_d)
+                            _seen_descs.add(_d)
+
+                rows = []
+                for ci in invoices:
+                    prov = providers.get(ci.get("provider_invoice_id", ""), {})
+                    inv_date = ci.get("invoice_date", "")
+                    net_days = int(ci.get("net_days", 30) or 30)
+                    due_date = ci.get("due_date", "")
+                    if not due_date and inv_date:
+                        try:
+                            due_date = (
+                                datetime.fromisoformat(inv_date)
+                                + timedelta(days=net_days)
+                            ).date().isoformat()
+                        except Exception:
+                            due_date = ""
+
+                    row: dict = {
+                        "Date"           : inv_date,
+                        "Invoice ID"     : ci.get("quickbooks_invoice_number", ""),
+                        "Service Number" : prov.get("invoice_number", ""),
+                        "Client"         : ci.get("client_name", ""),
+                        "Charged ($)"    : ci.get("total", 0),
+                        "Pickup Number"  : ci.get("po_number", ""),
+                        "Due Date"       : due_date,
+                        "Paid"           : "Yes" if ci.get("paid") else "No",
+                    }
+
+                    items_by_desc = {
+                        _item.get("description", ""): _item
+                        for _item in (ci.get("line_items") or [])
+                        if _item.get("description")
+                    }
+                    for desc in _all_descs:
+                        _it = items_by_desc.get(desc)
+                        row[f"{desc} — Qty"]  = _it["quantity"] if _it else ""
+                        row[f"{desc} — ($)"]  = _it["total"]    if _it else ""
+
+                    rows.append(row)
+
+                df  = pd.DataFrame(rows)
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                    df.to_excel(writer, index=False, sheet_name="Invoices Detailed")
+                    ws = writer.sheets["Invoices Detailed"]
+                    for col in ws.columns:
+                        max_len = max(len(str(cell.value or "")) for cell in col)
+                        ws.column_dimensions[col[0].column_letter].width = max_len + 4
+                return buf.getvalue()
+
+            _exp_col1, _exp_col2, _exp_col3, _ = st.columns([1, 1, 1, 1])
 
             with _exp_col1:
                 if st.button("📊 Generate Excel", key="gen_excel_all"):
@@ -277,6 +341,18 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         file_name="paid_invoices.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="dl_excel_paid",
+                    )
+
+            with _exp_col3:
+                if st.button("📊 Generate Detailed Excel", key="gen_excel_detailed"):
+                    st.session_state["excel_bytes_detailed"] = _build_detailed_excel(all_ci, _prov_by_id)
+                if "excel_bytes_detailed" in st.session_state:
+                    st.download_button(
+                        "⬇ Download Detailed",
+                        data=st.session_state["excel_bytes_detailed"],
+                        file_name="invoices_detailed.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="dl_excel_detailed",
                     )
 
 
