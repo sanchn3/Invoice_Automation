@@ -14,6 +14,9 @@ import os
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
+# Only sync to Supabase when running on Render (production).
+_IS_PRODUCTION = os.environ.get("RENDER") == "true"
+
 import httpx
 
 from data_manager import DataManager
@@ -102,6 +105,8 @@ def sync_single_invoice(ci: dict) -> None:
     Called immediately after any status-changing action in the UI.
     Silently logs errors so UI actions are never blocked by a sync failure.
     """
+    if not _IS_PRODUCTION:
+        return
     _fix_dns()
     try:
         now_iso  = datetime.utcnow().isoformat() + "Z"

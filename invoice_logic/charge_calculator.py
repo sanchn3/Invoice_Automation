@@ -14,6 +14,7 @@ _EXTRA_CHARGE_MAP = {
     "re_inspection"     : ("re_inspection_fee",       "Re-Inspection"),
     "repacking"         : ("repacking_fee",            "Repacking"),
     "stamps"            : ("stamps_fee",               "Seal"),
+    "broker_fee"        : ("broker_fee",               "American Broker Fee"),
 }
 
 

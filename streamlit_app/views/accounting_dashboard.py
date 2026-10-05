@@ -5,7 +5,9 @@ Accounting dashboard: Invoice Review, Import to QuickBooks, and Email Clients.
 """
 
 import logging
+import threading
 import streamlit as st
+import pandas as pd
 from collections import defaultdict
 from datetime import datetime, timedelta
 from email.mime.application import MIMEApplication
@@ -19,7 +21,15 @@ from data_manager import DataManager
 from alerting.alert_manager import AlertManager
 from invoice_logic.iif_exporter import generate_iif, build_iif_content
 from invoice_logic.pdf_generator import generate_pdf
-from scheduler.supabase_sync import patch_invoice_paid
+from scheduler.supabase_sync import patch_invoice_paid, sync_single_invoice as _sync_inv
+from utils.pdf_storage import (
+    upload_pdf_bytes as _upload_pdf_bytes,
+    fetch_pdf_bytes as _fetch_pdf_bytes,
+)
+try:
+    from streamlit_pdf_viewer import pdf_viewer
+except ImportError:
+    pdf_viewer = None
 
 
 def _build_eml(to_addr: str, subject: str, body: str, attachments: list[tuple[str, bytes]]) -> bytes:
@@ -195,7 +205,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                     )
                                     _qb_s = _ci_saved.get("quickbooks_invoice_number", "")
                                     if _qb_s:
-                                        from utils.pdf_storage import upload_pdf_bytes as _upload_pdf_bytes
                                         _upload_pdf_bytes(f"{_qb_s}-invoice.pdf", _pdf_bytes)
                                 except Exception as _e:
                                     logger.warning("Could not re-upload invoice PDF after edit: %s", _e)
@@ -234,7 +243,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         line_items = ci.get("line_items", [])
                         if line_items:
                             with st.expander("Line Items"):
-                                import pandas as pd
                                 st.dataframe(
                                     pd.DataFrame([{
                                         "Line Item" : li.get("description", "—"),
@@ -247,7 +255,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 )
 
                         if st.session_state.get(pdf_key):
-                            from streamlit_pdf_viewer import pdf_viewer
                             pdf_bytes = _cached_pdf(*_pdf_args(ci, prov))
                             pdf_viewer(pdf_bytes, key=f"acc_pdfview_{cid}")
 
@@ -274,11 +281,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 dm.update_client_invoice(cid, {"ready_for_export": True})
                                 _ci_updated = dm.get_client_invoice_by_id(cid)
                                 if _ci_updated:
-                                    try:
-                                        from scheduler.supabase_sync import sync_single_invoice as _sync_inv
-                                        _sync_inv(_ci_updated)
-                                    except Exception as _e:
-                                        logger.warning("Supabase sync failed: %s", _e)
+                                    threading.Thread(target=_sync_inv, args=(_ci_updated,), daemon=True).start()
                                 st.rerun()
 
 
@@ -361,11 +364,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         dm.update_client_invoice(ci["id"], {"ready_to_email": True})
                         _ci_updated = dm.get_client_invoice_by_id(ci["id"])
                         if _ci_updated:
-                            try:
-                                from scheduler.supabase_sync import sync_single_invoice as _sync_inv
-                                _sync_inv(_ci_updated)
-                            except Exception as _e:
-                                logger.warning("Supabase sync failed: %s", _e)
+                            threading.Thread(target=_sync_inv, args=(_ci_updated,), daemon=True).start()
                         st.rerun()
 
             if selected_ids:
@@ -514,7 +513,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         )
                         # Build .eml with all invoice PDFs attached
                         # Use the stored generated PDF (same source as admin's Sent to Accounting download)
-                        from utils.pdf_storage import fetch_pdf_bytes as _fetch_pdf_bytes
                         _eml_attachments = []
                         for _ci in invoices:
                             _qb  = _ci.get("quickbooks_invoice_number", "invoice")
@@ -552,11 +550,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 dm.update_client_invoice(ci["id"], {"emailed": True})
                                 _ci_updated = dm.get_client_invoice_by_id(ci["id"])
                                 if _ci_updated:
-                                    try:
-                                        from scheduler.supabase_sync import sync_single_invoice as _sync_inv
-                                        _sync_inv(_ci_updated)
-                                    except Exception as _e:
-                                        logger.warning("Supabase sync failed: %s", _e)
+                                    threading.Thread(target=_sync_inv, args=(_ci_updated,), daemon=True).start()
                             st.session_state.pop(prep_key, None)
                             st.rerun()
                         if mc2.button(

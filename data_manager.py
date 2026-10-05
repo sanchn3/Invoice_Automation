@@ -7,6 +7,7 @@ To migrate to Supabase later: replace only this file.
 """
 
 import json
+import os
 import threading
 import uuid
 from collections import OrderedDict
@@ -17,6 +18,10 @@ from typing import Any
 import httpx
 
 from config import DATA_DIR, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+
+# Only write to / read from Supabase when running on Render (production).
+# Local dev uses local JSON files as the sole source of truth.
+_IS_PRODUCTION = os.environ.get("RENDER") == "true"
 
 # ── Supabase helpers ──────────────────────────────────────────────────────────
 
@@ -42,7 +47,7 @@ _SB_CLIENT_TABLE = "client_registry"
 
 def _sb_upsert_record(table: str, local_id: str, record: dict) -> None:
     """Upsert a single pipeline record to Supabase. Silently logs on failure."""
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return
     try:
         resp = httpx.post(
@@ -61,7 +66,7 @@ def _sb_upsert_record(table: str, local_id: str, record: dict) -> None:
 
 def _sb_delete_record(table: str, local_id: str) -> None:
     """Delete a single pipeline record from Supabase. Silently logs on failure."""
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return
     try:
         resp = httpx.delete(
@@ -82,7 +87,7 @@ def _restore_pipeline_from_supabase() -> None:
     local JSON files.  Called at startup when the files are freshly created
     (i.e. after a Render redeploy wiped the ephemeral filesystem).
     """
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return
     for file_path, table in (
         (_PROVIDER_INVOICES_FILE, _SB_PI_TABLE),
@@ -114,7 +119,7 @@ def _backfill_pipeline_to_supabase() -> None:
     first redeploy after this feature was introduced, when the tables are new
     and empty but the running server already has invoice data on disk.
     """
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return
     for file_path, table in (
         (_PROVIDER_INVOICES_FILE, _SB_PI_TABLE),
@@ -168,6 +173,11 @@ _CLIENT_COUNTERS_FILE    = DATA_DIR / "client_invoice_counters.json"
 _BOL_RECORDS_FILE        = DATA_DIR / "bol_records.json"
 
 _lock = threading.Lock()
+
+
+def _fire_and_forget(fn, *args) -> None:
+    """Dispatch a network call to a daemon thread so the UI never blocks."""
+    threading.Thread(target=fn, args=args, daemon=True).start()
 
 # Files that grow unboundedly — never cache them so their full contents are
 # not held in memory between poll cycles.
@@ -312,7 +322,7 @@ def _build_client_snapshot(client_name: str) -> dict:
 
 def _sb_upsert_client(client_name: str, data: dict) -> None:
     """Upsert a single client record to Supabase. Silently logs on failure."""
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return
     try:
         resp = httpx.post(
@@ -331,7 +341,7 @@ def _sb_upsert_client(client_name: str, data: dict) -> None:
 
 def _sb_delete_client(client_name: str) -> None:
     """Delete a client record from Supabase. Silently logs on failure."""
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return
     try:
         import urllib.parse
@@ -373,7 +383,7 @@ def _restore_clients_from_supabase() -> None:
     files.  Called at startup when the client files were freshly created
     (i.e. after a Render redeploy wiped the ephemeral filesystem).
     """
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return
     try:
         resp = httpx.get(
@@ -426,7 +436,7 @@ def _backfill_clients_to_supabase() -> None:
     (files already exist) so that the table is seeded after it is first created
     or after the sync code is first deployed.
     """
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return
     try:
         count_resp = httpx.get(
@@ -582,7 +592,7 @@ class DataManager:
             record.setdefault("created_at", _now())
             invoices.append(record)
             _write_json(_PROVIDER_INVOICES_FILE, invoices)
-        _sb_upsert_record(_SB_PI_TABLE, record["id"], record)
+        _fire_and_forget(_sb_upsert_record, _SB_PI_TABLE, record["id"], record)
         return record
 
     def delete_provider_invoice(self, id: str) -> None:
@@ -590,7 +600,7 @@ class DataManager:
             invoices = _read_json(_PROVIDER_INVOICES_FILE)
             invoices = [inv for inv in invoices if inv["id"] != id]
             _write_json(_PROVIDER_INVOICES_FILE, invoices)
-        _sb_delete_record(_SB_PI_TABLE, id)
+        _fire_and_forget(_sb_delete_record, _SB_PI_TABLE, id)
 
     def update_provider_invoice(self, id: str, updates: dict) -> dict:
         with _lock:
@@ -603,7 +613,7 @@ class DataManager:
                     break
             else:
                 raise KeyError(f"Provider invoice {id} not found.")
-        _sb_upsert_record(_SB_PI_TABLE, id, updated)
+        _fire_and_forget(_sb_upsert_record, _SB_PI_TABLE, id, updated)
         return updated
 
     def get_provider_invoice_by_id(self, id: str) -> dict | None:
@@ -627,7 +637,7 @@ class DataManager:
             record.setdefault("created_at", _now())
             invoices.append(record)
             _write_json(_CLIENT_INVOICES_FILE, invoices)
-        _sb_upsert_record(_SB_CI_TABLE, record["id"], record)
+        _fire_and_forget(_sb_upsert_record, _SB_CI_TABLE, record["id"], record)
         return record
 
     def update_client_invoice(self, id: str, updates: dict) -> dict:
@@ -641,7 +651,7 @@ class DataManager:
                     break
             else:
                 raise KeyError(f"Client invoice {id} not found.")
-        _sb_upsert_record(_SB_CI_TABLE, id, updated)
+        _fire_and_forget(_sb_upsert_record, _SB_CI_TABLE, id, updated)
         return updated
 
     def get_client_invoice_by_id(self, id: str) -> dict | None:
@@ -655,7 +665,7 @@ class DataManager:
             invoices = _read_json(_CLIENT_INVOICES_FILE)
             invoices = [inv for inv in invoices if inv["id"] != id]
             _write_json(_CLIENT_INVOICES_FILE, invoices)
-        _sb_delete_record(_SB_CI_TABLE, id)
+        _fire_and_forget(_sb_delete_record, _SB_CI_TABLE, id)
 
     def get_client_invoice_by_provider_invoice_id(self, provider_invoice_id: str) -> dict | None:
         for inv in self.get_client_invoices():
@@ -725,7 +735,7 @@ class DataManager:
                 all_rates.pop(client_name, None)
             _write_json(_CLIENT_RATES_FILE, all_rates)
             _snap = _build_client_snapshot(client_name)
-        _sb_sync_client(client_name, _snap)
+        _fire_and_forget(_sb_sync_client, client_name, _snap)
 
     def delete_client_rates(self, client_name: str) -> None:
         with _lock:
@@ -734,7 +744,7 @@ class DataManager:
                 all_rates.pop(client_name, None)
                 _write_json(_CLIENT_RATES_FILE, all_rates)
             _snap = _build_client_snapshot(client_name)
-        _sb_sync_client(client_name, _snap)
+        _fire_and_forget(_sb_sync_client, client_name, _snap)
 
     def rename_client(self, old_name: str, new_name: str) -> None:
         """Rename a client across all data files atomically."""
@@ -761,8 +771,8 @@ class DataManager:
                         _write_json(fpath, records)
 
             _new_snap = _build_client_snapshot(new_name)
-        _sb_delete_client(old_name)
-        _sb_sync_client(new_name, _new_snap)
+        _fire_and_forget(_sb_delete_client, old_name)
+        _fire_and_forget(_sb_sync_client, new_name, _new_snap)
 
     # ─────────────────────────────────────────
     # CLIENT BILLING ADDRESSES
@@ -789,7 +799,7 @@ class DataManager:
                 all_addrs.pop(client_name, None)
             _write_json(_CLIENT_ADDRESSES_FILE, all_addrs)
             _snap = _build_client_snapshot(client_name)
-        _sb_sync_client(client_name, _snap)
+        _fire_and_forget(_sb_sync_client, client_name, _snap)
 
     # ─────────────────────────────────────────
     # CLIENT EMAILS
@@ -816,7 +826,7 @@ class DataManager:
                 all_emails.pop(client_name, None)
             _write_json(_CLIENT_EMAILS_FILE, all_emails)
             _snap = _build_client_snapshot(client_name)
-        _sb_sync_client(client_name, _snap)
+        _fire_and_forget(_sb_sync_client, client_name, _snap)
 
     # ─────────────────────────────────────────
     # CLIENT RFCs
@@ -843,7 +853,7 @@ class DataManager:
                 all_rfcs.pop(client_name, None)
             _write_json(_CLIENT_RFCS_FILE, all_rfcs)
             _snap = _build_client_snapshot(client_name)
-        _sb_sync_client(client_name, _snap)
+        _fire_and_forget(_sb_sync_client, client_name, _snap)
 
     # ─────────────────────────────────────────
     # CLIENT INITIALS
@@ -870,7 +880,7 @@ class DataManager:
                 all_initials.pop(client_name, None)
             _write_json(_CLIENT_INITIALS_FILE, all_initials)
             _snap = _build_client_snapshot(client_name)
-        _sb_sync_client(client_name, _snap)
+        _fire_and_forget(_sb_sync_client, client_name, _snap)
 
     # ─────────────────────────────────────────
     # PER-CLIENT INVOICE COUNTERS

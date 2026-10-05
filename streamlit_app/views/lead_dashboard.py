@@ -4,7 +4,9 @@ lead_dashboard.py
 Lead dashboard: Reports, Rate Card editor, and Settings.
 """
 
+import io
 import streamlit as st
+import pandas as pd
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -216,9 +218,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             st.caption("Download all invoice records as an Excel spreadsheet.")
 
             def _build_excel(invoices: list[dict], providers: dict) -> bytes:
-                import io
-                import pandas as pd
-
                 rows = []
                 for ci in invoices:
                     prov = providers.get(ci.get("provider_invoice_id", ""), {})
@@ -255,9 +254,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 return buf.getvalue()
 
             def _build_detailed_excel(invoices: list[dict], providers: dict) -> bytes:
-                import io
-                import pandas as pd
-
                 # Collect all unique service descriptions in encounter order
                 _seen_descs: set[str] = set()
                 _all_descs: list[str] = []
@@ -388,7 +384,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             "pallet_cleaning_fee"            : "Pallet Cleaning",
             "repacking_fee"                  : "Repacking",
             "re_inspection_fee"              : "Re-Inspection",
-            "broker_fee"                     : "Broker Fee",
+            "broker_fee"                     : "American Broker Fee",
             "stamps_fee"                     : "Seals",
             "overtime_fee"                   : "Hours Overtime",
             "restack_fee"                    : "Restack",
@@ -560,6 +556,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         )
         if _new_fixed_pal > 0:
             new_client_overrides["fixed_pallet_count"] = int(_new_fixed_pal)
+
+        _new_temp_recording = st.checkbox(
+            "Temperature Recording",
+            value=True,
+            key="new_cr_temperature_recording",
+            help="When enabled, Pulp Temperature and Temperature Recorder fields appear in the Admin dashboard for this client's invoices.",
+        )
+        new_client_overrides["temperature_recording"] = _new_temp_recording
 
         if _colored_btn(st, "💾 Save Client Profile", key="save_new_client", color="#198754"):
             if not new_client_name.strip():
@@ -801,6 +805,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     )
                     if _fixed_pal > 0:
                         new_overrides["fixed_pallet_count"] = int(_fixed_pal)
+
+                    _client_temp_recording = st.checkbox(
+                        "Temperature Recording",
+                        value=bool(crates.get("temperature_recording", True)),
+                        key=f"cr_{cname}_temperature_recording",
+                        help="When enabled, Pulp Temperature and Temperature Recorder fields appear in the Admin dashboard for this client's invoices.",
+                    )
+                    new_overrides["temperature_recording"] = _client_temp_recording
 
                     # ── Buttons ───────────────────────────────────────────────
                     btn_col1, btn_col2 = st.columns(2)
