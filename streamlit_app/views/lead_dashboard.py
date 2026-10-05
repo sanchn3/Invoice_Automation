@@ -377,7 +377,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         billing_labels = {
             "in_out"           : "In-Out Storage (per pallet)",
             "transfer"         : "Transfer per Truck",
-            "extended_storage" : "Extended Storage (per pallet / week)",
+            "extended_storage" : "Extended Storage (per pallet)",
         }
 
         # Non-billing labels are the same regardless of mode — reused in all loops
@@ -509,7 +509,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             key="new_cr_transfer",
         )
         _new_extended_storage = new_col2.number_input(
-            "Extended Storage (per pallet / week) ($)",
+            "Extended Storage (per pallet) ($)",
             value=float(default_rates.get("extended_storage", 0)),
             min_value=0.0, step=0.25, format="%.2f",
             key="new_cr_extended_storage",
@@ -739,7 +739,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     )
                     _def_extended    = float(default_rates.get("extended_storage", 0))
                     _client_extended = override_col1.number_input(
-                        "Extended Storage (per pallet / week) ($)" + (" ✏️" if "extended_storage" in crates else ""),
+                        "Extended Storage (per pallet) ($)" + (" ✏️" if "extended_storage" in crates else ""),
                         value=float(crates.get("extended_storage", _def_extended)),
                         min_value=0.0, step=0.25, format="%.2f",
                         key=f"cr_{cname}_extended_storage",

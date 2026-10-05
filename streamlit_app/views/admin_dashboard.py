@@ -268,15 +268,14 @@ def _render_extended_storage(dm: DataManager) -> None:
             "Set one in the Rate Card before generating an invoice."
         )
 
-    es_col1, es_col2 = st.columns(2)
-    es_pallets = es_col1.number_input("Number of Pallets", min_value=1, step=1, value=1, key="es_pallets")
-    es_weeks   = es_col2.number_input("Number of Weeks",   min_value=1, step=1, value=1, key="es_weeks")
+    es_service_num = st.text_input("Service Number", key="es_service_num")
 
-    es_total = round(es_rate * int(es_pallets) * int(es_weeks), 2)
+    es_pallets = st.number_input("Number of Pallets", min_value=1, step=1, value=1, key="es_pallets")
+
+    es_total = round(es_rate * int(es_pallets), 2)
     st.markdown(
-        f"**Rate:** ${es_rate:,.2f} / pallet-week &nbsp;·&nbsp; "
         f"**Total:** ${es_total:,.2f} &nbsp; "
-        f"({int(es_pallets)} pallets × {int(es_weeks)} weeks × ${es_rate:,.2f})"
+        f"({int(es_pallets)} pallets × ${es_rate:,.2f})"
     )
 
     if _colored_btn(st, "📤 Generate & Send to Accounting", key="es_generate", color="#198754"):
@@ -302,15 +301,13 @@ def _render_extended_storage(dm: DataManager) -> None:
                 "temp_recorder"             : False,
                 "producto_caliente"         : False,
                 "temp_f1": "", "temp_f2": "", "temp_f3": "",
-                "worker_notes"              : (
-                    f"Extended storage: {int(es_pallets)} pallets "
-                    f"× {int(es_weeks)} weeks"
-                ),
+                "worker_notes"              : f"Extended storage: {int(es_pallets)} pallets",
                 "photo_paths"               : [],
+                "service_number"            : es_service_num.strip(),
                 "line_items"                : [{
                     "description" : "Extended Storage",
-                    "quantity"    : int(es_pallets) * int(es_weeks),
-                    "unit"        : "pallet-week",
+                    "quantity"    : int(es_pallets),
+                    "unit"        : "pallet",
                     "unit_price"  : es_rate,
                     "total"       : es_total,
                 }],

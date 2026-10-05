@@ -45,6 +45,7 @@ def _cached_pdf(
     invoice_date: str,
     due_date: str,
     po_number: str,
+    service_number: str,
     _ci: dict,
 ) -> bytes:
     """Cache keyed by all editable fields so any edit invalidates the cached PDF."""
@@ -54,7 +55,7 @@ def _cached_pdf(
 def _pdf_args(ci: dict, prov: dict | None) -> tuple:
     """Return the positional args for _cached_pdf from a client invoice + provider record."""
     _pdf_path = (prov or {}).get("pdf_local_path", "")
-    _prov_inv_num = (prov or {}).get("invoice_number", "")
+    _prov_inv_num = (prov or {}).get("invoice_number", "") or ci.get("service_number", "")
     _ci_for_pdf = {**ci, "provider_invoice_number": _prov_inv_num}
     return (
         ci["id"],
@@ -64,6 +65,7 @@ def _pdf_args(ci: dict, prov: dict | None) -> tuple:
         ci.get("invoice_date", ""),
         ci.get("due_date", ""),
         ci.get("po_number", ""),
+        ci.get("service_number", ""),
         _ci_for_pdf,
     )
 
@@ -164,13 +166,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             value=ci.get("po_number", ""),
                             key=f"acc_epo_{cid}",
                         )
+                        new_service_num = e2.text_input(
+                            "Service Number",
+                            value=ci.get("service_number", ""),
+                            key=f"acc_esvcnum_{cid}",
+                        )
 
                         s1, s2 = st.columns(2)
                         if s1.button("💾 Save", key=f"acc_esave_{cid}", type="primary", width="stretch"):
                             dm.update_client_invoice(cid, {
-                                "invoice_date": new_inv_date.strip(),
-                                "due_date"    : new_due_date.strip(),
-                                "po_number"   : new_po.strip(),
+                                "invoice_date"  : new_inv_date.strip(),
+                                "due_date"      : new_due_date.strip(),
+                                "po_number"     : new_po.strip(),
+                                "service_number": new_service_num.strip(),
                             })
                             # Re-generate and re-upload the stored PDF so the
                             # email attachment reflects the updated invoice fields.
@@ -178,7 +186,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             if _ci_saved:
                                 try:
                                     _prov_s = prov_by_id.get(_ci_saved.get("provider_invoice_id", ""), {})
-                                    _ci_for_pdf = {**_ci_saved, "provider_invoice_number": _prov_s.get("invoice_number", "")}
+                                    _prov_inv_num = _prov_s.get("invoice_number", "") or _ci_saved.get("service_number", "")
+                                    _ci_for_pdf = {**_ci_saved, "provider_invoice_number": _prov_inv_num}
                                     _ppath = _prov_s.get("pdf_local_path", "")
                                     _pdf_bytes = generate_pdf(
                                         _ci_for_pdf,
@@ -214,6 +223,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.session_state[pdf_key] = not st.session_state.get(pdf_key, False)
                             st.rerun()
 
+                        if ci.get("service_number"):
+                            st.caption(f"Service #: {ci['service_number']}")
                         if ci.get("po_number"):
                             st.caption(f"P.O.: {ci['po_number']}")
                         if ci.get("due_date"):
