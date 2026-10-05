@@ -35,8 +35,9 @@ def _sb_url(table: str) -> str:
     return f"{SUPABASE_URL}/rest/v1/{table}"
 
 
-_SB_CI_TABLE = "pipeline_client_invoices"
-_SB_PI_TABLE = "pipeline_provider_invoices"
+_SB_CI_TABLE     = "pipeline_client_invoices"
+_SB_PI_TABLE     = "pipeline_provider_invoices"
+_SB_CLIENT_TABLE = "client_registry"
 
 
 def _sb_upsert_record(table: str, local_id: str, record: dict) -> None:
@@ -295,14 +296,141 @@ def _write_json(path: Path, data: Any) -> None:
         _file_cache.pop(path, None)
 
 
+def _build_client_snapshot(client_name: str) -> dict:
+    """
+    Assemble the current full state of a client from all local JSON files.
+    Must be called while _lock is held (reads from cache-backed files).
+    """
+    return {
+        "rates"    : _read_json(_CLIENT_RATES_FILE).get(client_name, {}),
+        "address"  : _read_json(_CLIENT_ADDRESSES_FILE).get(client_name, ""),
+        "email"    : _read_json(_CLIENT_EMAILS_FILE).get(client_name, ""),
+        "rfc"      : _read_json(_CLIENT_RFCS_FILE).get(client_name, ""),
+        "initials" : _read_json(_CLIENT_INITIALS_FILE).get(client_name, ""),
+    }
+
+
+def _sb_upsert_client(client_name: str, data: dict) -> None:
+    """Upsert a single client record to Supabase. Silently logs on failure."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return
+    try:
+        resp = httpx.post(
+            f"{_sb_url(_SB_CLIENT_TABLE)}?on_conflict=client_name",
+            headers=_sb_headers("resolution=merge-duplicates,return=minimal"),
+            content=json.dumps({"client_name": client_name, "data": data,
+                                "updated_at": _now()}),
+            timeout=8,
+        )
+        if resp.status_code not in (200, 201, 204):
+            _sb_logger.warning("_sb_upsert_client %s: HTTP %s %s",
+                               client_name, resp.status_code, resp.text[:200])
+    except Exception as exc:
+        _sb_logger.warning("_sb_upsert_client %s: %s", client_name, exc)
+
+
+def _sb_delete_client(client_name: str) -> None:
+    """Delete a client record from Supabase. Silently logs on failure."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return
+    try:
+        import urllib.parse
+        encoded = urllib.parse.quote(client_name, safe="")
+        resp = httpx.delete(
+            f"{_sb_url(_SB_CLIENT_TABLE)}?client_name=eq.{encoded}",
+            headers=_sb_headers("return=minimal"),
+            timeout=8,
+        )
+        if resp.status_code not in (200, 204):
+            _sb_logger.warning("_sb_delete_client %s: HTTP %s %s",
+                               client_name, resp.status_code, resp.text[:200])
+    except Exception as exc:
+        _sb_logger.warning("_sb_delete_client %s: %s", client_name, exc)
+
+
+def _sb_sync_client(client_name: str, snapshot: dict) -> None:
+    """
+    Upsert the client to Supabase, or delete it when every field is empty
+    (i.e. the client has been fully removed from all local files).
+    Call this OUTSIDE _lock — it makes a network request.
+    """
+    is_empty = (
+        not snapshot.get("rates")
+        and not snapshot.get("address")
+        and not snapshot.get("email")
+        and not snapshot.get("rfc")
+        and not snapshot.get("initials")
+    )
+    if is_empty:
+        _sb_delete_client(client_name)
+    else:
+        _sb_upsert_client(client_name, snapshot)
+
+
+def _restore_clients_from_supabase() -> None:
+    """
+    Pull all client records from Supabase and rebuild the local client JSON
+    files.  Called at startup when the client files were freshly created
+    (i.e. after a Render redeploy wiped the ephemeral filesystem).
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return
+    try:
+        resp = httpx.get(
+            f"{_sb_url(_SB_CLIENT_TABLE)}?select=client_name,data",
+            headers=_sb_headers(),
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            _sb_logger.warning("_restore_clients: HTTP %s", resp.status_code)
+            return
+        rows = resp.json()
+    except Exception as exc:
+        _sb_logger.warning("_restore_clients: %s", exc)
+        return
+
+    rates, addresses, emails, rfcs, initials = {}, {}, {}, {}, {}
+    for row in rows:
+        name = row.get("client_name", "")
+        data = row.get("data") or {}
+        if not name:
+            continue
+        if data.get("rates"):
+            rates[name] = data["rates"]
+        if data.get("address"):
+            addresses[name] = data["address"]
+        if data.get("email"):
+            emails[name] = data["email"]
+        if data.get("rfc"):
+            rfcs[name] = data["rfc"]
+        if data.get("initials"):
+            initials[name] = data["initials"]
+
+    for fpath, payload in (
+        (_CLIENT_RATES_FILE,     rates),
+        (_CLIENT_ADDRESSES_FILE, addresses),
+        (_CLIENT_EMAILS_FILE,    emails),
+        (_CLIENT_RFCS_FILE,      rfcs),
+        (_CLIENT_INITIALS_FILE,  initials),
+    ):
+        if payload:
+            _write_json(fpath, payload)
+
+    _sb_logger.info("_restore_clients: restored %d clients from Supabase", len(rows))
+
+
 def _ensure_defaults() -> None:
     """Write default JSON files to disk if they don't exist, then restore
     pipeline invoice data from Supabase when the pipeline files are missing
     or empty (i.e. after a Render redeploy wiped the ephemeral filesystem)."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    client_files_created = False
     for path, default in _JSON_DEFAULTS.items():
         if not path.exists():
             _write_json(path, default)
+            if path in (_CLIENT_RATES_FILE, _CLIENT_ADDRESSES_FILE,
+                        _CLIENT_EMAILS_FILE, _CLIENT_INITIALS_FILE, _CLIENT_RFCS_FILE):
+                client_files_created = True
 
     # Restore from Supabase if either pipeline file is empty
     pipeline_empty = (
@@ -313,6 +441,9 @@ def _ensure_defaults() -> None:
         _restore_pipeline_from_supabase()
     else:
         _backfill_pipeline_to_supabase()
+
+    if client_files_created:
+        _restore_clients_from_supabase()
 
 
 _ensure_defaults()
@@ -518,6 +649,8 @@ class DataManager:
             else:
                 all_rates.pop(client_name, None)
             _write_json(_CLIENT_RATES_FILE, all_rates)
+            _snap = _build_client_snapshot(client_name)
+        _sb_sync_client(client_name, _snap)
 
     def delete_client_rates(self, client_name: str) -> None:
         with _lock:
@@ -525,6 +658,8 @@ class DataManager:
             if isinstance(all_rates, dict):
                 all_rates.pop(client_name, None)
                 _write_json(_CLIENT_RATES_FILE, all_rates)
+            _snap = _build_client_snapshot(client_name)
+        _sb_sync_client(client_name, _snap)
 
     def rename_client(self, old_name: str, new_name: str) -> None:
         """Rename a client across all data files atomically."""
@@ -550,6 +685,10 @@ class DataManager:
                     if changed:
                         _write_json(fpath, records)
 
+            _new_snap = _build_client_snapshot(new_name)
+        _sb_delete_client(old_name)
+        _sb_sync_client(new_name, _new_snap)
+
     # ─────────────────────────────────────────
     # CLIENT BILLING ADDRESSES
     # ─────────────────────────────────────────
@@ -574,6 +713,8 @@ class DataManager:
             else:
                 all_addrs.pop(client_name, None)
             _write_json(_CLIENT_ADDRESSES_FILE, all_addrs)
+            _snap = _build_client_snapshot(client_name)
+        _sb_sync_client(client_name, _snap)
 
     # ─────────────────────────────────────────
     # CLIENT EMAILS
@@ -599,6 +740,8 @@ class DataManager:
             else:
                 all_emails.pop(client_name, None)
             _write_json(_CLIENT_EMAILS_FILE, all_emails)
+            _snap = _build_client_snapshot(client_name)
+        _sb_sync_client(client_name, _snap)
 
     # ─────────────────────────────────────────
     # CLIENT RFCs
@@ -624,6 +767,8 @@ class DataManager:
             else:
                 all_rfcs.pop(client_name, None)
             _write_json(_CLIENT_RFCS_FILE, all_rfcs)
+            _snap = _build_client_snapshot(client_name)
+        _sb_sync_client(client_name, _snap)
 
     # ─────────────────────────────────────────
     # CLIENT INITIALS
@@ -649,6 +794,8 @@ class DataManager:
             else:
                 all_initials.pop(client_name, None)
             _write_json(_CLIENT_INITIALS_FILE, all_initials)
+            _snap = _build_client_snapshot(client_name)
+        _sb_sync_client(client_name, _snap)
 
     # ─────────────────────────────────────────
     # PER-CLIENT INVOICE COUNTERS
