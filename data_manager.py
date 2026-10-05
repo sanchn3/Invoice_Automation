@@ -419,6 +419,75 @@ def _restore_clients_from_supabase() -> None:
     _sb_logger.info("_restore_clients: restored %d clients from Supabase", len(rows))
 
 
+def _backfill_clients_to_supabase() -> None:
+    """
+    One-time bootstrap: if client_registry is empty but local JSON files have
+    clients, push all local clients up to Supabase.  Called on normal startup
+    (files already exist) so that the table is seeded after it is first created
+    or after the sync code is first deployed.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return
+    try:
+        count_resp = httpx.get(
+            f"{_sb_url(_SB_CLIENT_TABLE)}?select=client_name",
+            headers={**_sb_headers(), "Prefer": "count=exact"},
+            timeout=10,
+        )
+        sb_count = int(count_resp.headers.get("content-range", "0/0").split("/")[-1] or 0)
+        if sb_count > 0:
+            return  # already has data — nothing to backfill
+    except Exception as exc:
+        _sb_logger.warning("_backfill_clients count check: %s", exc)
+        return
+
+    try:
+        all_rates     = _read_json(_CLIENT_RATES_FILE)
+        all_addresses = _read_json(_CLIENT_ADDRESSES_FILE)
+        all_emails    = _read_json(_CLIENT_EMAILS_FILE)
+        all_rfcs      = _read_json(_CLIENT_RFCS_FILE)
+        all_initials  = _read_json(_CLIENT_INITIALS_FILE)
+
+        all_names = (
+            set(all_rates.keys())
+            | set(all_addresses.keys())
+            | set(all_emails.keys())
+            | set(all_rfcs.keys())
+            | set(all_initials.keys())
+        )
+        if not all_names:
+            return
+
+        now  = _now()
+        rows = [
+            {
+                "client_name": name,
+                "data": {
+                    "rates"    : all_rates.get(name, {}),
+                    "address"  : all_addresses.get(name, ""),
+                    "email"    : all_emails.get(name, ""),
+                    "rfc"      : all_rfcs.get(name, ""),
+                    "initials" : all_initials.get(name, ""),
+                },
+                "updated_at": now,
+            }
+            for name in all_names
+        ]
+        resp = httpx.post(
+            f"{_sb_url(_SB_CLIENT_TABLE)}?on_conflict=client_name",
+            headers=_sb_headers("resolution=merge-duplicates,return=minimal"),
+            content=json.dumps(rows),
+            timeout=30,
+        )
+        if resp.status_code in (200, 201, 204):
+            _sb_logger.info("_backfill_clients: pushed %d clients to Supabase", len(rows))
+        else:
+            _sb_logger.warning("_backfill_clients: HTTP %s %s",
+                               resp.status_code, resp.text[:200])
+    except Exception as exc:
+        _sb_logger.warning("_backfill_clients: %s", exc)
+
+
 def _ensure_defaults() -> None:
     """Write default JSON files to disk if they don't exist, then restore
     pipeline invoice data from Supabase when the pipeline files are missing
@@ -442,8 +511,14 @@ def _ensure_defaults() -> None:
     else:
         _backfill_pipeline_to_supabase()
 
-    if client_files_created:
+    # Restore clients on a fresh redeploy (files freshly created OR pipeline
+    # was empty — both indicate the filesystem was wiped).
+    # On a normal restart (files exist, pipeline has data), backfill any
+    # clients that are missing from Supabase (e.g. table was just created).
+    if client_files_created or pipeline_empty:
         _restore_clients_from_supabase()
+    else:
+        _backfill_clients_to_supabase()
 
 
 _ensure_defaults()
