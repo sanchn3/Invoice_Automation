@@ -2,8 +2,8 @@
 
 End-to-end invoice automation for a cold-room logistics/warehouse business.
 Polls a worker's Outlook inbox for provider invoices, parses PDF attachments,
-lets a worker fill in job details via a mobile form, generates client invoices
-with calculated charges, and exports to QuickBooks Desktop 2018 via IIF.
+lets staff fill in job details via role-based dashboards, generates client
+invoices with calculated charges, and exports to QuickBooks Desktop via IIF.
 
 ---
 
@@ -26,26 +26,35 @@ attachment_handler.py  ──►  saves PDF to /pdfs/
      │         └── failed? ──►  claude_parser.py  (AI fallback)
      │
      ▼
-provider_invoices.json  +  client_invoices.json (status: pending_worker)
+provider_invoices.json  +  client_invoices.json  (status: pending_validation)
      │
      ▼
-[Admin Dashboard]  ──►  sets service_type + temp_recorder
+[Admin Dashboard — Validate tab]  ──►  review parsed invoice, validate
      │
      ▼
-[Worker Form]  ──►  pallet count, extra charges, photos, notes
+[Admin Dashboard — To Be Received tab]  ──►  mark physical shipment received
      │
      ▼
-client_invoices.json  (status: ready_to_invoice)
-     │
-     ▼
-[Admin Dashboard]  ──►  enters QB invoice # ──►  charge_calculator.py
+[Admin Dashboard — Approve & Invoice tab]  ──►  enter job details, generate invoice
      │
      ▼
 client_invoices.json  (status: invoiced)
      │
-     ▼
-iif_exporter.py  ──►  invoices_export_{timestamp}.iif  ──►  QuickBooks Desktop
+     ├──►  [Accounting Dashboard]  ──►  review, edit fields, export to QuickBooks
+     │
+     └──►  iif_exporter.py  ──►  invoices_export_{timestamp}.iif  ──►  QuickBooks Desktop
 ```
+
+---
+
+## User Roles
+
+| Role | Dashboard | Access |
+|------|-----------|--------|
+| **Lead / Worker** | Lead Dashboard | Rate card management, client setup, invoice reports, job photo review |
+| **Administrator** | Admin Dashboard | Invoice validation, receiving, approval, extended storage billing |
+| **Accounting** | Accounting Dashboard | Invoice review & editing, QuickBooks export, client billing |
+| **BOL** | BOL Dashboard | Bill of Lading creation and management |
 
 ---
 
@@ -56,6 +65,7 @@ iif_exporter.py  ──►  invoices_export_{timestamp}.iif  ──►  QuickBoo
   - `Mail.Read` and `Mail.Send` permissions (Application type)
   - Admin consent granted
 - An Anthropic API key
+- A Supabase project (for invoice + client persistence across deployments)
 - QuickBooks Desktop 2018
 
 ---
@@ -93,6 +103,8 @@ WORKER_EMAIL=worker@yourdomain.com
 ADMIN_EMAIL=admin@yourdomain.com
 ANTHROPIC_API_KEY=sk-ant-...
 OUTLOOK_INVOICE_FOLDER=Provider Invoices
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 ```
 
 #### Azure App Registration (Microsoft Graph)
@@ -106,7 +118,47 @@ OUTLOOK_INVOICE_FOLDER=Provider Invoices
 4. Copy **Application (client) ID** → `MS_CLIENT_ID`
 5. Copy **Directory (tenant) ID** → `MS_TENANT_ID`
 
-### 4. Set up the Outlook folder
+### 4. Set up Supabase tables
+
+Run the following SQL in your Supabase SQL editor:
+
+```sql
+-- Invoice pipeline tables
+CREATE TABLE pipeline_client_invoices (
+  local_id   TEXT PRIMARY KEY,
+  data       JSONB NOT NULL DEFAULT '{}',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE pipeline_provider_invoices (
+  local_id   TEXT PRIMARY KEY,
+  data       JSONB NOT NULL DEFAULT '{}',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Client registry (persists rate cards, addresses, emails, RFCs, initials)
+CREATE TABLE client_registry (
+  client_name TEXT PRIMARY KEY,
+  data        JSONB NOT NULL DEFAULT '{}',
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Invoice number counters (persists QB invoice numbering across redeploys)
+CREATE TABLE client_invoice_counters (
+  client_name TEXT PRIMARY KEY,
+  counter     INTEGER NOT NULL DEFAULT 2000,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Cold storage archive (for accounting/reporting)
+CREATE TABLE cold_storage_invoices (
+  local_id    TEXT PRIMARY KEY,
+  data        JSONB NOT NULL DEFAULT '{}',
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+### 5. Set up the Outlook folder
 
 In the worker's Outlook, create a folder named **"Provider Invoices"** and configure
 an Outlook rule to automatically move provider invoice emails there.
@@ -125,7 +177,7 @@ python main.py
 
 Logs are written to `logs/poller.log`.
 
-### Streamlit App (admin + worker UI)
+### Streamlit App
 
 ```bash
 streamlit run streamlit_app/app.py
@@ -139,33 +191,89 @@ Opens in your browser at `http://localhost:8501`
 
 ### Admin Dashboard
 
-Accessible at the Streamlit app. Five tabs:
+Accessed via the **Administrator** role. Four modes selectable via radio:
+
+| Mode | Purpose |
+|------|---------|
+| **In** | Three-tab pipeline: Validate parsed invoices → mark as Received → Approve & generate client invoice |
+| **Out** | Bill of Lading creation and management |
+| **📷 Operation Photos** | Browse and download photos by lot number |
+| **📦 Extended Storage** | Generate a direct extended-storage invoice for a client (pallets × rate, sent straight to Accounting) |
+
+#### Invoice Pipeline (In mode)
+
+| Tab | Status transition | What happens |
+|-----|-----------------|-------------|
+| 🗂 Validate | `pending_validation` | Review the parsed provider invoice, manually edit fields if needed, click Validate |
+| 📦 To Be Received | `to_be_received` | Enter the physical received date; PDF is stamped automatically |
+| ✅ Approve & Invoice | `validated` → `invoiced` | Enter job details (pallets, extras, temps, notes), generate the client invoice with a QB number |
+
+### Lead Dashboard
+
+Accessed via the **Lead** role. Three tabs:
 
 | Tab | Purpose |
 |-----|---------|
-| 🗂 Pipeline | Kanban-style board showing all invoices by status. Stuck invoices (24h+) are flagged. |
-| ✅ Approve & Invoice | Set service type + temp recorder. Review worker submission. Enter QB invoice number. Generate client invoice. |
-| 📤 QuickBooks Export | Select invoices to export. Downloads an IIF file. Marks invoices as exported. |
-| 📊 Reports | Charts: by client, service type, week, extra charge frequency. |
-| 💲 Rate Card | Edit all service rates. Changes apply immediately to new invoices. |
+| 📊 Reports | KPI metrics, charts by client/service/week, Excel export |
+| 💲 Rate Card | Edit default rates and per-client rate overrides. Set billing address, email, RFC, and initials per client. Add or delete clients. |
+| 🗂 Client Data Management | Filter and bulk-delete invoice records by client |
 
-### Worker Form
+#### Rate Card — Extended Storage
 
-Mobile-friendly page. Worker:
-1. Selects their job from the dropdown
-2. Enters pallet count, damaged/broken pallet counts
-3. Checks applicable extra charges
-4. Adds notes and photos
-5. Submits → admin gets an email alert
+The Rate Card includes an **Extended Storage (per pallet)** field for each client.
+This rate is used by the Admin's Extended Storage invoice mode to calculate the total.
 
-### QuickBooks Export
+### Accounting Dashboard
 
-1. Admin reviews and approves job in the **Approve & Invoice** tab
-2. Admin enters the QuickBooks invoice number (from QuickBooks Desktop — **never auto-generated**)
-3. Clicks **Generate Client Invoice**
-4. In the **QuickBooks Export** tab, select invoices and click Export
-5. Download the `.iif` file and import into QuickBooks Desktop via:
-   `File → Utilities → Import → IIF Files`
+Accessed via the **Accounting** role. Four tabs:
+
+| Tab | Purpose |
+|-----|---------|
+| 🔍 Invoice Review | Review invoiced submissions. Edit Invoice Date, Due Date, P.O. Number, and Service Number. PDF re-generates automatically on save. Mark ready for export. |
+| 📥 Import to QuickBooks | Select invoices and download an IIF file for QuickBooks Desktop import |
+| 📧 Send Invoices | Compose and download client invoice emails with PDF attachments |
+| 📋 Invoice History | Browse all exported and paid invoices. Download PDFs and IIF files. |
+
+### Extended Storage Billing
+
+For clients in long-term pallet storage:
+
+1. Lead sets the **Extended Storage (per pallet)** rate in the Rate Card for the client
+2. Admin opens **📦 Extended Storage** mode, selects the client, enters a service number and pallet count
+3. The invoice total is calculated as `pallets × rate` and sent directly to Accounting (`status: invoiced`)
+4. Accounting can edit the service number in the Invoice Review tab; the PDF updates immediately
+
+---
+
+## Invoice Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `pending_validation` | PDF parsed, awaiting admin review |
+| `to_be_received` | Validated by admin, awaiting physical receipt confirmation |
+| `validated` | Received, ready for admin to approve and generate invoice |
+| `ready_to_invoice` | Returned to admin from accounting for correction |
+| `invoiced` | Client invoice generated with QB number, in Accounting |
+| `ready_for_export` | Accounting approved, ready for QuickBooks export |
+| `exported_to_qb` | IIF exported to QuickBooks |
+
+---
+
+## Persistence & Supabase Sync
+
+All data is stored locally in JSON files under `data/`. On a Render redeploy the
+ephemeral filesystem is wiped; Supabase is used to restore data on next startup.
+
+| Data | Local file | Supabase table | Sync trigger |
+|------|-----------|---------------|-------------|
+| Client invoices | `client_invoices.json` | `pipeline_client_invoices` | Every create/update |
+| Provider invoices | `provider_invoices.json` | `pipeline_provider_invoices` | Every create/update |
+| Clients (rates, address, etc.) | 5 JSON files | `client_registry` | Every create/update/delete |
+| Invoice counters | `client_invoice_counters.json` | `client_invoice_counters` | Every increment |
+| Processed invoices | — | `cold_storage_invoices` | Scheduler batch |
+
+All Supabase calls are fire-and-forget — failures are logged silently and the app
+continues using local files.
 
 ---
 
@@ -190,38 +298,8 @@ Edit `data/providers.json` and add an entry:
 ```
 
 The `parser_profile` keywords tell the PDF parser where to look for each field
-in that provider's specific invoice layout. If the PDF parser still fails, the
-Claude fallback will handle it automatically.
-
----
-
-## Updating Rates
-
-Use the **Rate Card** tab in the admin dashboard. No code changes needed.
-
----
-
-## Invoice Statuses
-
-| Status | Meaning |
-|--------|---------|
-| `received` | Email logged, not yet parsed |
-| `parsed` | PDF parsed, awaiting admin service setup |
-| `pending_worker` | Admin set service type, waiting for worker to submit |
-| `pending_review` | Parsing failed or flagged — manual review needed |
-| `ready_to_invoice` | Worker submitted, admin to approve and generate invoice |
-| `invoiced` | Client invoice generated with QB number |
-| `exported_to_qb` | IIF exported to QuickBooks |
-
----
-
-## Migrating to Supabase
-
-All data access is isolated in `data_manager.py`. To migrate:
-
-1. Create equivalent tables in Supabase matching the JSON structures
-2. Rewrite `data_manager.py` to use `supabase-py` instead of JSON files
-3. No other files need to change
+in that provider's invoice layout. If parsing fails, the Claude AI fallback
+handles it automatically.
 
 ---
 
@@ -233,15 +311,22 @@ invoice_automation/
 ├── requirements.txt
 ├── main.py                       # Email poller entry point
 ├── config.py                     # Env vars + path constants
-├── data_manager.py               # ALL data read/write (swap for Supabase here)
+├── data_manager.py               # ALL data read/write + Supabase sync
 ├── data/
 │   ├── email_intake_log.json
 │   ├── provider_invoices.json
 │   ├── client_invoices.json
+│   ├── client_rates.json         # Per-client rate overrides
+│   ├── client_addresses.json
+│   ├── client_emails.json
+│   ├── client_initials.json
+│   ├── client_rfcs.json
+│   ├── client_invoice_counters.json
 │   ├── providers.json
-│   └── rate_card.json
+│   ├── rate_card.json            # Default rates
+│   └── bol_records.json
 ├── pdfs/                         # Saved provider invoice PDFs
-├── photos/                       # Worker-uploaded photos
+├── photos/                       # Operation photos
 ├── exports/                      # Generated IIF files
 ├── logs/                         # Poller logs
 ├── email_pipeline/
@@ -252,18 +337,23 @@ invoice_automation/
 │   ├── pdf_parser.py             # pdfplumber parser
 │   └── claude_parser.py          # Claude fallback + classifier
 ├── invoice_logic/
-│   ├── charge_calculator.py      # Rate card × job details = total
+│   ├── charge_calculator.py      # Rate card × job details = line items + total
+│   ├── pdf_generator.py          # ReportLab client invoice PDF
+│   ├── stamp_pdf.py              # Stamps received date onto provider PDF
 │   └── iif_exporter.py           # QuickBooks IIF generator
 ├── alerting/
 │   └── alert_manager.py          # Email alerts via Graph API
-├── streamlit_app/
-│   ├── app.py                    # Streamlit entry point
-│   ├── views/
-│   │   ├── admin_dashboard.py    # Admin pipeline + approval + export
-│   │   └── worker_form.py        # Mobile worker job form
-│   └── components/
-│       ├── invoice_card.py       # Reusable invoice display card
-│       └── status_badge.py       # Color-coded status pill
-└── scheduler/
-    └── reconciliation.py         # Stuck invoice checker
+├── scheduler/
+│   ├── supabase_sync.py          # Batch sync to cold_storage_invoices
+│   └── reconciliation.py         # Stuck invoice checker
+├── utils/
+│   └── pdf_storage.py            # PDF upload/fetch helpers
+└── streamlit_app/
+    ├── app.py                    # Streamlit entry point + auth
+    ├── app_production.py         # Production entry point (Render)
+    └── views/
+        ├── admin_dashboard.py    # Validate / Receive / Approve / Extended Storage / Photos
+        ├── lead_dashboard.py     # Reports / Rate Card / Client Management
+        ├── accounting_dashboard.py # Invoice Review / QB Export / Email / History
+        └── bol_dashboard.py      # Bill of Lading management
 ```
