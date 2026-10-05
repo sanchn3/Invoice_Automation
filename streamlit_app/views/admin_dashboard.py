@@ -8,8 +8,10 @@ QuickBooks export, reporting, and rate card editor.
 import json
 import logging
 import os
+import threading
 import time
 import streamlit as st
+import streamlit.components.v1 as _components
 from datetime import datetime, timedelta, timezone
 
 from pathlib import Path
@@ -29,6 +31,12 @@ from utils.pdf_storage import (
     upload_pdf_bytes as _upload_pdf_bytes,
     overwrite_provider_pdf as _overwrite_provider_pdf,
 )
+from invoice_logic.stamp_pdf import stamp_pdf as _stamp_pdf, stamp_temperature as _stamp_temp
+from scheduler.supabase_sync import sync_single_invoice as _sync_inv
+try:
+    from streamlit_pdf_viewer import pdf_viewer
+except ImportError:
+    pdf_viewer = None
 
 logger = logging.getLogger(__name__)
 
@@ -330,11 +338,7 @@ def _render_extended_storage(dm: DataManager) -> None:
             except Exception as _e:
                 logger.warning("Extended storage PDF generation failed: %s", _e)
             # Supabase sync
-            try:
-                from scheduler.supabase_sync import sync_single_invoice as _sync_inv
-                _sync_inv(new_ci)
-            except Exception as _e:
-                logger.warning("Supabase sync failed: %s", _e)
+            threading.Thread(target=_sync_inv, args=(new_ci,), daemon=True).start()
 
             _notif = st.empty()
             _notif.markdown(
@@ -571,7 +575,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "parsed_at"      : _now,
                                 "status"         : "parsed",
                             })
-                            from invoice_logic.stamp_pdf import stamp_pdf as _stamp_pdf
                             _stamp_error = None
                             if pdf_exists:
                                 try:
@@ -624,7 +627,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         st.rerun()
 
                 if st.session_state.get(pdf_key) and pdf_exists:
-                    from streamlit_pdf_viewer import pdf_viewer
                     _b = _get_pdf_bytes(pdf_path)
                     if _b:
                         pdf_viewer(_b, key=f"pdfview_{iid}")
@@ -697,7 +699,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             "total"         : new_total,
                             "subtotal"      : new_total,
                         })
-                        from invoice_logic.stamp_pdf import stamp_pdf as _stamp_pdf
                         _stamp_error = None
                         if _edit_pdf_exists:
                             try:
@@ -730,7 +731,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         s2.button("📄 View PDF", key=f"epdf_na_{iid}", disabled=True, width='stretch')
 
                     if st.session_state.get(pdf_key) and _edit_pdf_exists:
-                        from streamlit_pdf_viewer import pdf_viewer
                         _b = _get_pdf_bytes(_edit_pdf_path)
                         if _b:
                             pdf_viewer(_b, key=f"pdfview_{iid}")
@@ -856,7 +856,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
                     # ── Inline PDF viewer ─────────────────────────────────
                     if st.session_state.get(f"approve_pdf_{cid}"):
-                        from streamlit_pdf_viewer import pdf_viewer
                         _saved = st.session_state.get(f"save_pdf_{cid}")
                         if _saved:
                             # Show the generated invoice PDF (includes saved temperature data)
@@ -901,13 +900,21 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _default_cbp = _rate_card.get("default_billing_basis", "Pallet") == "Pallet"
                         _cbp         = bool(_cl_rates.get("charged_by_pallet", _default_cbp))
                         _fixed_pal = int(_cl_rates.get("fixed_pallet_count", 0) or 0)
-                        _stamps_in_extras = "stamps" in (ci.get("extra_charges") or [])
-                        _seal_count = st.number_input(
+                        _stamps_in_extras     = "stamps"     in (ci.get("extra_charges") or [])
+                        _broker_fee_in_extras = "broker_fee" in (ci.get("extra_charges") or [])
+                        _seal_col, _broker_col = st.columns([1, 1])
+                        _seal_count = _seal_col.number_input(
                             "Seals",
                             min_value=0,
                             step=1,
                             value=int(ci.get("seal_count") or (1 if _stamps_in_extras else 0)),
                             key=f"val_seal_{cid}",
+                        )
+                        _broker_col.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
+                        _broker_fee = _broker_col.checkbox(
+                            "American Broker Fee",
+                            value=_broker_fee_in_extras,
+                            key=f"val_broker_{cid}",
                         )
                         if _cbp and svc != "transfer":
                             _pa, _pb, _pc, _pd = st.columns(4)
@@ -929,50 +936,59 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _new_extras: list[str] = []
                         if _seal_count > 0:
                             _new_extras.append("stamps")
+                        if _broker_fee:
+                            _new_extras.append("broker_fee")
 
-                        st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Pulp Temperature</p>', unsafe_allow_html=True)
-                        _PC_OPTS   = ["None", "Producto Caliente", "Producto Congelado"]
-                        _PC_TO_KEY = {"None": None, "Producto Caliente": "caliente", "Producto Congelado": "congelado"}
-                        _PC_TO_LBL = {None: "None", "caliente": "Producto Caliente", "congelado": "Producto Congelado", True: "Producto Caliente"}
-                        _stored_pc  = ci.get("producto_caliente")
-                        _pc_default = _PC_TO_LBL.get(_stored_pc, "None")
-                        _pc_sel = st.radio(
-                            "Pulp Temperature Type",
-                            options=_PC_OPTS,
-                            index=_PC_OPTS.index(_pc_default),
-                            horizontal=True,
-                            key=f"val_pc_{cid}",
-                            label_visibility="collapsed",
-                        )
-                        _producto_caliente = _PC_TO_KEY[_pc_sel]
-                        _t1, _t2, _t3 = st.columns(3)
-                        _temp1 = _t1.text_input("Temperature 1 (°F)", value=ci.get("temp_f1", ""), key=f"val_t1_{cid}")
-                        _temp2 = _t2.text_input("Temperature 2 (°F)", value=ci.get("temp_f2", ""), key=f"val_t2_{cid}")
-                        _temp3 = _t3.text_input("Temperature 3 (°F)", value=ci.get("temp_f3", ""), key=f"val_t3_{cid}")
-
-                        _stored_tr = ci.get("temp_recorder")
-                        if _stored_tr is True:
-                            _stored_tr = "hardware_installation"
-                        _tr_default = _TR_TO_LBL.get(_stored_tr, "None")
-                        st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Temperature Recorder</p>', unsafe_allow_html=True)
-                        _tr_sel = st.radio(
-                            "Temperature Recorder",
-                            options=_TR_OPTS,
-                            index=_TR_OPTS.index(_tr_default),
-                            horizontal=True,
-                            key=f"val_tr_{cid}",
-                            label_visibility="collapsed",
-                        )
-                        _new_tr = _TR_TO_KEY[_tr_sel]
-                        if _new_tr:
-                            _tr_count = st.number_input(
-                                "Temperature Recorder Quantity",
-                                min_value=1,
-                                step=1,
-                                value=int(ci.get("temp_recorder_count") or 1),
-                                key=f"val_tr_count_{cid}",
+                        _temp_enabled = bool(_cl_rates.get("temperature_recording", True))
+                        if _temp_enabled:
+                            st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Pulp Temperature</p>', unsafe_allow_html=True)
+                            _PC_OPTS   = ["None", "Producto Caliente", "Producto Congelado"]
+                            _PC_TO_KEY = {"None": None, "Producto Caliente": "caliente", "Producto Congelado": "congelado"}
+                            _PC_TO_LBL = {None: "None", "caliente": "Producto Caliente", "congelado": "Producto Congelado", True: "Producto Caliente"}
+                            _stored_pc  = ci.get("producto_caliente")
+                            _pc_default = _PC_TO_LBL.get(_stored_pc, "None")
+                            _pc_sel = st.radio(
+                                "Pulp Temperature Type",
+                                options=_PC_OPTS,
+                                index=_PC_OPTS.index(_pc_default),
+                                horizontal=True,
+                                key=f"val_pc_{cid}",
+                                label_visibility="collapsed",
                             )
+                            _producto_caliente = _PC_TO_KEY[_pc_sel]
+                            _t1, _t2, _t3 = st.columns(3)
+                            _temp1 = _t1.text_input("Temperature 1 (°F)", value=ci.get("temp_f1", ""), key=f"val_t1_{cid}")
+                            _temp2 = _t2.text_input("Temperature 2 (°F)", value=ci.get("temp_f2", ""), key=f"val_t2_{cid}")
+                            _temp3 = _t3.text_input("Temperature 3 (°F)", value=ci.get("temp_f3", ""), key=f"val_t3_{cid}")
+
+                            _stored_tr = ci.get("temp_recorder")
+                            if _stored_tr is True:
+                                _stored_tr = "hardware_installation"
+                            _tr_default = _TR_TO_LBL.get(_stored_tr, "None")
+                            st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Temperature Recorder</p>', unsafe_allow_html=True)
+                            _tr_sel = st.radio(
+                                "Temperature Recorder",
+                                options=_TR_OPTS,
+                                index=_TR_OPTS.index(_tr_default),
+                                horizontal=True,
+                                key=f"val_tr_{cid}",
+                                label_visibility="collapsed",
+                            )
+                            _new_tr = _TR_TO_KEY[_tr_sel]
+                            if _new_tr:
+                                _tr_count = st.number_input(
+                                    "Temperature Recorder Quantity",
+                                    min_value=1,
+                                    step=1,
+                                    value=int(ci.get("temp_recorder_count") or 1),
+                                    key=f"val_tr_count_{cid}",
+                                )
+                            else:
+                                _tr_count = 0
                         else:
+                            _producto_caliente = None
+                            _temp1 = _temp2 = _temp3 = ""
+                            _new_tr = None
                             _tr_count = 0
 
                         _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
@@ -1017,11 +1033,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
                             _prov_path = prov.get("pdf_local_path", "")
                             _stamped_bytes = None
-                            if _has_temp_data and _prov_path:
+                            if _has_temp_data and _prov_path and _temp_enabled:
                                 _raw = _get_pdf_bytes(_prov_path)
                                 if _raw:
                                     try:
-                                        from invoice_logic.stamp_pdf import stamp_temperature as _stamp_temp
                                         _stamped_bytes = _stamp_temp(
                                             _raw,
                                             [_temp1.strip(), _temp2.strip(), _temp3.strip()],
@@ -1042,7 +1057,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 _save_pdf_key, (None, None)
                             )
                             _dl1, _dl2 = st.columns([2, 1])
-                            _dl1.success("Temperature data saved. Click 📄 PDF to review.")
+                            _dl1.success("Data saved. Click 📄 PDF to review.")
                             if _saved_bytes:
                                 _dl2.download_button(
                                     "⬇ Download",
@@ -1111,11 +1126,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                     _upload_pdf_bytes(f"{inv_id}-invoice.pdf", _pdf_bytes)
                                 except Exception as _e:
                                     logger.warning("Could not upload generated invoice PDF: %s", _e)
-                                try:
-                                    from scheduler.supabase_sync import sync_single_invoice as _sync_inv
-                                    _sync_inv(ci_updated)
-                                except Exception as _e:
-                                    logger.warning("Supabase sync failed: %s", _e)
+                                threading.Thread(target=_sync_inv, args=(ci_updated,), daemon=True).start()
                             st.session_state.pop(_save_pdf_key, None)
                             st.session_state.pop(_save_ok_key, None)
                             st.session_state.pop(_approve_key, None)
@@ -1207,7 +1218,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     # ── Button colour overrides (injected outside all tabs so the iframe
     #    doesn't taint any tab's background; MutationObserver watches the
     #    full page DOM regardless of injection point). ─────────────────────
-    import streamlit.components.v1 as _components
     _components.html("""<script>
 (function () {
     function applyColors() {

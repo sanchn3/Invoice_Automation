@@ -21,6 +21,10 @@ from io import BytesIO
 from pathlib import Path
 
 import streamlit as st
+try:
+    from streamlit_pdf_viewer import pdf_viewer
+except ImportError:
+    pdf_viewer = None
 
 from config import DATA_DIR as _DATA_DIR, BOLS_DIR as _BOLS_DIR
 
@@ -62,7 +66,7 @@ def _fire_notification(po_number: str, driver_name: str) -> None:
 
 # ─── auto-refresh fragments ────────────────────────────────────────────────────
 
-@st.fragment(run_every="4s")
+@st.fragment(run_every="15s")
 def _bol_status_watcher(dm: DataManager) -> None:
     """
     Polls Supabase every 4 s. Triggers a full rerun when the set of BOL IDs
@@ -77,7 +81,7 @@ def _bol_status_watcher(dm: DataManager) -> None:
         st.rerun()
 
 
-@st.fragment(run_every="3s")
+@st.fragment(run_every="10s")
 def _checkin_watcher(dm: DataManager) -> None:
     """
     Runs every 3 s while checked_in BOLs exist.
@@ -283,7 +287,6 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
                         st.rerun()
 
                 if st.session_state.get(pdf_key) and pdf_exists:
-                    from streamlit_pdf_viewer import pdf_viewer
                     _b = _get_pdf_bytes(pdf_path)
                     if _b:
                         pdf_viewer(_b, key=f"bol_pdfview_{bid}")
@@ -1064,7 +1067,6 @@ def _render_inspection_tab(dm: DataManager, bol_records: list) -> None:
 
                 # ── PDF viewer ───────────────────────────────────────────────
                 if st.session_state.get(pdf_key) and pdf_exists and not _insp_pdf_corrupt:
-                    from streamlit_pdf_viewer import pdf_viewer
                     _b = _get_pdf_bytes(pdf_path)
                     if _b:
                         pdf_viewer(_b, key=f"insp_pdfview_{bid}")
