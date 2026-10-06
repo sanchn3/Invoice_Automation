@@ -802,7 +802,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 format_func=lambda x: "In-Out Storage" if x == "in_out" else "Transfer",
                                 index=0 if current_svc == "in_out" else 1,
                                 key=f"svc_{cid}",
-                                label_visibility="collapsed",
                             )
                         else:
                             st.caption(
