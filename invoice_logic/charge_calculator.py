@@ -64,9 +64,10 @@ def calculate_charges(
             "total"      : round(base_rate * pallet_count, 2),
         })
     else:
-        truck_cost = float(rates.get("cost_per_truck", 0))
+        truck_cost  = float(rates.get("cost_per_truck", 0))
+        base_label  = "In-Out Storage" if service_type == "in_out" else "Transfer (Truck-to-Truck)"
         line_items.append({
-            "description": "Truck Service",
+            "description": base_label,
             "quantity"   : 1,
             "unit"       : "truck",
             "unit_price" : truck_cost,
