@@ -960,35 +960,34 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             _temp1 = _t1.text_input("Temperature 1 (°F)", value=ci.get("temp_f1", ""), key=f"val_t1_{cid}")
                             _temp2 = _t2.text_input("Temperature 2 (°F)", value=ci.get("temp_f2", ""), key=f"val_t2_{cid}")
                             _temp3 = _t3.text_input("Temperature 3 (°F)", value=ci.get("temp_f3", ""), key=f"val_t3_{cid}")
-
-                            _stored_tr = ci.get("temp_recorder")
-                            if _stored_tr is True:
-                                _stored_tr = "hardware_installation"
-                            _tr_default = _TR_TO_LBL.get(_stored_tr, "None")
-                            st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Temperature Recorder</p>', unsafe_allow_html=True)
-                            _tr_sel = st.radio(
-                                "Temperature Recorder",
-                                options=_TR_OPTS,
-                                index=_TR_OPTS.index(_tr_default),
-                                horizontal=True,
-                                key=f"val_tr_{cid}",
-                                label_visibility="collapsed",
-                            )
-                            _new_tr = _TR_TO_KEY[_tr_sel]
-                            if _new_tr:
-                                _tr_count = st.number_input(
-                                    "Temperature Recorder Quantity",
-                                    min_value=1,
-                                    step=1,
-                                    value=int(ci.get("temp_recorder_count") or 1),
-                                    key=f"val_tr_count_{cid}",
-                                )
-                            else:
-                                _tr_count = 0
                         else:
                             _producto_caliente = None
                             _temp1 = _temp2 = _temp3 = ""
-                            _new_tr = None
+
+                        # Temperature Recorder — always shown regardless of temperature_recording flag
+                        _stored_tr = ci.get("temp_recorder")
+                        if _stored_tr is True:
+                            _stored_tr = "hardware_installation"
+                        _tr_default = _TR_TO_LBL.get(_stored_tr, "None")
+                        st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Temperature Recorder</p>', unsafe_allow_html=True)
+                        _tr_sel = st.radio(
+                            "Temperature Recorder",
+                            options=_TR_OPTS,
+                            index=_TR_OPTS.index(_tr_default),
+                            horizontal=True,
+                            key=f"val_tr_{cid}",
+                            label_visibility="collapsed",
+                        )
+                        _new_tr = _TR_TO_KEY[_tr_sel]
+                        if _new_tr:
+                            _tr_count = st.number_input(
+                                "Temperature Recorder Quantity",
+                                min_value=1,
+                                step=1,
+                                value=int(ci.get("temp_recorder_count") or 1),
+                                key=f"val_tr_count_{cid}",
+                            )
+                        else:
                             _tr_count = 0
 
                         _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
