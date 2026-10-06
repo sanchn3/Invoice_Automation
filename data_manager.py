@@ -43,6 +43,9 @@ def _sb_url(table: str) -> str:
 _SB_CI_TABLE     = "pipeline_client_invoices"
 _SB_PI_TABLE     = "pipeline_provider_invoices"
 _SB_CLIENT_TABLE = "client_registry"
+# Special local_id used to store ALL client data as one backup blob in _SB_CI_TABLE.
+# This guarantees clients survive even when client_registry table doesn't exist.
+_CLIENT_BACKUP_LOCAL_ID = "__clients__"
 
 
 def _sb_upsert_record(table: str, local_id: str, record: dict) -> None:
@@ -101,7 +104,9 @@ def _restore_pipeline_from_supabase() -> None:
             )
             if resp.status_code == 200:
                 rows = resp.json()
-                records = [r["data"] for r in rows if isinstance(r.get("data"), dict)]
+                records = [r["data"] for r in rows
+                           if isinstance(r.get("data"), dict)
+                           and r.get("local_id") != _CLIENT_BACKUP_LOCAL_ID]
                 if records:
                     _write_json(file_path, records)
                     _sb_logger.info("_restore_pipeline: restored %d records from %s",
@@ -362,7 +367,9 @@ def _sb_sync_client(client_name: str, snapshot: dict) -> None:
     """
     Upsert the client to Supabase, or delete it when every field is empty
     (i.e. the client has been fully removed from all local files).
-    Call this OUTSIDE _lock — it makes a network request.
+    Call this OUTSIDE _lock — it makes network requests.
+    Always saves a full-client backup blob to pipeline_client_invoices so
+    clients are recoverable even if client_registry table doesn't exist.
     """
     is_empty = (
         not snapshot.get("rates")
@@ -375,16 +382,20 @@ def _sb_sync_client(client_name: str, snapshot: dict) -> None:
         _sb_delete_client(client_name)
     else:
         _sb_upsert_client(client_name, snapshot)
+    # Belt-and-suspenders: always persist full client state to a table we
+    # know exists, regardless of whether client_registry upsert succeeded.
+    _sb_save_client_backup()
 
 
-def _restore_clients_from_supabase() -> None:
+def _restore_clients_from_supabase() -> int:
     """
     Pull all client records from Supabase and rebuild the local client JSON
     files.  Called at startup when the client files were freshly created
     (i.e. after a Render redeploy wiped the ephemeral filesystem).
+    Returns the number of clients restored (0 on error or empty table).
     """
     if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        return
+        return 0
     try:
         resp = httpx.get(
             f"{_sb_url(_SB_CLIENT_TABLE)}?select=client_name,data",
@@ -393,11 +404,11 @@ def _restore_clients_from_supabase() -> None:
         )
         if resp.status_code != 200:
             _sb_logger.warning("_restore_clients: HTTP %s", resp.status_code)
-            return
+            return 0
         rows = resp.json()
     except Exception as exc:
         _sb_logger.warning("_restore_clients: %s", exc)
-        return
+        return 0
 
     rates, addresses, emails, rfcs, initials = {}, {}, {}, {}, {}
     for row in rows:
@@ -427,6 +438,7 @@ def _restore_clients_from_supabase() -> None:
             _write_json(fpath, payload)
 
     _sb_logger.info("_restore_clients: restored %d clients from Supabase", len(rows))
+    return len(rows)
 
 
 def _backfill_clients_to_supabase() -> None:
@@ -498,6 +510,85 @@ def _backfill_clients_to_supabase() -> None:
         _sb_logger.warning("_backfill_clients: %s", exc)
 
 
+def _sb_save_client_backup() -> None:
+    """
+    Save a full snapshot of all client data as one row in pipeline_client_invoices
+    (local_id = _CLIENT_BACKUP_LOCAL_ID).  This is a belt-and-suspenders backup:
+    clients survive even when the client_registry table doesn't exist in Supabase.
+    Called synchronously after every client mutation so the backup is always current.
+    """
+    if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return
+    try:
+        with _lock:
+            blob = {
+                "rates"    : _read_json(_CLIENT_RATES_FILE),
+                "addresses": _read_json(_CLIENT_ADDRESSES_FILE),
+                "emails"   : _read_json(_CLIENT_EMAILS_FILE),
+                "rfcs"     : _read_json(_CLIENT_RFCS_FILE),
+                "initials" : _read_json(_CLIENT_INITIALS_FILE),
+            }
+        resp = httpx.post(
+            f"{_sb_url(_SB_CI_TABLE)}?on_conflict=local_id",
+            headers=_sb_headers("resolution=merge-duplicates,return=minimal"),
+            content=json.dumps({
+                "local_id"  : _CLIENT_BACKUP_LOCAL_ID,
+                "data"      : blob,
+                "updated_at": _now(),
+            }),
+            timeout=8,
+        )
+        if resp.status_code not in (200, 201, 204):
+            _sb_logger.warning("_sb_save_client_backup: HTTP %s %s",
+                               resp.status_code, resp.text[:200])
+    except Exception as exc:
+        _sb_logger.warning("_sb_save_client_backup: %s", exc)
+
+
+def _sb_restore_clients_from_backup() -> int:
+    """
+    Restore client data from the backup blob stored in pipeline_client_invoices.
+    Used as a fallback when client_registry is unavailable or returns 0 rows.
+    Returns the number of unique clients restored (0 if nothing found or on error).
+    """
+    if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        return 0
+    try:
+        resp = httpx.get(
+            f"{_sb_url(_SB_CI_TABLE)}?local_id=eq.{_CLIENT_BACKUP_LOCAL_ID}&select=data",
+            headers=_sb_headers(),
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            _sb_logger.warning("_sb_restore_clients_from_backup: HTTP %s", resp.status_code)
+            return 0
+        rows = resp.json()
+        if not rows:
+            _sb_logger.info("_sb_restore_clients_from_backup: no backup row found")
+            return 0
+        blob      = rows[0].get("data") or {}
+        rates     = blob.get("rates",     {})
+        addresses = blob.get("addresses", {})
+        emails    = blob.get("emails",    {})
+        rfcs      = blob.get("rfcs",      {})
+        initials  = blob.get("initials",  {})
+        for fpath, payload in (
+            (_CLIENT_RATES_FILE,     rates),
+            (_CLIENT_ADDRESSES_FILE, addresses),
+            (_CLIENT_EMAILS_FILE,    emails),
+            (_CLIENT_RFCS_FILE,      rfcs),
+            (_CLIENT_INITIALS_FILE,  initials),
+        ):
+            if payload:
+                _write_json(fpath, payload)
+        count = len(set(rates) | set(addresses) | set(emails))
+        _sb_logger.info("_sb_restore_clients_from_backup: restored %d clients", count)
+        return count
+    except Exception as exc:
+        _sb_logger.warning("_sb_restore_clients_from_backup: %s", exc)
+        return 0
+
+
 def _ensure_defaults() -> None:
     """Write default JSON files to disk if they don't exist, then restore
     pipeline invoice data from Supabase when the pipeline files are missing
@@ -526,7 +617,11 @@ def _ensure_defaults() -> None:
     # On a normal restart (files exist, pipeline has data), backfill any
     # clients that are missing from Supabase (e.g. table was just created).
     if client_files_created or pipeline_empty:
-        _restore_clients_from_supabase()
+        restored = _restore_clients_from_supabase()
+        if not restored:
+            # Primary table unavailable or empty — fall back to backup blob
+            # stored in pipeline_client_invoices under _CLIENT_BACKUP_LOCAL_ID.
+            _sb_restore_clients_from_backup()
     else:
         _backfill_clients_to_supabase()
 

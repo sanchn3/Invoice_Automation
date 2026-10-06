@@ -977,17 +977,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             key=f"val_tr_{cid}",
                             label_visibility="collapsed",
                         )
-                        _new_tr = _TR_TO_KEY[_tr_sel]
-                        if _new_tr:
-                            _tr_count = st.number_input(
-                                "Temperature Recorder Quantity",
-                                min_value=1,
-                                step=1,
-                                value=int(ci.get("temp_recorder_count") or 1),
-                                key=f"val_tr_count_{cid}",
-                            )
-                        else:
-                            _tr_count = 0
+                        _new_tr   = _TR_TO_KEY[_tr_sel]
+                        _tr_count = 1 if _new_tr else 0
 
                         _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
 
