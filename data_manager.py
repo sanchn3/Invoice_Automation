@@ -735,7 +735,7 @@ class DataManager:
                 all_rates.pop(client_name, None)
             _write_json(_CLIENT_RATES_FILE, all_rates)
             _snap = _build_client_snapshot(client_name)
-        _fire_and_forget(_sb_sync_client, client_name, _snap)
+        _sb_sync_client(client_name, _snap)
 
     def delete_client_rates(self, client_name: str) -> None:
         with _lock:
@@ -744,7 +744,7 @@ class DataManager:
                 all_rates.pop(client_name, None)
                 _write_json(_CLIENT_RATES_FILE, all_rates)
             _snap = _build_client_snapshot(client_name)
-        _fire_and_forget(_sb_sync_client, client_name, _snap)
+        _sb_sync_client(client_name, _snap)
 
     def rename_client(self, old_name: str, new_name: str) -> None:
         """Rename a client across all data files atomically."""
@@ -771,8 +771,8 @@ class DataManager:
                         _write_json(fpath, records)
 
             _new_snap = _build_client_snapshot(new_name)
-        _fire_and_forget(_sb_delete_client, old_name)
-        _fire_and_forget(_sb_sync_client, new_name, _new_snap)
+        _sb_delete_client(old_name)
+        _sb_sync_client(new_name, _new_snap)
 
     # ─────────────────────────────────────────
     # CLIENT BILLING ADDRESSES
@@ -799,7 +799,7 @@ class DataManager:
                 all_addrs.pop(client_name, None)
             _write_json(_CLIENT_ADDRESSES_FILE, all_addrs)
             _snap = _build_client_snapshot(client_name)
-        _fire_and_forget(_sb_sync_client, client_name, _snap)
+        _sb_sync_client(client_name, _snap)
 
     # ─────────────────────────────────────────
     # CLIENT EMAILS
@@ -826,7 +826,7 @@ class DataManager:
                 all_emails.pop(client_name, None)
             _write_json(_CLIENT_EMAILS_FILE, all_emails)
             _snap = _build_client_snapshot(client_name)
-        _fire_and_forget(_sb_sync_client, client_name, _snap)
+        _sb_sync_client(client_name, _snap)
 
     # ─────────────────────────────────────────
     # CLIENT RFCs
@@ -853,7 +853,7 @@ class DataManager:
                 all_rfcs.pop(client_name, None)
             _write_json(_CLIENT_RFCS_FILE, all_rfcs)
             _snap = _build_client_snapshot(client_name)
-        _fire_and_forget(_sb_sync_client, client_name, _snap)
+        _sb_sync_client(client_name, _snap)
 
     # ─────────────────────────────────────────
     # CLIENT INITIALS
@@ -880,7 +880,7 @@ class DataManager:
                 all_initials.pop(client_name, None)
             _write_json(_CLIENT_INITIALS_FILE, all_initials)
             _snap = _build_client_snapshot(client_name)
-        _fire_and_forget(_sb_sync_client, client_name, _snap)
+        _sb_sync_client(client_name, _snap)
 
     # ─────────────────────────────────────────
     # PER-CLIENT INVOICE COUNTERS
