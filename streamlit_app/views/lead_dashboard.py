@@ -142,6 +142,32 @@ def _canonical_client(name: str) -> str:
 
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("📊 Lead")
+    st.markdown(
+        """
+        <style>
+        /* Scale up checkboxes that sit inside column rows (next to input fields) */
+        div[data-testid="stHorizontalBlock"] div[data-testid="stCheckbox"] {
+            zoom: 1.75;
+        }
+        /* Collapse checkbox column to content width and remove gap */
+        div[data-testid="stHorizontalBlock"]:has(div[data-testid="stCheckbox"]) {
+            gap: 0.375rem !important;
+            align-items: flex-end !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(div[data-testid="stCheckbox"])
+            > div[data-testid="stColumn"]:first-child {
+            flex: 0 0 auto !important;
+            width: auto !important;
+            min-width: 0 !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(div[data-testid="stCheckbox"])
+            > div[data-testid="stColumn"]:first-child > div {
+            padding: 0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     tab_report, tab_rates, tab_processed, tab_settings = st.tabs([
         "📊 Reports",
@@ -163,193 +189,247 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         if not all_ci:
             st.info("No invoice data yet.")
         else:
-            # ── Client KPI summary ────────────────────────────────────────────
-            client_counts: dict[str, int] = defaultdict(int)
-            client_totals: dict[str, float] = defaultdict(float)
-            for ci in all_ci:
-                client = _canonical_client(ci.get("client_name", "Unknown"))
-                client_counts[client] += 1
-                client_totals[client] += float(ci.get("total", 0))
-
-            _sorted_clients = sorted(client_totals.items(), key=lambda x: -x[1])
-            _kpi_cols = st.columns(5)
-            for _i, (_client, _total) in enumerate(_sorted_clients):
-                _kpi_cols[_i % 5].metric(_client, f"${_total:,.2f}")
-
-            st.markdown("---")
-
-            # ── By client ─────────────────────────────────────────────────────
-            st.markdown("#### Invoices by Client")
-            st.bar_chart(client_counts)
-
-            st.markdown("---")
-
-            # ── By service type ───────────────────────────────────────────────
-            st.markdown("#### By Service Type")
-            svc_counts: dict[str, int] = defaultdict(int)
-            for ci in all_ci:
-                svc = ci.get("service_type") or "not_set"
-                svc_counts[svc] += 1
-            c1, c2 = st.columns(2)
-            c1.metric("In-Out",   svc_counts.get("in_out", 0))
-            c2.metric("Transfer", svc_counts.get("transfer", 0))
-
-            st.markdown("---")
-
-            # ── By week ───────────────────────────────────────────────────────
-            st.markdown("#### Invoices by Week")
-            week_counts: dict[str, int] = defaultdict(int)
-            for ci in all_ci:
-                date_str = ci.get("invoice_date", ci.get("created_at", ""))[:10]
-                if date_str:
+            # ── Filters ───────────────────────────────────────────────────────
+            _all_client_names = sorted({
+                _canonical_client(ci.get("client_name", ""))
+                for ci in all_ci if ci.get("client_name")
+            })
+            _all_dates = []
+            for _ci in all_ci:
+                _ds = (_ci.get("invoice_date") or _ci.get("created_at", ""))[:10]
+                if _ds:
                     try:
-                        dt   = datetime.fromisoformat(date_str)
-                        week = dt.strftime("%Y-W%W")
-                        week_counts[week] += 1
+                        _all_dates.append(datetime.fromisoformat(_ds).date())
                     except ValueError:
                         pass
-            if week_counts:
-                st.bar_chart(dict(sorted(week_counts.items())))
+            _data_min = min(_all_dates) if _all_dates else datetime.utcnow().date()
+            _data_max = max(_all_dates) if _all_dates else datetime.utcnow().date()
+
+            _fcol1, _fcol2 = st.columns(2)
+            _sel_clients = _fcol1.multiselect(
+                "Filter by Client",
+                options=_all_client_names,
+                default=[],
+                placeholder="All clients",
+                key="rpt_client_filter",
+            )
+            _date_range = _fcol2.date_input(
+                "Filter by Date Range",
+                value=(_data_min, _data_max),
+                min_value=_data_min,
+                max_value=_data_max,
+                key="rpt_date_filter",
+            )
+            _rng_start = _date_range[0] if isinstance(_date_range, (list, tuple)) and len(_date_range) >= 1 else _data_min
+            _rng_end   = _date_range[1] if isinstance(_date_range, (list, tuple)) and len(_date_range) >= 2 else _data_max
+
+            def _in_range(ci: dict) -> bool:
+                _ds = (ci.get("invoice_date") or ci.get("created_at", ""))[:10]
+                if not _ds:
+                    return True
+                try:
+                    return _rng_start <= datetime.fromisoformat(_ds).date() <= _rng_end
+                except ValueError:
+                    return True
+
+            _filtered_ci = [
+                ci for ci in all_ci
+                if (_not_client_filter := not _sel_clients or _canonical_client(ci.get("client_name", "")) in _sel_clients)
+                and _in_range(ci)
+            ]
 
             st.markdown("---")
 
-            # ── Invoice Data Export ───────────────────────────────────────────
-            st.markdown("#### Export Invoice Data")
-            st.caption("Download all invoice records as an Excel spreadsheet.")
+            if not _filtered_ci:
+                st.info("No invoices match the selected filters.")
+            else:
+                # ── Client KPI summary ────────────────────────────────────────────
+                client_counts: dict[str, int] = defaultdict(int)
+                client_totals: dict[str, float] = defaultdict(float)
+                for ci in _filtered_ci:
+                    client = _canonical_client(ci.get("client_name", "Unknown"))
+                    client_counts[client] += 1
+                    client_totals[client] += float(ci.get("total", 0))
 
-            def _build_excel(invoices: list[dict], providers: dict) -> bytes:
-                rows = []
-                for ci in invoices:
-                    prov = providers.get(ci.get("provider_invoice_id", ""), {})
-                    inv_date = ci.get("invoice_date", "")
-                    net_days = int(ci.get("net_days", 30) or 30)
-                    due_date = ci.get("due_date", "")
-                    if not due_date and inv_date:
+                _sorted_clients = sorted(client_totals.items(), key=lambda x: -x[1])
+                _kpi_cols = st.columns(5)
+                for _i, (_client, _total) in enumerate(_sorted_clients):
+                    _kpi_cols[_i % 5].metric(_client or "(Unknown)", f"${_total:,.2f}")
+
+                st.markdown("---")
+
+                # ── By client ─────────────────────────────────────────────────────
+                st.markdown("#### Invoices by Client")
+                st.bar_chart(client_counts)
+
+                st.markdown("---")
+
+                # ── By service type ───────────────────────────────────────────────
+                st.markdown("#### By Service Type")
+                svc_counts: dict[str, int] = defaultdict(int)
+                for ci in _filtered_ci:
+                    svc = ci.get("service_type") or "not_set"
+                    svc_counts[svc] += 1
+                c1, c2 = st.columns(2)
+                c1.metric("In-Out",   svc_counts.get("in_out", 0))
+                c2.metric("Transfer", svc_counts.get("transfer", 0))
+
+                st.markdown("---")
+
+                # ── By week ───────────────────────────────────────────────────────
+                st.markdown("#### Invoices by Week")
+                week_counts: dict[str, int] = defaultdict(int)
+                for ci in _filtered_ci:
+                    date_str = ci.get("invoice_date", ci.get("created_at", ""))[:10]
+                    if date_str:
                         try:
-                            due_date = (
-                                datetime.fromisoformat(inv_date)
-                                + timedelta(days=net_days)
-                            ).date().isoformat()
-                        except Exception:
-                            due_date = ""
-                    rows.append({
-                        "Date"           : inv_date,
-                        "Invoice ID"     : ci.get("quickbooks_invoice_number", ""),
-                        "Service Number" : prov.get("invoice_number", ""),
-                        "Client"         : ci.get("client_name", ""),
-                        "Charged ($)"    : ci.get("total", 0),
-                        "Pickup Number"  : ci.get("po_number", ""),
-                        "Due Date"       : due_date,
-                        "Paid"           : "Yes" if ci.get("paid") else "No",
-                    })
+                            dt   = datetime.fromisoformat(date_str)
+                            week = dt.strftime("%Y-W%W")
+                            week_counts[week] += 1
+                        except ValueError:
+                            pass
+                if week_counts:
+                    st.bar_chart(dict(sorted(week_counts.items())))
 
-                df  = pd.DataFrame(rows)
-                buf = io.BytesIO()
-                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-                    df.to_excel(writer, index=False, sheet_name="Invoices")
-                    ws = writer.sheets["Invoices"]
-                    for col in ws.columns:
-                        max_len = max(len(str(cell.value or "")) for cell in col)
-                        ws.column_dimensions[col[0].column_letter].width = max_len + 4
-                return buf.getvalue()
+                st.markdown("---")
 
-            def _build_detailed_excel(invoices: list[dict], providers: dict) -> bytes:
-                # Collect all unique service descriptions in encounter order
-                _seen_descs: set[str] = set()
-                _all_descs: list[str] = []
-                for _ci in invoices:
-                    for _item in (_ci.get("line_items") or []):
-                        _d = _item.get("description", "")
-                        if _d and _d not in _seen_descs:
-                            _all_descs.append(_d)
-                            _seen_descs.add(_d)
+                # ── Invoice Data Export ───────────────────────────────────────────
+                st.markdown("#### Export Invoice Data")
+                st.caption("Download all invoice records as an Excel spreadsheet.")
 
-                rows = []
-                for ci in invoices:
-                    prov = providers.get(ci.get("provider_invoice_id", ""), {})
-                    inv_date = ci.get("invoice_date", "")
-                    net_days = int(ci.get("net_days", 30) or 30)
-                    due_date = ci.get("due_date", "")
-                    if not due_date and inv_date:
-                        try:
-                            due_date = (
-                                datetime.fromisoformat(inv_date)
-                                + timedelta(days=net_days)
-                            ).date().isoformat()
-                        except Exception:
-                            due_date = ""
+                def _build_excel(invoices: list[dict], providers: dict) -> bytes:
+                    rows = []
+                    for ci in invoices:
+                        prov = providers.get(ci.get("provider_invoice_id", ""), {})
+                        inv_date = ci.get("invoice_date", "")
+                        net_days = int(ci.get("net_days", 30) or 30)
+                        due_date = ci.get("due_date", "")
+                        if not due_date and inv_date:
+                            try:
+                                due_date = (
+                                    datetime.fromisoformat(inv_date)
+                                    + timedelta(days=net_days)
+                                ).date().isoformat()
+                            except Exception:
+                                due_date = ""
+                        rows.append({
+                            "Date"           : inv_date,
+                            "Invoice ID"     : ci.get("quickbooks_invoice_number", ""),
+                            "Service Number" : prov.get("invoice_number", ""),
+                            "Client"         : ci.get("client_name", ""),
+                            "Charged ($)"    : ci.get("total", 0),
+                            "Pickup Number"  : ci.get("po_number", ""),
+                            "Due Date"       : due_date,
+                            "Paid"           : "Yes" if ci.get("paid") else "No",
+                        })
 
-                    row: dict = {
-                        "Date"           : inv_date,
-                        "Invoice ID"     : ci.get("quickbooks_invoice_number", ""),
-                        "Service Number" : prov.get("invoice_number", ""),
-                        "Client"         : ci.get("client_name", ""),
-                        "Charged ($)"    : ci.get("total", 0),
-                        "Pickup Number"  : ci.get("po_number", ""),
-                        "Due Date"       : due_date,
-                        "Paid"           : "Yes" if ci.get("paid") else "No",
-                    }
+                    df  = pd.DataFrame(rows)
+                    buf = io.BytesIO()
+                    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                        df.to_excel(writer, index=False, sheet_name="Invoices")
+                        ws = writer.sheets["Invoices"]
+                        for col in ws.columns:
+                            max_len = max(len(str(cell.value or "")) for cell in col)
+                            ws.column_dimensions[col[0].column_letter].width = max_len + 4
+                    return buf.getvalue()
 
-                    items_by_desc = {
-                        _item.get("description", ""): _item
-                        for _item in (ci.get("line_items") or [])
-                        if _item.get("description")
-                    }
-                    for desc in _all_descs:
-                        _it = items_by_desc.get(desc)
-                        row[f"{desc} — Qty"]  = _it["quantity"] if _it else ""
-                        row[f"{desc} — ($)"]  = _it["total"]    if _it else ""
+                def _build_detailed_excel(invoices: list[dict], providers: dict) -> bytes:
+                    # Collect all unique service descriptions in encounter order
+                    _seen_descs: set[str] = set()
+                    _all_descs: list[str] = []
+                    for _ci in invoices:
+                        for _item in (_ci.get("line_items") or []):
+                            _d = _item.get("description", "")
+                            if _d and _d not in _seen_descs:
+                                _all_descs.append(_d)
+                                _seen_descs.add(_d)
 
-                    rows.append(row)
+                    rows = []
+                    for ci in invoices:
+                        prov = providers.get(ci.get("provider_invoice_id", ""), {})
+                        inv_date = ci.get("invoice_date", "")
+                        net_days = int(ci.get("net_days", 30) or 30)
+                        due_date = ci.get("due_date", "")
+                        if not due_date and inv_date:
+                            try:
+                                due_date = (
+                                    datetime.fromisoformat(inv_date)
+                                    + timedelta(days=net_days)
+                                ).date().isoformat()
+                            except Exception:
+                                due_date = ""
 
-                df  = pd.DataFrame(rows)
-                buf = io.BytesIO()
-                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-                    df.to_excel(writer, index=False, sheet_name="Invoices Detailed")
-                    ws = writer.sheets["Invoices Detailed"]
-                    for col in ws.columns:
-                        max_len = max(len(str(cell.value or "")) for cell in col)
-                        ws.column_dimensions[col[0].column_letter].width = max_len + 4
-                return buf.getvalue()
+                        row: dict = {
+                            "Date"           : inv_date,
+                            "Invoice ID"     : ci.get("quickbooks_invoice_number", ""),
+                            "Service Number" : prov.get("invoice_number", ""),
+                            "Client"         : ci.get("client_name", ""),
+                            "Charged ($)"    : ci.get("total", 0),
+                            "Pickup Number"  : ci.get("po_number", ""),
+                            "Due Date"       : due_date,
+                            "Paid"           : "Yes" if ci.get("paid") else "No",
+                        }
 
-            _exp_col1, _exp_col2, _exp_col3, _ = st.columns([1, 1, 1, 1])
+                        items_by_desc = {
+                            _item.get("description", ""): _item
+                            for _item in (ci.get("line_items") or [])
+                            if _item.get("description")
+                        }
+                        for desc in _all_descs:
+                            _it = items_by_desc.get(desc)
+                            row[f"{desc} — Qty"]  = _it["quantity"] if _it else ""
+                            row[f"{desc} — ($)"]  = _it["total"]    if _it else ""
 
-            with _exp_col1:
-                if st.button("📊 Generate Excel", key="gen_excel_all"):
-                    st.session_state["excel_bytes_all"] = _build_excel(all_ci, _prov_by_id)
-                if "excel_bytes_all" in st.session_state:
-                    st.download_button(
-                        "⬇ Download All Invoices",
-                        data=st.session_state["excel_bytes_all"],
-                        file_name="all_invoices.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_excel_all",
-                    )
+                        rows.append(row)
 
-            with _exp_col2:
-                if st.button("📊 Generate Excel (Paid only)", key="gen_excel_paid"):
-                    _paid_only = [ci for ci in all_ci if ci.get("paid")]
-                    st.session_state["excel_bytes_paid"] = _build_excel(_paid_only, _prov_by_id)
-                if "excel_bytes_paid" in st.session_state:
-                    st.download_button(
-                        "⬇ Download Paid Invoices",
-                        data=st.session_state["excel_bytes_paid"],
-                        file_name="paid_invoices.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_excel_paid",
-                    )
+                    df  = pd.DataFrame(rows)
+                    buf = io.BytesIO()
+                    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                        df.to_excel(writer, index=False, sheet_name="Invoices Detailed")
+                        ws = writer.sheets["Invoices Detailed"]
+                        for col in ws.columns:
+                            max_len = max(len(str(cell.value or "")) for cell in col)
+                            ws.column_dimensions[col[0].column_letter].width = max_len + 4
+                    return buf.getvalue()
 
-            with _exp_col3:
-                if st.button("📊 Generate Detailed Excel", key="gen_excel_detailed"):
-                    st.session_state["excel_bytes_detailed"] = _build_detailed_excel(all_ci, _prov_by_id)
-                if "excel_bytes_detailed" in st.session_state:
-                    st.download_button(
-                        "⬇ Download Detailed",
-                        data=st.session_state["excel_bytes_detailed"],
-                        file_name="invoices_detailed.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="dl_excel_detailed",
-                    )
+                _exp_col1, _exp_col2, _exp_col3, _ = st.columns([1, 1, 1, 1])
+
+                with _exp_col1:
+                    if st.button("📊 Generate Excel", key="gen_excel_all"):
+                        st.session_state["excel_bytes_all"] = _build_excel(_filtered_ci, _prov_by_id)
+                    if "excel_bytes_all" in st.session_state:
+                        st.download_button(
+                            "⬇ Download All Invoices",
+                            data=st.session_state["excel_bytes_all"],
+                            file_name="all_invoices.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_excel_all",
+                        )
+
+                with _exp_col2:
+                    if st.button("📊 Generate Excel (Paid only)", key="gen_excel_paid"):
+                        _paid_only = [ci for ci in _filtered_ci if ci.get("paid")]
+                        st.session_state["excel_bytes_paid"] = _build_excel(_paid_only, _prov_by_id)
+                    if "excel_bytes_paid" in st.session_state:
+                        st.download_button(
+                            "⬇ Download Paid Invoices",
+                            data=st.session_state["excel_bytes_paid"],
+                            file_name="paid_invoices.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_excel_paid",
+                        )
+
+                with _exp_col3:
+                    if st.button("📊 Generate Detailed Excel", key="gen_excel_detailed"):
+                        st.session_state["excel_bytes_detailed"] = _build_detailed_excel(_filtered_ci, _prov_by_id)
+                    if "excel_bytes_detailed" in st.session_state:
+                        st.download_button(
+                            "⬇ Download Detailed",
+                            data=st.session_state["excel_bytes_detailed"],
+                            file_name="invoices_detailed.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_excel_detailed",
+                        )
 
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -366,8 +446,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         if not default_rates:
             st.error("⚠️ Rate card file not found or empty. Check that data/rate_card.json exists.")
-        else:
-            st.caption(f"Loaded {len(default_rates)} rate entries from file.")
 
         # All billing fields always shown in default rates
         billing_labels = {
@@ -394,198 +472,235 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         labels = {**billing_labels, **_non_billing_labels}
 
         # ── Default Rates ─────────────────────────────────────────────────────
-        st.markdown("#### Default Rates")
-        st.caption("Applies to all clients unless a client-specific rate is set.")
+        _default_rates_key = "default_rates_form_open"
+        if not st.session_state.get(_default_rates_key):
+            if _colored_btn(st, "⚙️ Edit Default Rates", key="open_default_rates_form", color="#0d6efd"):
+                st.session_state[_default_rates_key] = True
+                st.rerun()
+        else:
+            _dr_title_col, _dr_collapse_col = st.columns([3, 1])
+            _dr_title_col.markdown("#### Default Rates")
+            if _dr_collapse_col.button("▲ Collapse", key="collapse_default_rates"):
+                st.session_state[_default_rates_key] = False
+                st.rerun()
+            st.caption("Applies to all clients unless a client-specific rate is set.")
 
-        updated: dict[str, float] = {}
-        col1, col2 = st.columns(2)
-        items = list(labels.items())
-        for i, (key, label) in enumerate(items):
-            col = col1 if i < len(items) // 2 + len(items) % 2 else col2
-            if key == "net_days":
-                updated[key] = col.number_input(
-                    label=label,
-                    value=int(default_rates.get(key, 30)),
-                    min_value=1,
-                    step=1,
-                    key=f"rate_{key}",
-                )
-            else:
-                updated[key] = col.number_input(
-                    label=f"{label} ($)",
-                    value=float(default_rates.get(key, 0)),
-                    min_value=0.0,
-                    step=0.25,
-                    format="%.2f",
-                    key=f"rate_{key}",
-                )
+            updated: dict[str, float] = {}
+            col1, col2 = st.columns(2)
+            items = list(labels.items())
+            for i, (key, label) in enumerate(items):
+                col = col1 if i < len(items) // 2 + len(items) % 2 else col2
+                if key == "net_days":
+                    updated[key] = col.number_input(
+                        label=label,
+                        value=int(default_rates.get(key, 30)),
+                        min_value=1,
+                        step=1,
+                        key=f"rate_{key}",
+                    )
+                else:
+                    updated[key] = col.number_input(
+                        label=f"{label} ($)",
+                        value=float(default_rates.get(key, 0)),
+                        min_value=0.0,
+                        step=0.25,
+                        format="%.2f",
+                        key=f"rate_{key}",
+                    )
 
-        _cpt_col, _basis_col = st.columns(2)
-        updated["cost_per_truck"] = _cpt_col.number_input(
-            "Cost per Truck In & Out ($)",
-            value=float(default_rates.get("cost_per_truck", 0)),
-            min_value=0.0, step=0.25, format="%.2f",
-            key="rate_cost_per_truck",
-        )
-        _cur_basis = default_rates.get("default_billing_basis", "Pallet")
-        updated["default_billing_basis"] = _basis_col.selectbox(
-            "Default Billing Basis",
-            options=["Pallet", "Truck"],
-            index=0 if _cur_basis == "Pallet" else 1,
-            key="rate_default_billing_basis",
-            help="Controls whether the admin dashboard shows a total pallet count input (Pallet) or skips it (Truck).",
-        )
+            _cpt_col, _basis_col = st.columns(2)
+            updated["cost_per_truck"] = _cpt_col.number_input(
+                "Cost per Truck In & Out ($)",
+                value=float(default_rates.get("cost_per_truck", 0)),
+                min_value=0.0, step=0.25, format="%.2f",
+                key="rate_cost_per_truck",
+            )
+            _cur_basis = default_rates.get("default_billing_basis", "Pallet")
+            updated["default_billing_basis"] = _basis_col.selectbox(
+                "Default Billing Basis",
+                options=["Pallet", "Truck"],
+                index=0 if _cur_basis == "Pallet" else 1,
+                key="rate_default_billing_basis",
+                help="Controls whether the admin dashboard shows a total pallet count input (Pallet) or skips it (Truck).",
+            )
 
-        if _colored_btn(st, "💾 Save Default Rates", key="save_default_rates", color="#198754"):
-            dm.update_rate_card(updated)
-            st.success("Default rates saved.")
+            if _colored_btn(st, "💾 Save Default Rates", key="save_default_rates", color="#198754"):
+                dm.update_rate_card(updated)
+                st.success("Default rates saved.")
 
         st.markdown("---")
 
         # ── Add New Client (Unified Profile) ─────────────────────────────────
-        st.markdown("#### Add New Client")
-        st.caption("Fill in the full client profile below and click **Save Client Profile** to register everything at once.")
-
-        # Identity row
-        _nid1, _nid2 = st.columns([2, 1])
-        new_client_name     = _nid1.text_input(
-            "Client Name *",
-            placeholder="e.g. WALMART",
-            key="new_client_name",
-        )
-        new_client_initials = _nid2.text_input(
-            "Initials",
-            placeholder="e.g. WMT",
-            key="new_client_initials",
-            help="Short code used on invoices (e.g. WMT, BBIA). Saved in uppercase.",
-        )
-
-        # Contact / address row
-        new_client_email = st.text_input(
-            "Email Address",
-            placeholder="billing@client.com",
-            key="new_client_email",
-        )
-        new_client_address = st.text_area(
-            "Billing Address",
-            placeholder="123 Main St\nCity, TX 78000",
-            height=90,
-            key="new_client_address",
-        )
-        new_client_rfc = st.text_input(
-            "RFC",
-            placeholder="e.g. ABC123456DEF",
-            key="new_client_rfc",
-            help="Mexican tax ID (RFC). Printed on the invoice below the billing address.",
-        )
-
-        # Rate card
-        st.caption("Rate Card")
-        _new_billing_mode = st.radio(
-            "Billing Mode",
-            options=["Pallet", "Truck"],
-            horizontal=True,
-            key="new_client_billing_mode",
-            help="Controls which billing rates are shown for editing. Both sets of prices are always saved.",
-        )
-        new_cbp = (_new_billing_mode == "Pallet")
-
-        st.caption("Pallet Rates")
-        new_col1, new_col2 = st.columns(2)
-        _new_in_out = new_col1.number_input(
-            "In-Out Storage (per pallet) ($)",
-            value=float(default_rates.get("in_out", 0)),
-            min_value=0.0, step=0.25, format="%.2f",
-            key="new_cr_in_out",
-        )
-        _new_transfer = new_col2.number_input(
-            "Transfer per Truck ($)",
-            value=float(default_rates.get("transfer", 0)),
-            min_value=0.0, step=0.25, format="%.2f",
-            key="new_cr_transfer",
-        )
-        _new_extended_storage = new_col2.number_input(
-            "Extended Storage (per pallet) ($)",
-            value=float(default_rates.get("extended_storage", 0)),
-            min_value=0.0, step=0.25, format="%.2f",
-            key="new_cr_extended_storage",
-        )
-
-        st.caption("Truck Rates")
-        _new_cost_per_truck = st.number_input(
-            "Cost per Truck In & Out ($)",
-            value=float(default_rates.get("cost_per_truck", 0)),
-            min_value=0.0, step=0.25, format="%.2f",
-            key="new_cr_cost_per_truck",
-        )
-
-        # Non-billing fees — always shown
-        new_client_overrides: dict = {
-            "charged_by_pallet" : new_cbp,
-            "in_out"            : _new_in_out,
-            "transfer"          : _new_transfer,
-            "extended_storage"  : _new_extended_storage,
-            "cost_per_truck"    : _new_cost_per_truck,
-        }
-        _nb_new_items = list(_non_billing_labels.items())
-        nb_new_col1, nb_new_col2 = st.columns(2)
-        for i, (key, label) in enumerate(_nb_new_items):
-            col = nb_new_col1 if i < len(_nb_new_items) // 2 + len(_nb_new_items) % 2 else nb_new_col2
-            if key == "net_days":
-                new_client_overrides[key] = col.number_input(
-                    label=label,
-                    value=int(default_rates.get(key, 30)),
-                    min_value=1, step=1,
-                    key=f"new_cr_{key}",
-                )
-            else:
-                new_client_overrides[key] = col.number_input(
-                    label=f"{label} ($)",
-                    value=float(default_rates.get(key, 0)),
-                    min_value=0.0, step=0.25, format="%.2f",
-                    key=f"new_cr_{key}",
-                )
-
-        st.caption("Pallet Override — leave at 0 to disable. When set, this count is always pre-filled for this client's invoices.")
-        _new_fixed_pal = st.number_input(
-            "Fixed Pallet Count (optional)",
-            min_value=0,
-            step=1,
-            value=0,
-            key="new_cr_fixed_pal",
-        )
-        if _new_fixed_pal > 0:
-            new_client_overrides["fixed_pallet_count"] = int(_new_fixed_pal)
-
-        _new_temp_recording = st.checkbox(
-            "Temperature Recording",
-            value=True,
-            key="new_cr_temperature_recording",
-            help="When enabled, Pulp Temperature and Temperature Recorder fields appear in the Admin dashboard for this client's invoices.",
-        )
-        new_client_overrides["temperature_recording"] = _new_temp_recording
-
-        if _colored_btn(st, "💾 Save Client Profile", key="save_new_client", color="#198754"):
-            if not new_client_name.strip():
-                st.warning("Client name is required.")
-            else:
-                _saved_name = new_client_name.strip().upper()
-                dm.set_client_rates(_saved_name, new_client_overrides)
-                if new_client_address.strip():
-                    dm.set_client_address(_saved_name, new_client_address.strip())
-                if new_client_email.strip():
-                    dm.set_client_email(_saved_name, new_client_email.strip())
-                if new_client_initials.strip():
-                    dm.set_client_initial(_saved_name, new_client_initials.strip())
-                if new_client_rfc.strip():
-                    dm.set_client_rfc(_saved_name, new_client_rfc.strip())
-                st.session_state["rates_saved_msg"] = f"✅ Client profile saved for {_saved_name}."
-                st.session_state.pop("new_client_save_inline", None)
-                st.session_state["new_client_save_inline"] = f"Client profile saved for **{_saved_name}**."
+        _new_client_key = "new_client_form_open"
+        if not st.session_state.get(_new_client_key):
+            if _colored_btn(st, "➕ Add New Client", key="open_new_client_form", color="#0d6efd"):
+                st.session_state[_new_client_key] = True
                 st.rerun()
+        else:
+            _nc_title_col, _nc_collapse_col = st.columns([3, 1])
+            _nc_title_col.markdown("#### Add New Client")
+            if _nc_collapse_col.button("▲ Collapse", key="collapse_new_client"):
+                st.session_state[_new_client_key] = False
+                st.rerun()
+            st.caption("Fill in the full client profile below and click **Save Client Profile** to register everything at once.")
 
-        if _inline := st.session_state.pop("new_client_save_inline", None):
-            st.success(_inline)
+            # Identity row
+            _nid1, _nid2 = st.columns([2, 1])
+            new_client_name     = _nid1.text_input(
+                "Client Name *",
+                placeholder="e.g. WALMART",
+                key="new_client_name",
+            )
+            new_client_initials = _nid2.text_input(
+                "Initials",
+                placeholder="e.g. WMT",
+                key="new_client_initials",
+                help="Short code used on invoices (e.g. WMT, BBIA). Saved in uppercase.",
+            )
+
+            # Contact / address row
+            new_client_email = st.text_input(
+                "Email Address",
+                placeholder="billing@client.com",
+                key="new_client_email",
+            )
+            new_client_address = st.text_area(
+                "Billing Address",
+                placeholder="123 Main St\nCity, TX 78000",
+                height=90,
+                key="new_client_address",
+            )
+            new_client_rfc = st.text_input(
+                "RFC",
+                placeholder="e.g. ABC123456DEF",
+                key="new_client_rfc",
+                help="Mexican tax ID (RFC). Printed on the invoice below the billing address.",
+            )
+
+            # Rate card
+            st.caption("Rate Card")
+            _new_billing_mode = st.radio(
+                "Billing Mode",
+                options=["Pallet", "Truck"],
+                horizontal=True,
+                key="new_client_billing_mode",
+                help="Controls which billing rates are shown for editing. Both sets of prices are always saved.",
+            )
+            new_cbp = (_new_billing_mode == "Pallet")
+
+            st.caption("Pallet Rates")
+            _rc1, _rf1 = st.columns([1, 5], vertical_alignment="center")
+            _en_in_out = _rc1.checkbox("In-Out Storage", value=True, key="new_cr_in_out_en", label_visibility="collapsed")
+            _new_in_out = _rf1.number_input(
+                "In-Out Storage (per pallet) ($)",
+                value=float(default_rates.get("in_out", 0)),
+                min_value=0.0, step=0.25, format="%.2f",
+                key="new_cr_in_out",
+            )
+
+            _rc2, _rf2 = st.columns([1, 5], vertical_alignment="center")
+            _en_transfer = _rc2.checkbox("Transfer per Truck", value=True, key="new_cr_transfer_en", label_visibility="collapsed")
+            _new_transfer = _rf2.number_input(
+                "Transfer per Truck ($)",
+                value=float(default_rates.get("transfer", 0)),
+                min_value=0.0, step=0.25, format="%.2f",
+                key="new_cr_transfer",
+            )
+
+            _rc3, _rf3 = st.columns([1, 5], vertical_alignment="center")
+            _en_extended = _rc3.checkbox("Extended Storage", value=True, key="new_cr_extended_en", label_visibility="collapsed")
+            _new_extended_storage = _rf3.number_input(
+                "Extended Storage (per pallet) ($)",
+                value=float(default_rates.get("extended_storage", 0)),
+                min_value=0.0, step=0.25, format="%.2f",
+                key="new_cr_extended_storage",
+            )
+
+            st.caption("Truck Rates")
+            _tc1, _tf1 = st.columns([1, 5], vertical_alignment="center")
+            _en_cpt = _tc1.checkbox("Cost per Truck", value=True, key="new_cr_cpt_en", label_visibility="collapsed")
+            _new_cost_per_truck = _tf1.number_input(
+                "Cost per Truck In & Out ($)",
+                value=float(default_rates.get("cost_per_truck", 0)),
+                min_value=0.0, step=0.25, format="%.2f",
+                key="new_cr_cost_per_truck",
+            )
+
+            new_client_overrides: dict = {
+                "charged_by_pallet" : new_cbp,
+                "in_out"            : _new_in_out,
+                "transfer"          : _new_transfer,
+                "extended_storage"  : _new_extended_storage,
+                "cost_per_truck"    : _new_cost_per_truck,
+            }
+            _new_disabled: list = []
+            if not _en_in_out:   _new_disabled.append("in_out")
+            if not _en_transfer: _new_disabled.append("transfer")
+            if not _en_extended: _new_disabled.append("extended_storage")
+            if not _en_cpt:      _new_disabled.append("cost_per_truck")
+
+            st.caption("General Rates")
+            for key, label in _non_billing_labels.items():
+                _gc, _gf = st.columns([1, 5], vertical_alignment="center")
+                if not _gc.checkbox(label, value=True, key=f"new_cr_{key}_en", label_visibility="collapsed"):
+                    _new_disabled.append(key)
+                if key == "net_days":
+                    new_client_overrides[key] = _gf.number_input(
+                        label=label,
+                        value=int(default_rates.get(key, 30)),
+                        min_value=1, step=1,
+                        key=f"new_cr_{key}",
+                    )
+                else:
+                    new_client_overrides[key] = _gf.number_input(
+                        label=f"{label} ($)",
+                        value=float(default_rates.get(key, 0)),
+                        min_value=0.0, step=0.25, format="%.2f",
+                        key=f"new_cr_{key}",
+                    )
+
+            new_client_overrides["disabled_fields"] = _new_disabled
+
+            st.caption("Pallet Override — leave at 0 to disable. When set, this count is always pre-filled for this client's invoices.")
+            _new_fixed_pal = st.number_input(
+                "Fixed Pallet Count (optional)",
+                min_value=0,
+                step=1,
+                value=0,
+                key="new_cr_fixed_pal",
+            )
+            if _new_fixed_pal > 0:
+                new_client_overrides["fixed_pallet_count"] = int(_new_fixed_pal)
+
+            _new_temp_recording = st.checkbox(
+                "Temperature Recording",
+                value=True,
+                key="new_cr_temperature_recording",
+                help="When enabled, Pulp Temperature and Temperature Recorder fields appear in the Admin dashboard for this client's invoices.",
+            )
+            new_client_overrides["temperature_recording"] = _new_temp_recording
+
+            if _colored_btn(st, "💾 Save Client Profile", key="save_new_client", color="#198754"):
+                if not new_client_name.strip():
+                    st.warning("Client name is required.")
+                else:
+                    _saved_name = new_client_name.strip().upper()
+                    dm.set_client_rates(_saved_name, new_client_overrides)
+                    if new_client_address.strip():
+                        dm.set_client_address(_saved_name, new_client_address.strip())
+                    if new_client_email.strip():
+                        dm.set_client_email(_saved_name, new_client_email.strip())
+                    if new_client_initials.strip():
+                        dm.set_client_initial(_saved_name, new_client_initials.strip())
+                    if new_client_rfc.strip():
+                        dm.set_client_rfc(_saved_name, new_client_rfc.strip())
+                    st.session_state["rates_saved_msg"] = f"✅ Client profile saved for {_saved_name}."
+                    st.session_state.pop("new_client_save_inline", None)
+                    st.session_state["new_client_save_inline"] = f"Client profile saved for **{_saved_name}**."
+                    st.rerun()
+
+            if _inline := st.session_state.pop("new_client_save_inline", None):
+                st.success(_inline)
 
         st.markdown("---")
 
@@ -629,7 +744,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             f"</style>",
                             unsafe_allow_html=True,
                         )
-                        if st.button("✕ DELETE", key=f"cd_del_btn_{cname}", help=f"Delete {cname}", use_container_width=True):
+                        if st.button("✕ DELETE", key=f"cd_del_btn_{cname}", help=f"Delete {cname}", width='stretch'):
                             st.session_state[f"cd_del_confirm_{cname}"] = True
                             st.rerun()
 
@@ -637,7 +752,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     if st.session_state.get(f"cd_del_confirm_{cname}"):
                         _dc1, _dc2, _dc3 = st.columns([3, 1, 1])
                         _dc1.warning(f"Delete **{cname}** and all associated data?")
-                        if _dc2.button("✅ Yes", key=f"cd_del_yes_{cname}", use_container_width=True):
+                        if _dc2.button("✅ Yes", key=f"cd_del_yes_{cname}", width='stretch'):
                             dm.delete_client_rates(cname)
                             dm.set_client_initial(cname, "")
                             dm.set_client_email(cname, "")
@@ -646,7 +761,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.session_state.pop(f"cd_del_confirm_{cname}", None)
                             st.session_state["rates_saved_msg"] = f"✅ {cname} deleted."
                             st.rerun()
-                        if _dc3.button("✗ Cancel", key=f"cd_del_no_{cname}", use_container_width=True):
+                        if _dc3.button("✗ Cancel", key=f"cd_del_no_{cname}", width='stretch'):
                             st.session_state.pop(f"cd_del_confirm_{cname}", None)
                             st.rerun()
 
@@ -661,7 +776,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         key=f"cd_rename_input_{cname}",
                         label_visibility="collapsed",
                     )
-                    if _ren_btn_col.button("✏️ Rename", key=f"cd_rename_btn_{cname}", use_container_width=True):
+                    if _ren_btn_col.button("✏️ Rename", key=f"cd_rename_btn_{cname}", width='stretch'):
                         _new_cname = _rename_input.strip()
                         if _new_cname and _new_cname != cname:
                             st.session_state[f"cd_rename_confirm_{cname}"] = _new_cname
@@ -671,12 +786,12 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _new_cname = st.session_state[f"cd_rename_confirm_{cname}"]
                         _rc1, _rc2, _rc3 = st.columns([3, 1, 1])
                         _rc1.warning(f"Rename **{cname}** → **{_new_cname}**?")
-                        if _rc2.button("✅ Yes", key=f"cd_rename_yes_{cname}", use_container_width=True):
+                        if _rc2.button("✅ Yes", key=f"cd_rename_yes_{cname}", width='stretch'):
                             dm.rename_client(cname, _new_cname)
                             st.session_state.pop(f"cd_rename_confirm_{cname}", None)
                             st.session_state["rates_saved_msg"] = f"✅ {cname} renamed to {_new_cname}."
                             st.rerun()
-                        if _rc3.button("✗ Cancel", key=f"cd_rename_no_{cname}", use_container_width=True):
+                        if _rc3.button("✗ Cancel", key=f"cd_rename_no_{cname}", width='stretch'):
                             st.session_state.pop(f"cd_rename_confirm_{cname}", None)
                             st.rerun()
 
@@ -723,26 +838,36 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     )
                     client_cbp = (_cd_billing_mode == "Pallet")
 
+                    _cd_disabled = list(crates.get("disabled_fields", []))
+
                     st.caption("Pallet Rates")
-                    override_col1, override_col2 = st.columns(2)
                     _def_in_out   = float(default_rates.get("in_out", 0))
                     _def_transfer = float(default_rates.get("transfer", 0))
-                    _client_in_out = override_col1.number_input(
+                    _def_extended = float(default_rates.get("extended_storage", 0))
+
+                    _prc1, _prf1 = st.columns([1, 5], vertical_alignment="center")
+                    _en_cd_in_out = _prc1.checkbox("In-Out Storage", value="in_out" not in _cd_disabled, key=f"cr_{cname}_in_out_en", label_visibility="collapsed")
+                    _client_in_out = _prf1.number_input(
                         "In-Out Storage (per pallet) ($)" + (" ✏️" if "in_out" in crates else ""),
                         value=float(crates.get("in_out", _def_in_out)),
                         min_value=0.0, step=0.25, format="%.2f",
                         key=f"cr_{cname}_in_out",
                         help="Default: ${:.2f}".format(_def_in_out),
                     )
-                    _client_transfer = override_col2.number_input(
+
+                    _prc2, _prf2 = st.columns([1, 5], vertical_alignment="center")
+                    _en_cd_transfer = _prc2.checkbox("Transfer per Truck", value="transfer" not in _cd_disabled, key=f"cr_{cname}_transfer_en", label_visibility="collapsed")
+                    _client_transfer = _prf2.number_input(
                         "Transfer per Truck ($)" + (" ✏️" if "transfer" in crates else ""),
                         value=float(crates.get("transfer", _def_transfer)),
                         min_value=0.0, step=0.25, format="%.2f",
                         key=f"cr_{cname}_transfer",
                         help="Default: ${:.2f}".format(_def_transfer),
                     )
-                    _def_extended    = float(default_rates.get("extended_storage", 0))
-                    _client_extended = override_col1.number_input(
+
+                    _prc3, _prf3 = st.columns([1, 5], vertical_alignment="center")
+                    _en_cd_extended = _prc3.checkbox("Extended Storage", value="extended_storage" not in _cd_disabled, key=f"cr_{cname}_extended_en", label_visibility="collapsed")
+                    _client_extended = _prf3.number_input(
                         "Extended Storage (per pallet) ($)" + (" ✏️" if "extended_storage" in crates else ""),
                         value=float(crates.get("extended_storage", _def_extended)),
                         min_value=0.0, step=0.25, format="%.2f",
@@ -751,8 +876,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     )
 
                     st.caption("Truck Rates")
-                    _def_cpt    = float(default_rates.get("cost_per_truck", 0))
-                    _client_cpt = st.number_input(
+                    _def_cpt = float(default_rates.get("cost_per_truck", 0))
+                    _trc1, _trf1 = st.columns([1, 5], vertical_alignment="center")
+                    _en_cd_cpt = _trc1.checkbox("Cost per Truck", value="cost_per_truck" not in _cd_disabled, key=f"cr_{cname}_cpt_en", label_visibility="collapsed")
+                    _client_cpt = _trf1.number_input(
                         "Cost per Truck In & Out ($)" + (" ✏️" if "cost_per_truck" in crates else ""),
                         value=float(crates.get("cost_per_truck", _def_cpt)),
                         min_value=0.0, step=0.25, format="%.2f",
@@ -767,17 +894,20 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         "extended_storage"  : _client_extended,
                         "cost_per_truck"    : _client_cpt,
                     }
+                    _cd_new_disabled: list = []
+                    if not _en_cd_in_out:   _cd_new_disabled.append("in_out")
+                    if not _en_cd_transfer: _cd_new_disabled.append("transfer")
+                    if not _en_cd_extended: _cd_new_disabled.append("extended_storage")
+                    if not _en_cd_cpt:      _cd_new_disabled.append("cost_per_truck")
 
-                    # Non-billing fees — always shown
-                    _nb_cd_items = list(_non_billing_labels.items())
-                    nb_cd_col1, nb_cd_col2 = st.columns(2)
-                    for i, (key, label) in enumerate(_nb_cd_items):
-                        col = nb_cd_col1 if i < len(_nb_cd_items) // 2 + len(_nb_cd_items) % 2 else nb_cd_col2
+                    st.caption("General Rates")
+                    for key, label in _non_billing_labels.items():
+                        _gc, _gf = st.columns([1, 5], vertical_alignment="center")
                         is_override = key in crates
                         if key == "net_days":
                             default_val = int(default_rates.get(key, 30))
                             current_val = int(crates.get(key, default_val))
-                            new_val = col.number_input(
+                            new_val = _gf.number_input(
                                 label=label + (" ✏️" if is_override else ""),
                                 value=current_val, min_value=1, step=1,
                                 key=f"cr_{cname}_{key}",
@@ -786,7 +916,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         else:
                             default_val = float(default_rates.get(key, 0))
                             current_val = float(crates.get(key, default_val))
-                            new_val = col.number_input(
+                            new_val = _gf.number_input(
                                 label=f"{label} ($)" + (" ✏️" if is_override else ""),
                                 value=current_val, min_value=0.0, step=0.25, format="%.2f",
                                 key=f"cr_{cname}_{key}",
@@ -794,6 +924,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
                         if new_val != default_val:
                             new_overrides[key] = new_val
+                        if not _gc.checkbox(label, value=key not in _cd_disabled, key=f"cr_{cname}_{key}_en", label_visibility="collapsed"):
+                            _cd_new_disabled.append(key)
+                    new_overrides["disabled_fields"] = _cd_new_disabled
 
                     st.caption("Pallet Override — leave at 0 to disable.")
                     _fixed_pal = st.number_input(

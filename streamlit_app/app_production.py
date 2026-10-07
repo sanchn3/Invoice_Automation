@@ -10,13 +10,21 @@ from utils.supabase_log_handler import setup_supabase_logging
 setup_supabase_logging()
 
 import streamlit as st
-import streamlit.components.v1 as _components
 
 # ── Production sign-out destination — DO NOT CHANGE ──────────────────────────
 _SIGN_OUT_URL = "https://incogrp.com/staff-login"
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
+
+# Explicitly register the package in sys.modules before submodule imports.
+# Prevents KeyError: 'streamlit_app' during Streamlit hot-reload on Python 3.12+
+# where exec() can leave the package in a partially-initialized state.
+import importlib as _il
+if not hasattr(sys.modules.get("streamlit_app"), "__path__"):
+    _il.import_module("streamlit_app")
+del _il
+
 from streamlit_app import auth
 from streamlit_app.views import admin_dashboard, worker_form, lead_dashboard, accounting_dashboard
 
@@ -28,12 +36,12 @@ st.set_page_config(
 )
 
 # Disable browser autocomplete on every input across the entire app.
-_components.html(
+st.html(
     """
     <script>
     (function () {
         function off() {
-            window.parent.document.querySelectorAll('input').forEach(function (el) {
+            document.querySelectorAll('input').forEach(function (el) {
                 if (el.getAttribute('autocomplete') !== 'off') {
                     el.setAttribute('autocomplete', 'off');
                 }
@@ -41,13 +49,12 @@ _components.html(
         }
         off();
         new MutationObserver(off).observe(
-            window.parent.document.body,
+            document.body,
             { childList: true, subtree: true }
         );
     })();
     </script>
-    """,
-    height=0,
+    """
 )
 
 # Shared instances (cached across reruns)
@@ -75,7 +82,7 @@ if not auth.is_authenticated():
             st.markdown("#### Sign In")
             _username = st.text_input("Username", key="login_user")
             _password = st.text_input("Password", type="password", key="login_pass")
-            if st.button("Sign In", type="primary", use_container_width=True, key="login_btn"):
+            if st.button("Sign In", type="primary", width='stretch', key="login_btn"):
                 _user = auth.verify_login(_username.strip(), _password)
                 if _user:
                     auth.login(_user)
@@ -97,12 +104,9 @@ st.sidebar.title("📦 INCO")
 st.sidebar.markdown(f"**{auth.ROLE_LABELS.get(role, role)}**  \n`{username}`")
 st.sidebar.markdown("---")
 
-if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+if st.sidebar.button("🚪 Sign Out", width='stretch'):
     auth.logout()
-    _components.html(
-        f'<script>window.top.location.replace("{_SIGN_OUT_URL}");</script>',
-        height=1,
-    )
+    st.html(f'<script>window.top.location.replace("{_SIGN_OUT_URL}");</script>')
     st.markdown(
         f'Signed out. <a href="{_SIGN_OUT_URL}" target="_top">'
         f"Return to staff login →</a>",
@@ -111,7 +115,7 @@ if st.sidebar.button("🚪 Sign Out", use_container_width=True):
     st.stop()
 
 st.sidebar.markdown("---")
-st.sidebar.caption("INCO Logistics • Invoice Automation v1.03")
+st.sidebar.caption("INCO Logistics • Invoice Automation v1.04")
 
 # Route to the dashboard matching the user's role
 if role == "admin":

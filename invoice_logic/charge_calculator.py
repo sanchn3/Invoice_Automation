@@ -52,22 +52,31 @@ def calculate_charges(
     # ── Base service charge ──────────────────────────────────────────────────
     charged_by_pallet = bool(rates.get("charged_by_pallet", True))
 
-    if charged_by_pallet:
-        base_rate_key = "in_out" if service_type == "in_out" else "transfer"
-        base_rate     = float(rates.get(base_rate_key, 0))
-        base_label    = "In-Out Storage" if service_type == "in_out" else "Transfer (Truck-to-Truck)"
+    if service_type == "transfer":
+        # Transfer (truck-to-truck) is always a flat per-truck fee.
+        # The "Transfer per Truck ($)" rate from the rate card is used regardless
+        # of whether the client is pallet-billed or truck-billed.
+        transfer_rate = float(rates.get("transfer", 0))
         line_items.append({
-            "description": base_label,
+            "description": "Transfer (Truck-to-Truck)",
+            "quantity"   : 1,
+            "unit"       : "truck",
+            "unit_price" : transfer_rate,
+            "total"      : round(transfer_rate, 2),
+        })
+    elif charged_by_pallet:
+        base_rate = float(rates.get("in_out", 0))
+        line_items.append({
+            "description": "In-Out Storage",
             "quantity"   : pallet_count,
             "unit"       : "pallets",
             "unit_price" : base_rate,
             "total"      : round(base_rate * pallet_count, 2),
         })
     else:
-        truck_cost  = float(rates.get("cost_per_truck", 0))
-        base_label  = "In-Out Storage" if service_type == "in_out" else "Transfer (Truck-to-Truck)"
+        truck_cost = float(rates.get("cost_per_truck", 0))
         line_items.append({
-            "description": base_label,
+            "description": "In-Out Storage",
             "quantity"   : 1,
             "unit"       : "truck",
             "unit_price" : truck_cost,
@@ -137,6 +146,6 @@ def calculate_charges(
 
     return {
         "line_items": line_items,
-        "subtotal"  : subtotal, #test comment
+        "subtotal"  : subtotal,
         "total"     : subtotal,  # no tax for now
     }

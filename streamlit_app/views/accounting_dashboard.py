@@ -122,9 +122,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     prov_by_id        = {pi["id"]: pi for pi in provider_invoices}
 
     tab_review, tab_qb, tab_email, tab_processed = st.tabs([
-        "📋 Invoice Review",
-        "📤 Export to QuickBooks",
-        "📧 Email Clients",
+        "📋 Review",
+        "📤 Export",
+        "📧 Email",
         "📁 Processed Invoices",
     ])
 
@@ -250,7 +250,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                         "Rate ($)"  : f"{li.get('unit_price', 0):,.2f}",
                                         "Total ($)" : f"{li.get('total', 0):,.2f}",
                                     } for li in line_items]),
-                                    use_container_width=True,
+                                    width='stretch',
                                     hide_index=True,
                                 )
 
@@ -449,7 +449,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     for ci in invoices:
                         qb     = ci.get("quickbooks_invoice_number", "—")
                         prov_e = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
-                        ic1, ic2, ic3, ic4, ic5 = st.columns([1.5, 1, 1, 0.8, 1.2])
+                        ic1, ic2, ic3, ic4 = st.columns([1.5, 1, 1, 0.8])
                         ic1.write(f"QB #{qb}")
                         ic2.write(ci.get("invoice_date", "—"))
                         ic3.write(f"${ci.get('total', 0):,.2f}")
@@ -460,14 +460,15 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             mime="application/pdf",
                             key=f"acc_emaildl_{ci['id']}",
                         )
-                        if _colored_button(ic5, "↩ Back to Export", f"bte_{ci['id']}", "#dc3545", width="stretch"):
-                            dm.update_client_invoice(ci["id"], {"ready_to_email": False})
-                            st.rerun()
 
                     st.markdown("---")
 
                     if not st.session_state.get(prep_key):
-                        _prep_col, _ = st.columns(2)
+                        _export_col, _prep_col = st.columns(2)
+                        if _colored_button(_export_col, "↩ Back to Export", f"bte_{cname}", "#dc3545", width="stretch"):
+                            for ci in invoices:
+                                dm.update_client_invoice(ci["id"], {"ready_to_email": False})
+                            st.rerun()
                         if _colored_button(_prep_col, f"📧 Prepare Email for {cname}", f"prep_{cname}", "#198754", width="stretch"):
                             st.session_state[prep_key] = True
                             st.rerun()
@@ -536,7 +537,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             file_name=_eml_name,
                             mime="message/rfc822",
                             key=f"dl_eml_{cname}",
-                            use_container_width=True,
+                            width='stretch',
                         )
 
                         mc1, mc2 = st.columns(2)

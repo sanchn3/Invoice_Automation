@@ -159,7 +159,7 @@ def _render_inbox_section(dm: DataManager, bol_records: list) -> None:
                 key="new_bol_client",
                 placeholder="e.g. Walmart, Costco…",
             )
-            submitted = st.form_submit_button("Add BOL", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("Add BOL", type="primary", width='stretch')
         if submitted:
             if not new_po.strip():
                 st.error("Pickup Number is required.")
@@ -349,7 +349,7 @@ def _render_checkin_tab(dm: DataManager, bol_records: list) -> None:
             )
             _col_cap, _col_btn = st.columns([3, 1])
             _col_cap.caption("Waiting for driver to check in via kiosk — this tab updates automatically.")
-            if _col_btn.button("↩ Back to Validation", key=f"back_to_val_{bid}", use_container_width=True):
+            if _col_btn.button("↩ Back to Validation", key=f"back_to_val_{bid}", width='stretch'):
                 dm.update_bol_record(bid, {"status": "bol_inbox"})
                 st.rerun()
 
@@ -682,7 +682,7 @@ def _render_pdf_edit_mode(dm: DataManager, bol: dict) -> None:
             if b64 is None:
                 st.caption(f"*{label}: not captured*")
                 return
-            st.image(img_path, caption=label, use_container_width=True)
+            st.image(img_path, caption=label)
             if st.button(f"➕ Place {label}", key=btn_key, width='stretch'):
                 # Use live_key (latest dragged positions) as base, falling back to obj_key
                 current = list(st.session_state.get(live_key, st.session_state.get(obj_key, [])))
