@@ -871,7 +871,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     # ── Approve Invoice toggle ────────────────────────────
                     _approve_key = f"approve_open_{cid}"
                     if not st.session_state.get(_approve_key):
-                        _approve_col, = st.columns(1)
+                        _return_col, _approve_col = st.columns([1.5, 2])
+                        if _colored_btn(_return_col, "Return to Validation ↩", key=f"return_rcv_{cid}", color="#6c757d", width="stretch"):
+                            dm.update_client_invoice(cid, {
+                                "status"       : "to_be_received",
+                                "received_date": None,
+                            })
+                            st.session_state.pop(_approve_key, None)
+                            st.rerun()
                         if _colored_btn(_approve_col, "Approve Invoice", key=f"approve_btn_{cid}", color="#198754", width='stretch'):
                             st.session_state[_approve_key] = True
                             st.rerun()
@@ -897,39 +904,67 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _rate_card   = dm.get_rate_card()
                         _default_cbp = _rate_card.get("default_billing_basis", "Pallet") == "Pallet"
                         _cbp         = bool(_cl_rates.get("charged_by_pallet", _default_cbp))
-                        _fixed_pal = int(_cl_rates.get("fixed_pallet_count", 0) or 0)
+                        _fixed_pal       = int(_cl_rates.get("fixed_pallet_count", 0) or 0)
+                        _disabled_fields = list(_cl_rates.get("disabled_fields", []))
                         _stamps_in_extras     = "stamps"     in (ci.get("extra_charges") or [])
                         _broker_fee_in_extras = "broker_fee" in (ci.get("extra_charges") or [])
-                        _seal_col, _broker_col = st.columns([1, 1])
-                        _seal_count = _seal_col.number_input(
-                            "Seals",
-                            min_value=0,
-                            step=1,
-                            value=int(ci.get("seal_count") or (1 if _stamps_in_extras else 0)),
-                            key=f"val_seal_{cid}",
-                        )
-                        _broker_col.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
-                        _broker_fee = _broker_col.checkbox(
-                            "American Broker Fee",
-                            value=_broker_fee_in_extras,
-                            key=f"val_broker_{cid}",
-                        )
+                        _show_seals  = "stamps_fee"   not in _disabled_fields
+                        _show_broker = "broker_fee"   not in _disabled_fields
+                        _show_ot     = "overtime_fee" not in _disabled_fields
+                        _show_rs     = "restack_fee"  not in _disabled_fields
+                        _seal_count = 0
+                        _broker_fee = False
+                        if _show_seals and _show_broker:
+                            _seal_col, _broker_col = st.columns([1, 1])
+                            _seal_count = _seal_col.number_input(
+                                "Seals", min_value=0, step=1,
+                                value=int(ci.get("seal_count") or (1 if _stamps_in_extras else 0)),
+                                key=f"val_seal_{cid}",
+                            )
+                            _broker_col.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
+                            _broker_fee = _broker_col.checkbox(
+                                "American Broker Fee", value=_broker_fee_in_extras, key=f"val_broker_{cid}",
+                            )
+                        elif _show_seals:
+                            _seal_count = st.number_input(
+                                "Seals", min_value=0, step=1,
+                                value=int(ci.get("seal_count") or (1 if _stamps_in_extras else 0)),
+                                key=f"val_seal_{cid}",
+                            )
+                        elif _show_broker:
+                            _broker_fee = st.checkbox(
+                                "American Broker Fee", value=_broker_fee_in_extras, key=f"val_broker_{cid}",
+                            )
                         if _cbp and svc != "transfer":
-                            _pa, _pb, _pc, _pd = st.columns(4)
                             _pal_default = _fixed_pal if _fixed_pal > 0 else int(ci.get("pallet_count", 1) or 1)
                             _pal_label   = f"Total Pallets (fixed: {_fixed_pal})" if _fixed_pal > 0 else "Total Pallets"
-                            _pal            = _pa.number_input(_pal_label,       min_value=1, step=1, value=_pal_default,                                    key=f"val_pal_{cid}")
-                            _dmg            = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0),          key=f"val_dmg_{cid}")
-                            _hours_overtime = _pc.number_input("Hours Overtime",  min_value=0, step=1, value=int(ci.get("hours_overtime",  0) or 0),          key=f"val_ot_{cid}")
-                            _restack_count  = _pd.number_input("Restack",         min_value=0, step=1, value=int(ci.get("restack_count",   0) or 0),          key=f"val_rs_{cid}")
+                            _pcol_specs  = [1] * (2 + int(_show_ot) + int(_show_rs))
+                            _pcols = st.columns(_pcol_specs)
+                            _pal = _pcols[0].number_input(_pal_label, min_value=1, step=1, value=_pal_default, key=f"val_pal_{cid}")
+                            _dmg = _pcols[1].number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
+                            _hours_overtime = 0
+                            _restack_count  = 0
+                            _pi = 2
+                            if _show_ot:
+                                _hours_overtime = _pcols[_pi].number_input("Hours Overtime", min_value=0, step=1, value=int(ci.get("hours_overtime", 0) or 0), key=f"val_ot_{cid}")
+                                _pi += 1
+                            if _show_rs:
+                                _restack_count = _pcols[_pi].number_input("Restack", min_value=0, step=1, value=int(ci.get("restack_count", 0) or 0), key=f"val_rs_{cid}")
                         else:
                             if not _cbp:
                                 st.info("Billing is per truck — no pallet count required.")
                             _pal = 1
-                            _pb, _pc, _pd = st.columns(3)
-                            _dmg            = _pb.number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0),          key=f"val_dmg_{cid}")
-                            _hours_overtime = _pc.number_input("Hours Overtime",  min_value=0, step=1, value=int(ci.get("hours_overtime",  0) or 0),          key=f"val_ot_{cid}")
-                            _restack_count  = _pd.number_input("Restack",         min_value=0, step=1, value=int(ci.get("restack_count",   0) or 0),          key=f"val_rs_{cid}")
+                            _pcol_specs = [1] * (1 + int(_show_ot) + int(_show_rs))
+                            _pcols = st.columns(_pcol_specs)
+                            _dmg = _pcols[0].number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
+                            _hours_overtime = 0
+                            _restack_count  = 0
+                            _pi = 1
+                            if _show_ot:
+                                _hours_overtime = _pcols[_pi].number_input("Hours Overtime", min_value=0, step=1, value=int(ci.get("hours_overtime", 0) or 0), key=f"val_ot_{cid}")
+                                _pi += 1
+                            if _show_rs:
+                                _restack_count = _pcols[_pi].number_input("Restack", min_value=0, step=1, value=int(ci.get("restack_count", 0) or 0), key=f"val_rs_{cid}")
 
                         _new_extras: list[str] = []
                         if _seal_count > 0:
@@ -962,37 +997,35 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             _producto_caliente = None
                             _temp1 = _temp2 = _temp3 = ""
 
-                        # Temperature Recorder — always shown regardless of temperature_recording flag
+                        # Temperature Recorder — options filtered by disabled_fields
+                        _tr_opts = [o for o in _TR_OPTS if not (
+                            (o == "Hardware & Installation" and "temp_recorder_hardware_fee"    in _disabled_fields) or
+                            (o == "Installation Only"       and "temp_recorder_installation_fee" in _disabled_fields)
+                        )]
                         _stored_tr = ci.get("temp_recorder")
                         if _stored_tr is True:
                             _stored_tr = "hardware_installation"
                         _tr_default = _TR_TO_LBL.get(_stored_tr, "None")
-                        st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Temperature Recorder</p>', unsafe_allow_html=True)
-                        _tr_sel = st.radio(
-                            "Temperature Recorder",
-                            options=_TR_OPTS,
-                            index=_TR_OPTS.index(_tr_default),
-                            horizontal=True,
-                            key=f"val_tr_{cid}",
-                            label_visibility="collapsed",
-                        )
-                        _new_tr   = _TR_TO_KEY[_tr_sel]
+                        _new_tr = None
+                        if len(_tr_opts) > 1:
+                            if _tr_default not in _tr_opts:
+                                _tr_default = "None"
+                            st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Temperature Recorder</p>', unsafe_allow_html=True)
+                            _tr_sel = st.radio(
+                                "Temperature Recorder",
+                                options=_tr_opts,
+                                index=_tr_opts.index(_tr_default),
+                                horizontal=True,
+                                key=f"val_tr_{cid}",
+                                label_visibility="collapsed",
+                            )
+                            _new_tr = _TR_TO_KEY[_tr_sel]
                         _tr_count = 1 if _new_tr else 0
 
                         _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
 
                         # ── Action buttons ────────────────────────────────────────
-                        _btn0, _btn1 = st.columns([1.5, 2])
-
-                        if _colored_btn(_btn0, "↩ Return to Received", key=f"return_rcv_{cid}", color="#6c757d", width="stretch"):
-                            dm.update_client_invoice(cid, {
-                                "status"       : "to_be_received",
-                                "received_date": None,
-                            })
-                            st.session_state.pop(_approve_key, None)
-                            st.rerun()
-
-                        if _colored_btn(_btn1, "📤 Save & Send to Accounting", key=f"gen_{cid}", color="#198754", width="stretch"):
+                        if _colored_btn(st, "📤 Save & Send to Accounting", key=f"gen_{cid}", color="#198754", width="stretch"):
                             # 1. Stamp temperature data onto the provider PDF
                             _has_temp_data = (
                                 bool(_temp1.strip() or _temp2.strip() or _temp3.strip())

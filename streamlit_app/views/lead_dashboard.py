@@ -142,6 +142,32 @@ def _canonical_client(name: str) -> str:
 
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("📊 Lead")
+    st.markdown(
+        """
+        <style>
+        /* Scale up checkboxes that sit inside column rows (next to input fields) */
+        div[data-testid="stHorizontalBlock"] div[data-testid="stCheckbox"] {
+            zoom: 1.75;
+        }
+        /* Collapse checkbox column to content width and remove gap */
+        div[data-testid="stHorizontalBlock"]:has(div[data-testid="stCheckbox"]) {
+            gap: 0.375rem !important;
+            align-items: flex-end !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(div[data-testid="stCheckbox"])
+            > div[data-testid="stColumn"]:first-child {
+            flex: 0 0 auto !important;
+            width: auto !important;
+            min-width: 0 !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(div[data-testid="stCheckbox"])
+            > div[data-testid="stColumn"]:first-child > div {
+            padding: 0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     tab_report, tab_rates, tab_processed, tab_settings = st.tabs([
         "📊 Reports",
@@ -394,198 +420,235 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         labels = {**billing_labels, **_non_billing_labels}
 
         # ── Default Rates ─────────────────────────────────────────────────────
-        st.markdown("#### Default Rates")
-        st.caption("Applies to all clients unless a client-specific rate is set.")
+        _default_rates_key = "default_rates_form_open"
+        if not st.session_state.get(_default_rates_key):
+            if _colored_btn(st, "⚙️ Edit Default Rates", key="open_default_rates_form", color="#0d6efd"):
+                st.session_state[_default_rates_key] = True
+                st.rerun()
+        else:
+            _dr_title_col, _dr_collapse_col = st.columns([3, 1])
+            _dr_title_col.markdown("#### Default Rates")
+            if _dr_collapse_col.button("▲ Collapse", key="collapse_default_rates"):
+                st.session_state[_default_rates_key] = False
+                st.rerun()
+            st.caption("Applies to all clients unless a client-specific rate is set.")
 
-        updated: dict[str, float] = {}
-        col1, col2 = st.columns(2)
-        items = list(labels.items())
-        for i, (key, label) in enumerate(items):
-            col = col1 if i < len(items) // 2 + len(items) % 2 else col2
-            if key == "net_days":
-                updated[key] = col.number_input(
-                    label=label,
-                    value=int(default_rates.get(key, 30)),
-                    min_value=1,
-                    step=1,
-                    key=f"rate_{key}",
-                )
-            else:
-                updated[key] = col.number_input(
-                    label=f"{label} ($)",
-                    value=float(default_rates.get(key, 0)),
-                    min_value=0.0,
-                    step=0.25,
-                    format="%.2f",
-                    key=f"rate_{key}",
-                )
+            updated: dict[str, float] = {}
+            col1, col2 = st.columns(2)
+            items = list(labels.items())
+            for i, (key, label) in enumerate(items):
+                col = col1 if i < len(items) // 2 + len(items) % 2 else col2
+                if key == "net_days":
+                    updated[key] = col.number_input(
+                        label=label,
+                        value=int(default_rates.get(key, 30)),
+                        min_value=1,
+                        step=1,
+                        key=f"rate_{key}",
+                    )
+                else:
+                    updated[key] = col.number_input(
+                        label=f"{label} ($)",
+                        value=float(default_rates.get(key, 0)),
+                        min_value=0.0,
+                        step=0.25,
+                        format="%.2f",
+                        key=f"rate_{key}",
+                    )
 
-        _cpt_col, _basis_col = st.columns(2)
-        updated["cost_per_truck"] = _cpt_col.number_input(
-            "Cost per Truck In & Out ($)",
-            value=float(default_rates.get("cost_per_truck", 0)),
-            min_value=0.0, step=0.25, format="%.2f",
-            key="rate_cost_per_truck",
-        )
-        _cur_basis = default_rates.get("default_billing_basis", "Pallet")
-        updated["default_billing_basis"] = _basis_col.selectbox(
-            "Default Billing Basis",
-            options=["Pallet", "Truck"],
-            index=0 if _cur_basis == "Pallet" else 1,
-            key="rate_default_billing_basis",
-            help="Controls whether the admin dashboard shows a total pallet count input (Pallet) or skips it (Truck).",
-        )
+            _cpt_col, _basis_col = st.columns(2)
+            updated["cost_per_truck"] = _cpt_col.number_input(
+                "Cost per Truck In & Out ($)",
+                value=float(default_rates.get("cost_per_truck", 0)),
+                min_value=0.0, step=0.25, format="%.2f",
+                key="rate_cost_per_truck",
+            )
+            _cur_basis = default_rates.get("default_billing_basis", "Pallet")
+            updated["default_billing_basis"] = _basis_col.selectbox(
+                "Default Billing Basis",
+                options=["Pallet", "Truck"],
+                index=0 if _cur_basis == "Pallet" else 1,
+                key="rate_default_billing_basis",
+                help="Controls whether the admin dashboard shows a total pallet count input (Pallet) or skips it (Truck).",
+            )
 
-        if _colored_btn(st, "💾 Save Default Rates", key="save_default_rates", color="#198754"):
-            dm.update_rate_card(updated)
-            st.success("Default rates saved.")
+            if _colored_btn(st, "💾 Save Default Rates", key="save_default_rates", color="#198754"):
+                dm.update_rate_card(updated)
+                st.success("Default rates saved.")
 
         st.markdown("---")
 
         # ── Add New Client (Unified Profile) ─────────────────────────────────
-        st.markdown("#### Add New Client")
-        st.caption("Fill in the full client profile below and click **Save Client Profile** to register everything at once.")
-
-        # Identity row
-        _nid1, _nid2 = st.columns([2, 1])
-        new_client_name     = _nid1.text_input(
-            "Client Name *",
-            placeholder="e.g. WALMART",
-            key="new_client_name",
-        )
-        new_client_initials = _nid2.text_input(
-            "Initials",
-            placeholder="e.g. WMT",
-            key="new_client_initials",
-            help="Short code used on invoices (e.g. WMT, BBIA). Saved in uppercase.",
-        )
-
-        # Contact / address row
-        new_client_email = st.text_input(
-            "Email Address",
-            placeholder="billing@client.com",
-            key="new_client_email",
-        )
-        new_client_address = st.text_area(
-            "Billing Address",
-            placeholder="123 Main St\nCity, TX 78000",
-            height=90,
-            key="new_client_address",
-        )
-        new_client_rfc = st.text_input(
-            "RFC",
-            placeholder="e.g. ABC123456DEF",
-            key="new_client_rfc",
-            help="Mexican tax ID (RFC). Printed on the invoice below the billing address.",
-        )
-
-        # Rate card
-        st.caption("Rate Card")
-        _new_billing_mode = st.radio(
-            "Billing Mode",
-            options=["Pallet", "Truck"],
-            horizontal=True,
-            key="new_client_billing_mode",
-            help="Controls which billing rates are shown for editing. Both sets of prices are always saved.",
-        )
-        new_cbp = (_new_billing_mode == "Pallet")
-
-        st.caption("Pallet Rates")
-        new_col1, new_col2 = st.columns(2)
-        _new_in_out = new_col1.number_input(
-            "In-Out Storage (per pallet) ($)",
-            value=float(default_rates.get("in_out", 0)),
-            min_value=0.0, step=0.25, format="%.2f",
-            key="new_cr_in_out",
-        )
-        _new_transfer = new_col2.number_input(
-            "Transfer per Truck ($)",
-            value=float(default_rates.get("transfer", 0)),
-            min_value=0.0, step=0.25, format="%.2f",
-            key="new_cr_transfer",
-        )
-        _new_extended_storage = new_col2.number_input(
-            "Extended Storage (per pallet) ($)",
-            value=float(default_rates.get("extended_storage", 0)),
-            min_value=0.0, step=0.25, format="%.2f",
-            key="new_cr_extended_storage",
-        )
-
-        st.caption("Truck Rates")
-        _new_cost_per_truck = st.number_input(
-            "Cost per Truck In & Out ($)",
-            value=float(default_rates.get("cost_per_truck", 0)),
-            min_value=0.0, step=0.25, format="%.2f",
-            key="new_cr_cost_per_truck",
-        )
-
-        # Non-billing fees — always shown
-        new_client_overrides: dict = {
-            "charged_by_pallet" : new_cbp,
-            "in_out"            : _new_in_out,
-            "transfer"          : _new_transfer,
-            "extended_storage"  : _new_extended_storage,
-            "cost_per_truck"    : _new_cost_per_truck,
-        }
-        _nb_new_items = list(_non_billing_labels.items())
-        nb_new_col1, nb_new_col2 = st.columns(2)
-        for i, (key, label) in enumerate(_nb_new_items):
-            col = nb_new_col1 if i < len(_nb_new_items) // 2 + len(_nb_new_items) % 2 else nb_new_col2
-            if key == "net_days":
-                new_client_overrides[key] = col.number_input(
-                    label=label,
-                    value=int(default_rates.get(key, 30)),
-                    min_value=1, step=1,
-                    key=f"new_cr_{key}",
-                )
-            else:
-                new_client_overrides[key] = col.number_input(
-                    label=f"{label} ($)",
-                    value=float(default_rates.get(key, 0)),
-                    min_value=0.0, step=0.25, format="%.2f",
-                    key=f"new_cr_{key}",
-                )
-
-        st.caption("Pallet Override — leave at 0 to disable. When set, this count is always pre-filled for this client's invoices.")
-        _new_fixed_pal = st.number_input(
-            "Fixed Pallet Count (optional)",
-            min_value=0,
-            step=1,
-            value=0,
-            key="new_cr_fixed_pal",
-        )
-        if _new_fixed_pal > 0:
-            new_client_overrides["fixed_pallet_count"] = int(_new_fixed_pal)
-
-        _new_temp_recording = st.checkbox(
-            "Temperature Recording",
-            value=True,
-            key="new_cr_temperature_recording",
-            help="When enabled, Pulp Temperature and Temperature Recorder fields appear in the Admin dashboard for this client's invoices.",
-        )
-        new_client_overrides["temperature_recording"] = _new_temp_recording
-
-        if _colored_btn(st, "💾 Save Client Profile", key="save_new_client", color="#198754"):
-            if not new_client_name.strip():
-                st.warning("Client name is required.")
-            else:
-                _saved_name = new_client_name.strip().upper()
-                dm.set_client_rates(_saved_name, new_client_overrides)
-                if new_client_address.strip():
-                    dm.set_client_address(_saved_name, new_client_address.strip())
-                if new_client_email.strip():
-                    dm.set_client_email(_saved_name, new_client_email.strip())
-                if new_client_initials.strip():
-                    dm.set_client_initial(_saved_name, new_client_initials.strip())
-                if new_client_rfc.strip():
-                    dm.set_client_rfc(_saved_name, new_client_rfc.strip())
-                st.session_state["rates_saved_msg"] = f"✅ Client profile saved for {_saved_name}."
-                st.session_state.pop("new_client_save_inline", None)
-                st.session_state["new_client_save_inline"] = f"Client profile saved for **{_saved_name}**."
+        _new_client_key = "new_client_form_open"
+        if not st.session_state.get(_new_client_key):
+            if _colored_btn(st, "➕ Add New Client", key="open_new_client_form", color="#0d6efd"):
+                st.session_state[_new_client_key] = True
                 st.rerun()
+        else:
+            _nc_title_col, _nc_collapse_col = st.columns([3, 1])
+            _nc_title_col.markdown("#### Add New Client")
+            if _nc_collapse_col.button("▲ Collapse", key="collapse_new_client"):
+                st.session_state[_new_client_key] = False
+                st.rerun()
+            st.caption("Fill in the full client profile below and click **Save Client Profile** to register everything at once.")
 
-        if _inline := st.session_state.pop("new_client_save_inline", None):
-            st.success(_inline)
+            # Identity row
+            _nid1, _nid2 = st.columns([2, 1])
+            new_client_name     = _nid1.text_input(
+                "Client Name *",
+                placeholder="e.g. WALMART",
+                key="new_client_name",
+            )
+            new_client_initials = _nid2.text_input(
+                "Initials",
+                placeholder="e.g. WMT",
+                key="new_client_initials",
+                help="Short code used on invoices (e.g. WMT, BBIA). Saved in uppercase.",
+            )
+
+            # Contact / address row
+            new_client_email = st.text_input(
+                "Email Address",
+                placeholder="billing@client.com",
+                key="new_client_email",
+            )
+            new_client_address = st.text_area(
+                "Billing Address",
+                placeholder="123 Main St\nCity, TX 78000",
+                height=90,
+                key="new_client_address",
+            )
+            new_client_rfc = st.text_input(
+                "RFC",
+                placeholder="e.g. ABC123456DEF",
+                key="new_client_rfc",
+                help="Mexican tax ID (RFC). Printed on the invoice below the billing address.",
+            )
+
+            # Rate card
+            st.caption("Rate Card")
+            _new_billing_mode = st.radio(
+                "Billing Mode",
+                options=["Pallet", "Truck"],
+                horizontal=True,
+                key="new_client_billing_mode",
+                help="Controls which billing rates are shown for editing. Both sets of prices are always saved.",
+            )
+            new_cbp = (_new_billing_mode == "Pallet")
+
+            st.caption("Pallet Rates")
+            _rc1, _rf1 = st.columns([1, 5], vertical_alignment="center")
+            _en_in_out = _rc1.checkbox("In-Out Storage", value=True, key="new_cr_in_out_en", label_visibility="collapsed")
+            _new_in_out = _rf1.number_input(
+                "In-Out Storage (per pallet) ($)",
+                value=float(default_rates.get("in_out", 0)),
+                min_value=0.0, step=0.25, format="%.2f",
+                key="new_cr_in_out",
+            )
+
+            _rc2, _rf2 = st.columns([1, 5], vertical_alignment="center")
+            _en_transfer = _rc2.checkbox("Transfer per Truck", value=True, key="new_cr_transfer_en", label_visibility="collapsed")
+            _new_transfer = _rf2.number_input(
+                "Transfer per Truck ($)",
+                value=float(default_rates.get("transfer", 0)),
+                min_value=0.0, step=0.25, format="%.2f",
+                key="new_cr_transfer",
+            )
+
+            _rc3, _rf3 = st.columns([1, 5], vertical_alignment="center")
+            _en_extended = _rc3.checkbox("Extended Storage", value=True, key="new_cr_extended_en", label_visibility="collapsed")
+            _new_extended_storage = _rf3.number_input(
+                "Extended Storage (per pallet) ($)",
+                value=float(default_rates.get("extended_storage", 0)),
+                min_value=0.0, step=0.25, format="%.2f",
+                key="new_cr_extended_storage",
+            )
+
+            st.caption("Truck Rates")
+            _tc1, _tf1 = st.columns([1, 5], vertical_alignment="center")
+            _en_cpt = _tc1.checkbox("Cost per Truck", value=True, key="new_cr_cpt_en", label_visibility="collapsed")
+            _new_cost_per_truck = _tf1.number_input(
+                "Cost per Truck In & Out ($)",
+                value=float(default_rates.get("cost_per_truck", 0)),
+                min_value=0.0, step=0.25, format="%.2f",
+                key="new_cr_cost_per_truck",
+            )
+
+            new_client_overrides: dict = {
+                "charged_by_pallet" : new_cbp,
+                "in_out"            : _new_in_out,
+                "transfer"          : _new_transfer,
+                "extended_storage"  : _new_extended_storage,
+                "cost_per_truck"    : _new_cost_per_truck,
+            }
+            _new_disabled: list = []
+            if not _en_in_out:   _new_disabled.append("in_out")
+            if not _en_transfer: _new_disabled.append("transfer")
+            if not _en_extended: _new_disabled.append("extended_storage")
+            if not _en_cpt:      _new_disabled.append("cost_per_truck")
+
+            st.caption("General Rates")
+            for key, label in _non_billing_labels.items():
+                _gc, _gf = st.columns([1, 5], vertical_alignment="center")
+                if not _gc.checkbox(label, value=True, key=f"new_cr_{key}_en", label_visibility="collapsed"):
+                    _new_disabled.append(key)
+                if key == "net_days":
+                    new_client_overrides[key] = _gf.number_input(
+                        label=label,
+                        value=int(default_rates.get(key, 30)),
+                        min_value=1, step=1,
+                        key=f"new_cr_{key}",
+                    )
+                else:
+                    new_client_overrides[key] = _gf.number_input(
+                        label=f"{label} ($)",
+                        value=float(default_rates.get(key, 0)),
+                        min_value=0.0, step=0.25, format="%.2f",
+                        key=f"new_cr_{key}",
+                    )
+
+            new_client_overrides["disabled_fields"] = _new_disabled
+
+            st.caption("Pallet Override — leave at 0 to disable. When set, this count is always pre-filled for this client's invoices.")
+            _new_fixed_pal = st.number_input(
+                "Fixed Pallet Count (optional)",
+                min_value=0,
+                step=1,
+                value=0,
+                key="new_cr_fixed_pal",
+            )
+            if _new_fixed_pal > 0:
+                new_client_overrides["fixed_pallet_count"] = int(_new_fixed_pal)
+
+            _new_temp_recording = st.checkbox(
+                "Temperature Recording",
+                value=True,
+                key="new_cr_temperature_recording",
+                help="When enabled, Pulp Temperature and Temperature Recorder fields appear in the Admin dashboard for this client's invoices.",
+            )
+            new_client_overrides["temperature_recording"] = _new_temp_recording
+
+            if _colored_btn(st, "💾 Save Client Profile", key="save_new_client", color="#198754"):
+                if not new_client_name.strip():
+                    st.warning("Client name is required.")
+                else:
+                    _saved_name = new_client_name.strip().upper()
+                    dm.set_client_rates(_saved_name, new_client_overrides)
+                    if new_client_address.strip():
+                        dm.set_client_address(_saved_name, new_client_address.strip())
+                    if new_client_email.strip():
+                        dm.set_client_email(_saved_name, new_client_email.strip())
+                    if new_client_initials.strip():
+                        dm.set_client_initial(_saved_name, new_client_initials.strip())
+                    if new_client_rfc.strip():
+                        dm.set_client_rfc(_saved_name, new_client_rfc.strip())
+                    st.session_state["rates_saved_msg"] = f"✅ Client profile saved for {_saved_name}."
+                    st.session_state.pop("new_client_save_inline", None)
+                    st.session_state["new_client_save_inline"] = f"Client profile saved for **{_saved_name}**."
+                    st.rerun()
+
+            if _inline := st.session_state.pop("new_client_save_inline", None):
+                st.success(_inline)
 
         st.markdown("---")
 
@@ -723,26 +786,36 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     )
                     client_cbp = (_cd_billing_mode == "Pallet")
 
+                    _cd_disabled = list(crates.get("disabled_fields", []))
+
                     st.caption("Pallet Rates")
-                    override_col1, override_col2 = st.columns(2)
                     _def_in_out   = float(default_rates.get("in_out", 0))
                     _def_transfer = float(default_rates.get("transfer", 0))
-                    _client_in_out = override_col1.number_input(
+                    _def_extended = float(default_rates.get("extended_storage", 0))
+
+                    _prc1, _prf1 = st.columns([1, 5], vertical_alignment="center")
+                    _en_cd_in_out = _prc1.checkbox("In-Out Storage", value="in_out" not in _cd_disabled, key=f"cr_{cname}_in_out_en", label_visibility="collapsed")
+                    _client_in_out = _prf1.number_input(
                         "In-Out Storage (per pallet) ($)" + (" ✏️" if "in_out" in crates else ""),
                         value=float(crates.get("in_out", _def_in_out)),
                         min_value=0.0, step=0.25, format="%.2f",
                         key=f"cr_{cname}_in_out",
                         help="Default: ${:.2f}".format(_def_in_out),
                     )
-                    _client_transfer = override_col2.number_input(
+
+                    _prc2, _prf2 = st.columns([1, 5], vertical_alignment="center")
+                    _en_cd_transfer = _prc2.checkbox("Transfer per Truck", value="transfer" not in _cd_disabled, key=f"cr_{cname}_transfer_en", label_visibility="collapsed")
+                    _client_transfer = _prf2.number_input(
                         "Transfer per Truck ($)" + (" ✏️" if "transfer" in crates else ""),
                         value=float(crates.get("transfer", _def_transfer)),
                         min_value=0.0, step=0.25, format="%.2f",
                         key=f"cr_{cname}_transfer",
                         help="Default: ${:.2f}".format(_def_transfer),
                     )
-                    _def_extended    = float(default_rates.get("extended_storage", 0))
-                    _client_extended = override_col1.number_input(
+
+                    _prc3, _prf3 = st.columns([1, 5], vertical_alignment="center")
+                    _en_cd_extended = _prc3.checkbox("Extended Storage", value="extended_storage" not in _cd_disabled, key=f"cr_{cname}_extended_en", label_visibility="collapsed")
+                    _client_extended = _prf3.number_input(
                         "Extended Storage (per pallet) ($)" + (" ✏️" if "extended_storage" in crates else ""),
                         value=float(crates.get("extended_storage", _def_extended)),
                         min_value=0.0, step=0.25, format="%.2f",
@@ -751,8 +824,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     )
 
                     st.caption("Truck Rates")
-                    _def_cpt    = float(default_rates.get("cost_per_truck", 0))
-                    _client_cpt = st.number_input(
+                    _def_cpt = float(default_rates.get("cost_per_truck", 0))
+                    _trc1, _trf1 = st.columns([1, 5], vertical_alignment="center")
+                    _en_cd_cpt = _trc1.checkbox("Cost per Truck", value="cost_per_truck" not in _cd_disabled, key=f"cr_{cname}_cpt_en", label_visibility="collapsed")
+                    _client_cpt = _trf1.number_input(
                         "Cost per Truck In & Out ($)" + (" ✏️" if "cost_per_truck" in crates else ""),
                         value=float(crates.get("cost_per_truck", _def_cpt)),
                         min_value=0.0, step=0.25, format="%.2f",
@@ -767,17 +842,20 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         "extended_storage"  : _client_extended,
                         "cost_per_truck"    : _client_cpt,
                     }
+                    _cd_new_disabled: list = []
+                    if not _en_cd_in_out:   _cd_new_disabled.append("in_out")
+                    if not _en_cd_transfer: _cd_new_disabled.append("transfer")
+                    if not _en_cd_extended: _cd_new_disabled.append("extended_storage")
+                    if not _en_cd_cpt:      _cd_new_disabled.append("cost_per_truck")
 
-                    # Non-billing fees — always shown
-                    _nb_cd_items = list(_non_billing_labels.items())
-                    nb_cd_col1, nb_cd_col2 = st.columns(2)
-                    for i, (key, label) in enumerate(_nb_cd_items):
-                        col = nb_cd_col1 if i < len(_nb_cd_items) // 2 + len(_nb_cd_items) % 2 else nb_cd_col2
+                    st.caption("General Rates")
+                    for key, label in _non_billing_labels.items():
+                        _gc, _gf = st.columns([1, 5], vertical_alignment="center")
                         is_override = key in crates
                         if key == "net_days":
                             default_val = int(default_rates.get(key, 30))
                             current_val = int(crates.get(key, default_val))
-                            new_val = col.number_input(
+                            new_val = _gf.number_input(
                                 label=label + (" ✏️" if is_override else ""),
                                 value=current_val, min_value=1, step=1,
                                 key=f"cr_{cname}_{key}",
@@ -786,7 +864,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         else:
                             default_val = float(default_rates.get(key, 0))
                             current_val = float(crates.get(key, default_val))
-                            new_val = col.number_input(
+                            new_val = _gf.number_input(
                                 label=f"{label} ($)" + (" ✏️" if is_override else ""),
                                 value=current_val, min_value=0.0, step=0.25, format="%.2f",
                                 key=f"cr_{cname}_{key}",
@@ -794,6 +872,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
                         if new_val != default_val:
                             new_overrides[key] = new_val
+                        if not _gc.checkbox(label, value=key not in _cd_disabled, key=f"cr_{cname}_{key}_en", label_visibility="collapsed"):
+                            _cd_new_disabled.append(key)
+                    new_overrides["disabled_fields"] = _cd_new_disabled
 
                     st.caption("Pallet Override — leave at 0 to disable.")
                     _fixed_pal = st.number_input(
