@@ -12,7 +12,6 @@ from utils.supabase_log_handler import setup_supabase_logging
 setup_supabase_logging()
 
 import streamlit as st
-import streamlit.components.v1 as _components
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
@@ -27,12 +26,12 @@ st.set_page_config(
 )
 
 # Disable browser autocomplete on every input across the entire app.
-_components.html(
+st.html(
     """
     <script>
     (function () {
         function off() {
-            window.parent.document.querySelectorAll('input').forEach(function (el) {
+            document.querySelectorAll('input').forEach(function (el) {
                 if (el.getAttribute('autocomplete') !== 'off') {
                     el.setAttribute('autocomplete', 'off');
                 }
@@ -40,13 +39,12 @@ _components.html(
         }
         off();
         new MutationObserver(off).observe(
-            window.parent.document.body,
+            document.body,
             { childList: true, subtree: true }
         );
     })();
     </script>
-    """,
-    height=0,
+    """
 )
 
 # ── Shared instances (cached across reruns) ───────────────────────────────────

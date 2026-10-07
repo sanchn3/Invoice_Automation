@@ -11,7 +11,6 @@ import os
 import threading
 import time
 import streamlit as st
-import streamlit.components.v1 as _components
 from datetime import datetime, timedelta, timezone
 
 from pathlib import Path
@@ -1207,10 +1206,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     # ── Button colour overrides (injected outside all tabs so the iframe
     #    doesn't taint any tab's background; MutationObserver watches the
     #    full page DOM regardless of injection point). ─────────────────────
-    _components.html("""<script>
+    st.html("""<script>
 (function () {
     function applyColors() {
-        window.parent.document.querySelectorAll('button').forEach(function (btn) {
+        document.querySelectorAll('button').forEach(function (btn) {
             var t = btn.innerText.trim();
             if (t === '\u2715' && !btn.dataset.xStyled) {
                 btn.dataset.xStyled = '1';
@@ -1230,8 +1229,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     }
     applyColors();
     new MutationObserver(applyColors).observe(
-        window.parent.document.body, {childList: true, subtree: true}
+        document.body, {childList: true, subtree: true}
     );
 }());
-</script>""", height=0)
+</script>""")
 
