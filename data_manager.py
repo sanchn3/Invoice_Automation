@@ -694,7 +694,7 @@ class DataManager:
     def delete_provider_invoice(self, id: str) -> None:
         with _lock:
             invoices = _read_json(_PROVIDER_INVOICES_FILE)
-            invoices = [inv for inv in invoices if inv["id"] != id]
+            invoices = [inv for inv in invoices if inv.get("id") != id]
             _write_json(_PROVIDER_INVOICES_FILE, invoices)
         _fire_and_forget(_sb_delete_record, _SB_PI_TABLE, id)
 
@@ -702,7 +702,7 @@ class DataManager:
         with _lock:
             invoices = _read_json(_PROVIDER_INVOICES_FILE)
             for i, inv in enumerate(invoices):
-                if inv["id"] == id:
+                if inv.get("id") == id:
                     invoices[i].update(updates)
                     _write_json(_PROVIDER_INVOICES_FILE, invoices)
                     updated = invoices[i]
@@ -714,7 +714,7 @@ class DataManager:
 
     def get_provider_invoice_by_id(self, id: str) -> dict | None:
         for inv in self.get_provider_invoices():
-            if inv["id"] == id:
+            if inv.get("id") == id:
                 return inv
         return None
 
@@ -740,7 +740,7 @@ class DataManager:
         with _lock:
             invoices = _read_json(_CLIENT_INVOICES_FILE)
             for i, inv in enumerate(invoices):
-                if inv["id"] == id:
+                if inv.get("id") == id:
                     invoices[i].update(updates)
                     _write_json(_CLIENT_INVOICES_FILE, invoices)
                     updated = invoices[i]
@@ -752,14 +752,14 @@ class DataManager:
 
     def get_client_invoice_by_id(self, id: str) -> dict | None:
         for inv in self.get_client_invoices():
-            if inv["id"] == id:
+            if inv.get("id") == id:
                 return inv
         return None
 
     def delete_client_invoice(self, id: str) -> None:
         with _lock:
             invoices = _read_json(_CLIENT_INVOICES_FILE)
-            invoices = [inv for inv in invoices if inv["id"] != id]
+            invoices = [inv for inv in invoices if inv.get("id") != id]
             _write_json(_CLIENT_INVOICES_FILE, invoices)
         _fire_and_forget(_sb_delete_record, _SB_CI_TABLE, id)
 
