@@ -794,7 +794,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     with r1d:
                         st.write(f"${ci.get('total', 0):,.2f}")
                     with r1e:
-                        if status == "validated":
+                        if status in ("validated", "ready_to_invoice"):
                             svc = st.selectbox(
                                 label="Service Type",
                                 options=["in_out", "transfer"],
