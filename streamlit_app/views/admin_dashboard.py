@@ -1088,7 +1088,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "billing_address"     : billing_addr,
                                 "client_rfc"          : billing_rfc,
                                 "status"              : "invoiced",
-                                "invoice_date"        : datetime.utcnow().date().isoformat(),
+                                "invoice_date"        : ci.get("received_date") or datetime.utcnow().date().isoformat(),
                                 "sent_to_accounting_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
                             })
                             if prov.get("email_intake_id"):
