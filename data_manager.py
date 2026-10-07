@@ -437,8 +437,9 @@ def _restore_clients_from_supabase() -> int:
         if payload:
             _write_json(fpath, payload)
 
-    _sb_logger.info("_restore_clients: restored %d clients from Supabase", len(rows))
-    return len(rows)
+    count = len(rates)
+    _sb_logger.info("_restore_clients: restored %d clients from Supabase", count)
+    return count
 
 
 def _backfill_clients_to_supabase() -> None:
@@ -999,6 +1000,20 @@ class DataManager:
                 pass
         return used
 
+    def _compute_next_invoice_number(self, client_name: str) -> str:
+        """
+        Core logic shared by next_client_invoice_number and peek_client_invoice_number.
+        Must be called while _lock is held.
+        Returns the lowest unused number ≥ 2001 formatted with the client's initials prefix.
+        """
+        used     = self._used_invoice_numbers(client_name)
+        next_num = 2001
+        while next_num in used:
+            next_num += 1
+        initials = _read_json(_CLIENT_INITIALS_FILE)
+        prefix   = (initials.get(client_name, "") if isinstance(initials, dict) else "").strip().upper()
+        return f"{prefix}_{next_num}" if prefix else str(next_num)
+
     def next_client_invoice_number(self, client_name: str) -> str:
         """
         Return the next invoice ID for client_name by finding the lowest unused
@@ -1008,13 +1023,7 @@ class DataManager:
         Example: "WMT_2001", "WMT_2002" ... or "2001" if no initials set.
         """
         with _lock:
-            used     = self._used_invoice_numbers(client_name)
-            next_num = 2001
-            while next_num in used:
-                next_num += 1
-            initials = _read_json(_CLIENT_INITIALS_FILE)
-            prefix   = (initials.get(client_name, "") if isinstance(initials, dict) else "").strip().upper()
-        return f"{prefix}_{next_num}" if prefix else str(next_num)
+            return self._compute_next_invoice_number(client_name)
 
     def peek_client_invoice_number(self, client_name: str) -> str:
         """
@@ -1022,13 +1031,7 @@ class DataManager:
         Useful for previewing the ID before the user confirms.
         """
         with _lock:
-            used     = self._used_invoice_numbers(client_name)
-            next_num = 2001
-            while next_num in used:
-                next_num += 1
-            initials = _read_json(_CLIENT_INITIALS_FILE)
-            prefix   = (initials.get(client_name, "") if isinstance(initials, dict) else "").strip().upper()
-        return f"{prefix}_{next_num}" if prefix else str(next_num)
+            return self._compute_next_invoice_number(client_name)
 
     # ─────────────────────────────────────────
     # BILL OF LADING RECORDS  (Supabase)

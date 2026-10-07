@@ -385,7 +385,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
     tab_pipeline, tab_approve, tab_export = st.tabs([
         "🗂 Validate",
-        "✅ Approve & Invoice",
+        "✅ Invoice",
         "📤 Sent to Accounting",
     ])
 
@@ -741,7 +741,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     # TAB 2 — APPROVE & GENERATE INVOICE
     # ──────────────────────────────────────────────────────────────────────────
     with tab_approve:
-        st.subheader("Approve & Invoice")
+        st.subheader("Invoice")
 
         all_ci = sorted(
             [ci for ci in client_invs_list
@@ -1025,7 +1025,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
 
                         # ── Action buttons ────────────────────────────────────────
-                        if _colored_btn(st, "📤 Save & Send to Accounting", key=f"gen_{cid}", color="#198754", width="stretch"):
+                        _gen_col, = st.columns(1)
+                        if _colored_btn(_gen_col, "📤 Save & Send to Accounting", key=f"gen_{cid}", color="#198754", width="stretch"):
                             # 1. Stamp temperature data onto the provider PDF
                             _has_temp_data = (
                                 bool(_temp1.strip() or _temp2.strip() or _temp3.strip())

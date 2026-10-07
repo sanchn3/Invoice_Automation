@@ -15,6 +15,15 @@ import streamlit as st
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
+
+# Explicitly register the package in sys.modules before submodule imports.
+# Prevents KeyError: 'streamlit_app' during Streamlit hot-reload on Python 3.12+
+# where exec() can leave the package in a partially-initialized state.
+import importlib as _il
+if not hasattr(sys.modules.get("streamlit_app"), "__path__"):
+    _il.import_module("streamlit_app")
+del _il
+
 from streamlit_app import auth
 from streamlit_app.views import admin_dashboard, worker_form, lead_dashboard, accounting_dashboard
 

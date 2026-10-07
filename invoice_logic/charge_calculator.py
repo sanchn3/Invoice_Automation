@@ -146,6 +146,6 @@ def calculate_charges(
 
     return {
         "line_items": line_items,
-        "subtotal"  : subtotal, #test comment
+        "subtotal"  : subtotal,
         "total"     : subtotal,  # no tax for now
     }
