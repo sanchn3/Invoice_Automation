@@ -73,7 +73,7 @@ if not auth.is_authenticated():
             st.markdown("#### Sign In")
             _username = st.text_input("Username", key="login_user")
             _password = st.text_input("Password", type="password", key="login_pass")
-            if st.button("Sign In", type="primary", use_container_width=True, key="login_btn"):
+            if st.button("Sign In", type="primary", width='stretch', key="login_btn"):
                 _user = auth.verify_login(_username.strip(), _password)
                 if _user:
                     auth.login(_user)
@@ -95,7 +95,7 @@ st.sidebar.title("📦 INCO")
 st.sidebar.markdown(f"**{auth.ROLE_LABELS.get(role, role)}**  \n`{username}`")
 st.sidebar.markdown("---")
 
-if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+if st.sidebar.button("🚪 Sign Out", width='stretch'):
     auth.logout()
     st.html(f'<script>window.top.location.replace("{_SIGN_OUT_URL}");</script>')
     st.markdown(

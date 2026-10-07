@@ -250,7 +250,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                         "Rate ($)"  : f"{li.get('unit_price', 0):,.2f}",
                                         "Total ($)" : f"{li.get('total', 0):,.2f}",
                                     } for li in line_items]),
-                                    use_container_width=True,
+                                    width='stretch',
                                     hide_index=True,
                                 )
 
@@ -536,7 +536,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             file_name=_eml_name,
                             mime="message/rfc822",
                             key=f"dl_eml_{cname}",
-                            use_container_width=True,
+                            width='stretch',
                         )
 
                         mc1, mc2 = st.columns(2)

@@ -246,7 +246,7 @@ def _render_operation_photos() -> None:
                         chunk    = valid_paths[start : start + chunk_size]
                         img_cols = st.columns(len(chunk))
                         for col, path in zip(img_cols, chunk):
-                            col.image(path, caption=Path(path).name, use_container_width=True)
+                            col.image(path, caption=Path(path).name)
                             col.download_button(
                                 label="⬇ Download",
                                 data=Path(path).read_bytes(),
@@ -872,7 +872,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     _approve_key = f"approve_open_{cid}"
                     if not st.session_state.get(_approve_key):
                         _approve_col, = st.columns(1)
-                        if _colored_btn(_approve_col, "Approve Invoice", key=f"approve_btn_{cid}", color="#198754", use_container_width=True):
+                        if _colored_btn(_approve_col, "Approve Invoice", key=f"approve_btn_{cid}", color="#198754", width='stretch'):
                             st.session_state[_approve_key] = True
                             st.rerun()
                     else:
@@ -981,81 +981,39 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
                         _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
 
-                        # ── Save / Send buttons ───────────────────────────────────
-                        _save_pdf_key = f"save_pdf_{cid}"
-                        _save_ok_key  = f"save_ok_{cid}"
-                        _btn0, _btn1, _btn2 = st.columns([1.5, 1, 2])
+                        # ── Action buttons ────────────────────────────────────────
+                        _btn0, _btn1 = st.columns([1.5, 2])
 
                         if _colored_btn(_btn0, "↩ Return to Received", key=f"return_rcv_{cid}", color="#6c757d", width="stretch"):
                             dm.update_client_invoice(cid, {
                                 "status"       : "to_be_received",
                                 "received_date": None,
                             })
-                            for _k in (_save_pdf_key, _save_ok_key, _approve_key):
-                                st.session_state.pop(_k, None)
+                            st.session_state.pop(_approve_key, None)
                             st.rerun()
 
-                        if _colored_btn(_btn1, "💾 Save", key=f"savebtn_{cid}", color="#0068c9", width='stretch'):
-                            # 1. Persist all form fields — no status change, no QB number
-                            dm.update_client_invoice(cid, {
-                                "pallet_count"        : int(_pal),
-                                "damaged_pallets"     : int(_dmg),
-                                "hours_overtime"      : int(_hours_overtime),
-                                "restack_count"       : int(_restack_count),
-                                "extra_charges"       : _new_extras,
-                                "seal_count"          : int(_seal_count),
-                                "temp_recorder"       : _new_tr,
-                                "temp_recorder_count" : int(_tr_count),
-                                "producto_caliente"   : _producto_caliente,
-                                "temp_f1"             : _temp1.strip(),
-                                "temp_f2"             : _temp2.strip(),
-                                "temp_f3"             : _temp3.strip(),
-                                "worker_notes"        : _new_notes.strip(),
-                            })
-                            # 2. Stamp temperature data onto the provider PDF (lower-right)
-                            #    Only applied when at least one field is filled.
+                        if _colored_btn(_btn1, "📤 Save & Send to Accounting", key=f"gen_{cid}", color="#198754", width="stretch"):
+                            # 1. Stamp temperature data onto the provider PDF
                             _has_temp_data = (
                                 bool(_temp1.strip() or _temp2.strip() or _temp3.strip())
                                 or _producto_caliente
                                 or bool(_new_notes.strip())
                             )
                             _prov_path = prov.get("pdf_local_path", "")
-                            _stamped_bytes = None
                             if _has_temp_data and _prov_path and _temp_enabled:
                                 _raw = _get_pdf_bytes(_prov_path)
                                 if _raw:
                                     try:
-                                        _stamped_bytes = _stamp_temp(
+                                        _stamped = _stamp_temp(
                                             _raw,
                                             [_temp1.strip(), _temp2.strip(), _temp3.strip()],
                                             _producto_caliente,
                                             _new_notes.strip(),
                                         )
+                                        _overwrite_provider_pdf(_prov_path, _stamped)
                                     except Exception as _se:
                                         logger.warning("Temperature stamp failed: %s", _se)
-                            if _stamped_bytes:
-                                _overwrite_provider_pdf(_prov_path, _stamped_bytes)
-                                st.session_state[_save_pdf_key] = (_stamped_bytes, cid)
-                            st.session_state[_save_ok_key] = True
-                            st.rerun()
-
-                        # ── Download row (visible after Save) ─────────────────────
-                        if st.session_state.get(_save_ok_key):
-                            _saved_bytes, _saved_stem = st.session_state.get(
-                                _save_pdf_key, (None, None)
-                            )
-                            _dl1, _dl2 = st.columns([2, 1])
-                            _dl1.success("Data saved. Click 📄 PDF to review.")
-                            if _saved_bytes:
-                                _dl2.download_button(
-                                    "⬇ Download",
-                                    data=_saved_bytes,
-                                    file_name=f"{_saved_stem}-stamped.pdf",
-                                    mime="application/pdf",
-                                    key=f"dl_saved_{cid}",
-                                )
-
-                        if _colored_btn(_btn2, "📤 Send to Accounting", key=f"gen_{cid}", color="#198754", width="stretch"):
+                            # 2. Calculate charges and submit to accounting
                             inv_id  = ci.get("quickbooks_invoice_number") or dm.next_client_invoice_number(ci.get("client_name", ""))
                             charges = calculate_charges(
                                 dm=dm,
@@ -1115,8 +1073,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 except Exception as _e:
                                     logger.warning("Could not upload generated invoice PDF: %s", _e)
                                 threading.Thread(target=_sync_inv, args=(ci_updated,), daemon=True).start()
-                            st.session_state.pop(_save_pdf_key, None)
-                            st.session_state.pop(_save_ok_key, None)
                             st.session_state.pop(_approve_key, None)
                             _notif = st.empty()
                             _notif.markdown(
