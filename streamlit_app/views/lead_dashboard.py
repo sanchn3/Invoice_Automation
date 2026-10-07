@@ -449,9 +449,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         # All billing fields always shown in default rates
         billing_labels = {
-            "in_out"           : "In-Out Storage (per pallet)",
-            "transfer"         : "Transfer per Truck",
-            "extended_storage" : "Extended Storage (per pallet)",
+            "in_out"              : "In-Out Storage (per pallet)",
+            "transfer"            : "Transfer per Truck",
+            "extended_storage"    : "Extended Storage (per pallet)",
+            "damaged_pallet_fee"  : "Damaged Pallets (per pallet)",
         }
 
         # Non-billing labels are the same regardless of mode — reused in all loops
@@ -616,6 +617,15 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 key="new_cr_extended_storage",
             )
 
+            _rc4, _rf4 = st.columns([1, 5], vertical_alignment="center")
+            _en_damaged = _rc4.checkbox("Damaged Pallets", value=True, key="new_cr_damaged_en", label_visibility="collapsed")
+            _new_damaged_pallet_fee = _rf4.number_input(
+                "Damaged Pallets (per pallet) ($)",
+                value=float(default_rates.get("damaged_pallet_fee", 0)),
+                min_value=0.0, step=0.25, format="%.2f",
+                key="new_cr_damaged_pallet_fee",
+            )
+
             st.caption("Truck Rates")
             _tc1, _tf1 = st.columns([1, 5], vertical_alignment="center")
             _en_cpt = _tc1.checkbox("Cost per Truck", value=True, key="new_cr_cpt_en", label_visibility="collapsed")
@@ -627,16 +637,18 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             )
 
             new_client_overrides: dict = {
-                "charged_by_pallet" : new_cbp,
-                "in_out"            : _new_in_out,
-                "transfer"          : _new_transfer,
-                "extended_storage"  : _new_extended_storage,
-                "cost_per_truck"    : _new_cost_per_truck,
+                "charged_by_pallet"  : new_cbp,
+                "in_out"             : _new_in_out,
+                "transfer"           : _new_transfer,
+                "extended_storage"   : _new_extended_storage,
+                "damaged_pallet_fee" : _new_damaged_pallet_fee,
+                "cost_per_truck"     : _new_cost_per_truck,
             }
             _new_disabled: list = []
             if not _en_in_out:   _new_disabled.append("in_out")
             if not _en_transfer: _new_disabled.append("transfer")
             if not _en_extended: _new_disabled.append("extended_storage")
+            if not _en_damaged:  _new_disabled.append("damaged_pallet_fee")
             if not _en_cpt:      _new_disabled.append("cost_per_truck")
 
             st.caption("General Rates")
@@ -875,6 +887,17 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         help="Default: ${:.2f}".format(_def_extended),
                     )
 
+                    _def_damaged     = float(default_rates.get("damaged_pallet_fee", 0))
+                    _prc4, _prf4 = st.columns([1, 5], vertical_alignment="center")
+                    _en_cd_damaged = _prc4.checkbox("Damaged Pallets", value="damaged_pallet_fee" not in _cd_disabled, key=f"cr_{cname}_damaged_en", label_visibility="collapsed")
+                    _client_damaged = _prf4.number_input(
+                        "Damaged Pallets (per pallet) ($)" + (" ✏️" if "damaged_pallet_fee" in crates else ""),
+                        value=float(crates.get("damaged_pallet_fee", _def_damaged)),
+                        min_value=0.0, step=0.25, format="%.2f",
+                        key=f"cr_{cname}_damaged_pallet_fee",
+                        help="Default: ${:.2f}".format(_def_damaged),
+                    )
+
                     st.caption("Truck Rates")
                     _def_cpt = float(default_rates.get("cost_per_truck", 0))
                     _trc1, _trf1 = st.columns([1, 5], vertical_alignment="center")
@@ -888,16 +911,18 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     )
 
                     new_overrides: dict = {
-                        "charged_by_pallet" : client_cbp,
-                        "in_out"            : _client_in_out,
-                        "transfer"          : _client_transfer,
-                        "extended_storage"  : _client_extended,
-                        "cost_per_truck"    : _client_cpt,
+                        "charged_by_pallet"  : client_cbp,
+                        "in_out"             : _client_in_out,
+                        "transfer"           : _client_transfer,
+                        "extended_storage"   : _client_extended,
+                        "damaged_pallet_fee" : _client_damaged,
+                        "cost_per_truck"     : _client_cpt,
                     }
                     _cd_new_disabled: list = []
                     if not _en_cd_in_out:   _cd_new_disabled.append("in_out")
                     if not _en_cd_transfer: _cd_new_disabled.append("transfer")
                     if not _en_cd_extended: _cd_new_disabled.append("extended_storage")
+                    if not _en_cd_damaged:  _cd_new_disabled.append("damaged_pallet_fee")
                     if not _en_cd_cpt:      _cd_new_disabled.append("cost_per_truck")
 
                     st.caption("General Rates")
