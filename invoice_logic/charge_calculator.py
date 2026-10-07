@@ -40,7 +40,7 @@ def calculate_charges(
     pallet_count   : number of pallets
     temp_recorder  : whether a temperature recorder was installed
     extra_charges  : list of charge keys (see _EXTRA_CHARGE_MAP)
-    damaged_pallets: count of damaged pallets (informational only, not billed)
+    damaged_pallets: count of damaged pallets billed at the damaged_pallet_fee rate
 
     Returns
     -------
@@ -141,6 +141,18 @@ def calculate_charges(
             "unit_price" : fee,
             "total"      : round(fee * restack_count, 2),
         })
+
+    # ── Damaged Pallets ───────────────────────────────────────────────────────
+    if damaged_pallets > 0:
+        fee = float(rates.get("damaged_pallet_fee", 0))
+        if fee > 0:
+            line_items.append({
+                "description": "Damaged Pallets",
+                "quantity"   : damaged_pallets,
+                "unit"       : "pallets",
+                "unit_price" : fee,
+                "total"      : round(fee * damaged_pallets, 2),
+            })
 
     subtotal = round(sum(item["total"] for item in line_items), 2)
 
