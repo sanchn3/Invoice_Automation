@@ -62,6 +62,16 @@ def _cached_pdf(
     return generate_pdf(_ci, provider_pdf_path)
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _cached_stored_invoice_pdf(storage_key: str) -> bytes | None:
+    """
+    Fetch a generated invoice PDF from processed-invoices, cached for 1 hour.
+    Prevents re-downloading the same attachment bytes on every Streamlit rerun
+    while the email-preparation panel is open.
+    """
+    return _fetch_pdf_bytes(storage_key)
+
+
 def _pdf_args(ci: dict, prov: dict | None) -> tuple:
     """Return the positional args for _cached_pdf from a client invoice + provider record."""
     _pdf_path = (prov or {}).get("pdf_local_path", "")
@@ -518,7 +528,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         for _ci in invoices:
                             _qb  = _ci.get("quickbooks_invoice_number", "invoice")
                             _pe  = prov_by_id.get(_ci.get("provider_invoice_id", ""), {})
-                            _stored = _fetch_pdf_bytes(f"{_qb}-invoice.pdf")
+                            _stored = _cached_stored_invoice_pdf(f"{_qb}-invoice.pdf")
                             _eml_attachments.append((
                                 f"{_qb}.pdf",
                                 _stored if _stored else _cached_pdf(*_pdf_args(_ci, _pe)),

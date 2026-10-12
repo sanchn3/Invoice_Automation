@@ -83,6 +83,28 @@ def _admin_cached_pdf(
     return _generate_pdf(_ci, provider_pdf_path)
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _cached_stored_invoice_pdf(storage_key: str) -> bytes | None:
+    """
+    Fetch a generated invoice PDF from processed-invoices, cached for 1 hour.
+
+    Without this cache the 'Sent to Accounting' loop called _fetch_pdf_bytes()
+    for every invoice on every Streamlit rerun, causing 2 600+ GET requests
+    and ~1.5 GB of egress in a single 20-minute session.
+    """
+    return _fetch_pdf_bytes(storage_key)
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _cached_provider_pdf(pdf_local_path: str) -> bytes | None:
+    """
+    Fetch provider PDF bytes (local file or Supabase), cached for 1 hour.
+    Prevents repeated downloads each time Streamlit reruns while the PDF
+    viewer is open in the Approve tab.
+    """
+    return _get_pdf_bytes(pdf_local_path)
+
+
 def _admin_pdf_args(ci: dict, prov: dict | None) -> tuple:
     _pdf_path = (prov or {}).get("pdf_local_path", "")
     _prov_inv_num = (prov or {}).get("invoice_number", "")
@@ -860,7 +882,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             pdf_viewer(_saved[0], key=f"approve_pdfview_{cid}")
                         elif _pdf_exists:
                             # Fall back to original provider PDF before Save is used
-                            _b = _get_pdf_bytes(_pdf_path)
+                            _b = _cached_provider_pdf(_pdf_path)
                             if _b:
                                 pdf_viewer(_b, key=f"approve_pdfview_{cid}")
                             else:
@@ -1181,7 +1203,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 c6.write(f"${ci.get('total', 0):,.2f}")
                 c7.write("Exported to QB" if ci.get("quickbooks_exported") else "In Accounting")
                 try:
-                    _stored_pdf = _fetch_pdf_bytes(f"{qb}-invoice.pdf")
+                    _stored_pdf = _cached_stored_invoice_pdf(f"{qb}-invoice.pdf")
                     pdf_bytes = _stored_pdf if _stored_pdf else _admin_cached_pdf(*_admin_pdf_args(ci, prov))
                     c8.download_button(
                         "⬇ PDF",

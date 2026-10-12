@@ -12,11 +12,55 @@ httpx is used directly — no supabase SDK required.
 
 import logging
 import os
+import threading
+import time
 from pathlib import Path
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# ── Per-process download safety counter ───────────────────────────────────────
+# Resets every hour.  Limits the blast radius of any future render-loop bug.
+# Override via env vars PDF_SAFETY_MAX_DOWNLOADS / PDF_SAFETY_MAX_MB.
+
+_safety_lock            = threading.Lock()
+_safety_window_start: float = 0.0
+_safety_download_count: int = 0
+_safety_download_bytes: int = 0
+_SAFETY_MAX_DOWNLOADS   = int(os.environ.get("PDF_SAFETY_MAX_DOWNLOADS", "300"))
+_SAFETY_MAX_MB          = float(os.environ.get("PDF_SAFETY_MAX_MB", "400"))
+
+
+def _check_download_safety() -> bool:
+    """
+    Gate every download through a rolling-hour counter.
+    Returns False (and logs a warning) once the hourly ceiling is exceeded.
+    """
+    global _safety_window_start, _safety_download_count, _safety_download_bytes
+    with _safety_lock:
+        now = time.monotonic()
+        if now - _safety_window_start > 3600:          # new hour — reset
+            _safety_window_start  = now
+            _safety_download_count = 0
+            _safety_download_bytes = 0
+        _safety_download_count += 1
+        if _safety_download_count > _SAFETY_MAX_DOWNLOADS:
+            logger.warning(
+                "pdf_storage: safety limit — %d download attempts in the current "
+                "hour window (max %d). Skipping. Set PDF_SAFETY_MAX_DOWNLOADS to raise.",
+                _safety_download_count, _SAFETY_MAX_DOWNLOADS,
+            )
+            return False
+        mb = _safety_download_bytes / (1024 * 1024)
+        if mb > _SAFETY_MAX_MB:
+            logger.warning(
+                "pdf_storage: safety limit — %.1f MB downloaded in the current "
+                "hour window (max %.0f MB). Skipping. Set PDF_SAFETY_MAX_MB to raise.",
+                mb, _SAFETY_MAX_MB,
+            )
+            return False
+    return True
 
 _BUCKET_UNPROCESSED = "unprocessed-invoices"
 _BUCKET_PROCESSED   = "processed-invoices"
@@ -61,11 +105,24 @@ def _upload(local_path: str, bucket: str) -> bool:
 
 
 def _download(storage_key: str, bucket: str) -> bytes | None:
+    if not _check_download_safety():
+        return None
     url = f"{_base()}/storage/v1/object/{bucket}/{storage_key}"
     try:
         resp = httpx.get(url, headers=_auth_headers(), timeout=60)
         if resp.status_code == 200:
-            return resp.content
+            data = resp.content
+            with _safety_lock:
+                global _safety_download_bytes
+                _safety_download_bytes += len(data)
+            return data
+        if resp.status_code in (400, 404):
+            # Object does not exist in this bucket — not an application error.
+            logger.debug(
+                "pdf_storage._download: object not found (HTTP %d) key=%s bucket=%s",
+                resp.status_code, storage_key, bucket,
+            )
+            return None
         logger.error(
             "pdf_storage._download HTTP %d key=%s bucket=%s: %s",
             resp.status_code, storage_key, bucket, resp.text,
