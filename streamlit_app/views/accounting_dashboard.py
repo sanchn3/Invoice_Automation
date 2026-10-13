@@ -38,6 +38,10 @@ def _build_eml(to_addr: str, subject: str, body: str, attachments: list[tuple[st
     msg = MIMEMultipart()
     msg["To"]      = to_addr
     msg["Subject"] = subject
+    msg["X-Unsent"] = "1"
+    # Remove auto-generated headers that make Outlook treat this as a received message
+    del msg["Date"]
+    del msg["Message-ID"]
     msg.attach(MIMEText(body, "plain"))
     for filename, pdf_bytes in attachments:
         part = MIMEApplication(pdf_bytes, _subtype="pdf")
