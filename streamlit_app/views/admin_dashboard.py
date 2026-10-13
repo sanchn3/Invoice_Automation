@@ -935,6 +935,8 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _show_ot     = "overtime_fee" not in _disabled_fields
                         _show_rs     = "restack_fee"  not in _disabled_fields
                         _seal_count = 0
+                        # Default to checked based on client's rate card setting for new invoices
+                        _broker_fee_default = _broker_fee_in_extras if ci.get("extra_charges") else bool(_cl_rates.get("broker_fee_enabled", False))
                         _broker_fee = False
                         if _show_seals and _show_broker:
                             _seal_col, _broker_col = st.columns([1, 1])
@@ -945,7 +947,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
                             _broker_col.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
                             _broker_fee = _broker_col.checkbox(
-                                "American Broker Fee", value=_broker_fee_in_extras, key=f"val_broker_{cid}",
+                                "American Broker Fee", value=_broker_fee_default, key=f"val_broker_{cid}",
                             )
                         elif _show_seals:
                             _seal_count = st.number_input(
@@ -955,7 +957,15 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
                         elif _show_broker:
                             _broker_fee = st.checkbox(
-                                "American Broker Fee", value=_broker_fee_in_extras, key=f"val_broker_{cid}",
+                                "American Broker Fee", value=_broker_fee_default, key=f"val_broker_{cid}",
+                            )
+                        _broker_fee_amount = 0.0
+                        if _broker_fee and _show_broker:
+                            _broker_fee_amount = st.number_input(
+                                "American Broker Fee ($)",
+                                value=float(ci.get("broker_fee_amount") or _rate_card.get("broker_fee", 0)),
+                                min_value=0.0, step=0.25, format="%.2f",
+                                key=f"val_broker_amount_{cid}",
                             )
                         if _cbp and svc != "transfer":
                             _pal_default = _fixed_pal if _fixed_pal > 0 else int(ci.get("pallet_count", 1) or 1)
@@ -1083,6 +1093,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 client_name=ci.get("client_name", ""),
                                 temp_recorder_count=int(_tr_count),
                                 seal_count=int(_seal_count),
+                                broker_fee_override=_broker_fee_amount if _broker_fee else None,
                             )
                             client_rates = dm.get_rates_for_client(ci.get("client_name", ""))
                             billing_addr = dm.get_client_address(ci.get("client_name", ""))
@@ -1096,6 +1107,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 "restack_count"       : int(_restack_count),
                                 "extra_charges"       : _new_extras,
                                 "seal_count"          : int(_seal_count),
+                                "broker_fee_amount"   : _broker_fee_amount,
                                 "temp_recorder"       : _new_tr,
                                 "temp_recorder_count" : int(_tr_count),
                                 "producto_caliente"   : _producto_caliente,
