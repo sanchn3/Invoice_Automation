@@ -463,7 +463,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             "pallet_cleaning_fee"            : "Pallet Cleaning",
             "repacking_fee"                  : "Repacking",
             "re_inspection_fee"              : "Re-Inspection",
-            "broker_fee"                     : "American Broker Fee",
             "stamps_fee"                     : "Seals",
             "overtime_fee"                   : "Hours Overtime",
             "restack_fee"                    : "Restack",
@@ -691,6 +690,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 help="When enabled, Pulp Temperature and Temperature Recorder fields appear in the Admin dashboard for this client's invoices.",
             )
             new_client_overrides["temperature_recording"] = _new_temp_recording
+
+            _new_broker_fee_enabled = st.checkbox(
+                "American Broker Fee",
+                value=False,
+                key="new_cr_broker_fee_enabled",
+                help="When enabled, the American Broker Fee checkbox is pre-checked in the Admin dashboard when approving this client's invoices.",
+            )
+            new_client_overrides["broker_fee_enabled"] = _new_broker_fee_enabled
 
             if _colored_btn(st, "💾 Save Client Profile", key="save_new_client", color="#198754"):
                 if not new_client_name.strip():
@@ -971,6 +978,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         help="When enabled, Pulp Temperature and Temperature Recorder fields appear in the Admin dashboard for this client's invoices.",
                     )
                     new_overrides["temperature_recording"] = _client_temp_recording
+
+                    _client_broker_fee_enabled = st.checkbox(
+                        "American Broker Fee",
+                        value=bool(crates.get("broker_fee_enabled", False)),
+                        key=f"cr_{cname}_broker_fee_enabled",
+                        help="When enabled, the American Broker Fee checkbox is pre-checked in the Admin dashboard when approving this client's invoices.",
+                    )
+                    new_overrides["broker_fee_enabled"] = _client_broker_fee_enabled
 
                     # ── Buttons ───────────────────────────────────────────────
                     btn_col1, btn_col2 = st.columns(2)

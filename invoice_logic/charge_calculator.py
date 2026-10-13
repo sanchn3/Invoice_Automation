@@ -30,6 +30,7 @@ def calculate_charges(
     client_name: str = "",
     temp_recorder_count: int = 1,
     seal_count: int = 1,
+    broker_fee_override: float | None = None,
 ) -> dict:
     """
     Calculate all charges for a client invoice.
@@ -110,7 +111,10 @@ def calculate_charges(
     for charge_key in extra_charges:
         if charge_key in _EXTRA_CHARGE_MAP:
             rate_key, label = _EXTRA_CHARGE_MAP[charge_key]
-            fee = float(rates.get(rate_key, 0))
+            if charge_key == "broker_fee" and broker_fee_override is not None:
+                fee = float(broker_fee_override)
+            else:
+                fee = float(rates.get(rate_key, 0))
             qty = seal_count if charge_key == "stamps" else 1
             line_items.append({
                 "description": label,
