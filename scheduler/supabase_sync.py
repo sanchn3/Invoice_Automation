@@ -97,6 +97,71 @@ def _to_row(ci: dict, now_iso: str) -> dict:
     }
 
 
+# ── Stale-number guard ────────────────────────────────────────────────────────
+
+def _find_stale_local_ids(rows: list[dict]) -> set[str]:
+    """
+    Return the set of local_ids whose quickbooks_invoice_number already exists
+    in cold_storage_invoices under a *different* local_id.
+
+    These represent invoices whose numbers were generated from a stale local
+    state (e.g. after a redeploy wiped client_invoices.json) and must not be
+    synced, as they would create duplicate invoice numbers in the database.
+
+    Logs an ERROR for every blocked invoice so operators can investigate.
+    Returns an empty set on any query failure (fail open — don't block sync).
+    """
+    candidates = {
+        r["local_id"]: r["quickbooks_invoice_number"]
+        for r in rows
+        if r.get("quickbooks_invoice_number") and r.get("local_id")
+    }
+    if not candidates:
+        return set()
+
+    inv_numbers = list(set(candidates.values()))
+    # PostgREST IN filter format: in.(A,B,C)
+    in_filter = "in.(" + ",".join(inv_numbers) + ")"
+    try:
+        resp = httpx.get(
+            f"{_base_url()}/rest/v1/{_TABLE}",
+            params={
+                "select": "local_id,quickbooks_invoice_number",
+                "quickbooks_invoice_number": in_filter,
+            },
+            headers=_headers(""),
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logger.warning(
+                "_find_stale_local_ids: query failed (HTTP %s), skipping guard",
+                resp.status_code,
+            )
+            return set()
+        # Build a map of number → existing local_id from Supabase
+        existing: dict[str, str] = {
+            r["quickbooks_invoice_number"]: r["local_id"]
+            for r in resp.json()
+        }
+    except Exception as exc:
+        logger.warning("_find_stale_local_ids: %s — skipping guard", exc)
+        return set()
+
+    blocked: set[str] = set()
+    for local_id, inv_num in candidates.items():
+        owner = existing.get(inv_num)
+        if owner and owner != local_id:
+            logger.error(
+                "STALE INVOICE NUMBER BLOCKED: local_id=%s carries "
+                "quickbooks_invoice_number=%s which is already owned by "
+                "local_id=%s in %s. Sync skipped to prevent a duplicate "
+                "invoice number. Investigate how this number was re-issued.",
+                local_id, inv_num, owner, _TABLE,
+            )
+            blocked.add(local_id)
+    return blocked
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def sync_single_invoice(ci: dict) -> None:
@@ -110,11 +175,14 @@ def sync_single_invoice(ci: dict) -> None:
     _fix_dns()
     try:
         now_iso  = datetime.utcnow().isoformat() + "Z"
+        row      = _to_row(ci, now_iso)
+        if _find_stale_local_ids([row]):
+            return  # error already logged inside _find_stale_local_ids
         endpoint = f"{_base_url()}/rest/v1/{_TABLE}?on_conflict=local_id"
         resp = httpx.post(
             endpoint,
             headers=_headers(),
-            content=json.dumps(_to_row(ci, now_iso)),
+            content=json.dumps(row),
             timeout=10,
         )
         if resp.status_code not in (200, 201):
@@ -153,6 +221,20 @@ def sync_invoices_to_supabase(dm: DataManager) -> int:
 
     now_iso  = datetime.utcnow().isoformat() + "Z"
     rows     = [_to_row(ci, now_iso) for ci in processed]
+
+    # Block any row whose invoice number is already owned by a different local_id
+    stale_ids = _find_stale_local_ids(rows)
+    if stale_ids:
+        rows = [r for r in rows if r["local_id"] not in stale_ids]
+        logger.warning(
+            "supabase_sync: dropped %d stale-numbered invoice(s) from sync batch.",
+            len(stale_ids),
+        )
+
+    if not rows:
+        logger.info("supabase_sync: all rows were stale — nothing to upload.")
+        return 0
+
     endpoint = f"{_base_url()}/rest/v1/{_TABLE}?on_conflict=local_id"
     headers  = _headers()
     total_upserted = 0

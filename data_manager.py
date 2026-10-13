@@ -987,6 +987,7 @@ class DataManager:
         Return the set of numeric invoice numbers already in use for client_name.
         Strips any prefix (e.g. 'WMT_2005' → 2005) before parsing.
         Must be called while _lock is held.
+        Only used by the local-dev fallback path.
         """
         used: set[int] = set()
         for inv in _read_json(_CLIENT_INVOICES_FILE):
@@ -1000,38 +1001,148 @@ class DataManager:
                 pass
         return used
 
-    def _compute_next_invoice_number(self, client_name: str) -> str:
+    def _sb_allocate_invoice_number(self, client_name: str) -> int:
         """
-        Core logic shared by next_client_invoice_number and peek_client_invoice_number.
+        Atomically increment client_invoice_counters.last_issued for client_name
+        in Supabase and return the newly allocated value.
+
+        Uses optimistic locking: reads the current last_issued, then PATCHes with
+        a WHERE last_issued=eq.<current> guard so concurrent writers don't collide.
+        Retries up to 3 times on a lost race, then raises.
+
         Must be called while _lock is held.
-        Returns the lowest unused number ≥ 2001 formatted with the client's initials prefix.
+        Raises RuntimeError on any failure — never falls back to a local default.
         """
-        used     = self._used_invoice_numbers(client_name)
-        next_num = 2001
-        while next_num in used:
-            next_num += 1
+        if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+            raise RuntimeError(
+                f"next_client_invoice_number: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY "
+                f"not configured — cannot allocate invoice number for {client_name!r}."
+            )
+        for attempt in range(3):
+            # 1. Read current counter value
+            read_resp = httpx.get(
+                f"{_sb_url('client_invoice_counters')}"
+                f"?client_name=eq.{client_name}&select=last_issued",
+                headers=_sb_headers(),
+                timeout=10,
+            )
+            if read_resp.status_code != 200:
+                raise RuntimeError(
+                    f"next_client_invoice_number: failed to read counter for "
+                    f"{client_name!r} — HTTP {read_resp.status_code}: "
+                    f"{read_resp.text[:300]}"
+                )
+            rows = read_resp.json()
+            if not rows:
+                raise RuntimeError(
+                    f"next_client_invoice_number: no row in client_invoice_counters "
+                    f"for {client_name!r}. "
+                    f"Insert one with:\n"
+                    f"  INSERT INTO client_invoice_counters(client_name, last_issued)\n"
+                    f"  VALUES('{client_name}', <current_max_number>)\n"
+                    f"  ON CONFLICT (client_name) DO NOTHING;"
+                )
+            current = int(rows[0]["last_issued"])
+            next_num = current + 1
+
+            # 2. Conditional PATCH — only succeeds when last_issued is still <current>
+            patch_resp = httpx.patch(
+                f"{_sb_url('client_invoice_counters')}"
+                f"?client_name=eq.{client_name}&last_issued=eq.{current}",
+                headers=_sb_headers("return=representation"),
+                content=json.dumps({"last_issued": next_num, "updated_at": _now()}),
+                timeout=10,
+            )
+            if patch_resp.status_code not in (200, 204):
+                raise RuntimeError(
+                    f"next_client_invoice_number: failed to increment counter for "
+                    f"{client_name!r} — HTTP {patch_resp.status_code}: "
+                    f"{patch_resp.text[:300]}"
+                )
+            if patch_resp.json():   # non-empty → row was updated
+                return next_num
+            # Empty response means another writer incremented between our read and PATCH
+            _sb_logger.warning(
+                "next_client_invoice_number: counter for %r changed concurrently "
+                "(attempt %d/3), retrying…", client_name, attempt + 1,
+            )
+        raise RuntimeError(
+            f"next_client_invoice_number: could not atomically allocate invoice "
+            f"number for {client_name!r} after 3 attempts (concurrent updates). "
+            "Retry the operation."
+        )
+
+    def _format_invoice_number(self, client_name: str, num: int) -> str:
+        """Format a raw integer as '<INITIALS>_<num>' or '<num>' if no initials."""
         initials = _read_json(_CLIENT_INITIALS_FILE)
-        prefix   = (initials.get(client_name, "") if isinstance(initials, dict) else "").strip().upper()
-        return f"{prefix}_{next_num}" if prefix else str(next_num)
+        prefix = (
+            initials.get(client_name, "") if isinstance(initials, dict) else ""
+        ).strip().upper()
+        return f"{prefix}_{num}" if prefix else str(num)
 
     def next_client_invoice_number(self, client_name: str) -> str:
         """
-        Return the next invoice ID for client_name by finding the lowest unused
-        number ≥ 2001.  Gaps left by deleted invoices are filled in order so
-        numbers are never skipped.
-        Format: "<INITIALS>_<NUMBER>" when initials exist, else just "<NUMBER>".
-        Example: "WMT_2001", "WMT_2002" ... or "2001" if no initials set.
+        Allocate and return the next invoice ID for client_name.
+
+        In production (RENDER=true): atomically increments last_issued in
+        client_invoice_counters (Supabase) and formats the result.  Raises
+        RuntimeError if the counter row is missing or Supabase is unreachable —
+        never silently falls back to 2001.
+
+        In local dev: scans local client_invoices.json.  Does NOT touch the
+        Supabase counter (so test runs don't burn production numbers).
+
+        Format: "<INITIALS>_<NUMBER>" when initials exist, else "<NUMBER>".
         """
         with _lock:
-            return self._compute_next_invoice_number(client_name)
+            if _IS_PRODUCTION:
+                return self._format_invoice_number(
+                    client_name, self._sb_allocate_invoice_number(client_name)
+                )
+            _sb_logger.warning(
+                "next_client_invoice_number: local dev — using file-based counter "
+                "for %r (Supabase client_invoice_counters NOT updated).",
+                client_name,
+            )
+            used = self._used_invoice_numbers(client_name)
+            next_num = 2001
+            while next_num in used:
+                next_num += 1
+            return self._format_invoice_number(client_name, next_num)
 
     def peek_client_invoice_number(self, client_name: str) -> str:
         """
         Return what the next invoice ID *would* be without reserving it.
-        Useful for previewing the ID before the user confirms.
+
+        In production: reads last_issued from Supabase (no increment) and
+        returns last_issued + 1.  Returns "???" if the counter can't be read.
+        In local dev: scans local JSON.
         """
         with _lock:
-            return self._compute_next_invoice_number(client_name)
+            if _IS_PRODUCTION:
+                try:
+                    resp = httpx.get(
+                        f"{_sb_url('client_invoice_counters')}"
+                        f"?client_name=eq.{client_name}&select=last_issued",
+                        headers=_sb_headers(),
+                        timeout=10,
+                    )
+                    if resp.status_code == 200 and resp.json():
+                        return self._format_invoice_number(
+                            client_name, int(resp.json()[0]["last_issued"]) + 1
+                        )
+                    _sb_logger.warning(
+                        "peek_client_invoice_number: cannot read counter for %r "
+                        "(HTTP %s)", client_name, resp.status_code,
+                    )
+                except Exception as exc:
+                    _sb_logger.warning("peek_client_invoice_number: %s", exc)
+                return "???"
+            used = self._used_invoice_numbers(client_name)
+            next_num = 2001
+            while next_num in used:
+                next_num += 1
+            return self._format_invoice_number(client_name, next_num)
 
     # ─────────────────────────────────────────
     # BILL OF LADING RECORDS  (Supabase)
