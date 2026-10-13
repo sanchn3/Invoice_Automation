@@ -896,7 +896,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _return_col, _approve_col = st.columns([1.5, 2])
                         if _colored_btn(_return_col, "Return to Validation ↩", key=f"return_rcv_{cid}", color="#6c757d", width="stretch"):
                             dm.update_client_invoice(cid, {
-                                "status"       : "to_be_received",
+                                "status"       : "pending_validation",
                                 "received_date": None,
                             })
                             st.session_state.pop(_approve_key, None)
