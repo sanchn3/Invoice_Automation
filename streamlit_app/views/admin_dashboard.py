@@ -994,31 +994,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         if _broker_fee:
                             _new_extras.append("broker_fee")
 
-                        _temp_enabled = bool(_cl_rates.get("temperature_recording", True))
-                        if _temp_enabled:
-                            st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Pulp Temperature</p>', unsafe_allow_html=True)
-                            _PC_OPTS   = ["None", "Producto Caliente", "Producto Congelado"]
-                            _PC_TO_KEY = {"None": None, "Producto Caliente": "caliente", "Producto Congelado": "congelado"}
-                            _PC_TO_LBL = {None: "None", "caliente": "Producto Caliente", "congelado": "Producto Congelado", True: "Producto Caliente"}
-                            _stored_pc  = ci.get("producto_caliente")
-                            _pc_default = _PC_TO_LBL.get(_stored_pc, "None")
-                            _pc_sel = st.radio(
-                                "Pulp Temperature Type",
-                                options=_PC_OPTS,
-                                index=_PC_OPTS.index(_pc_default),
-                                horizontal=True,
-                                key=f"val_pc_{cid}",
-                                label_visibility="collapsed",
-                            )
-                            _producto_caliente = _PC_TO_KEY[_pc_sel]
-                            _t1, _t2, _t3 = st.columns(3)
-                            _temp1 = _t1.text_input("Temperature 1 (°F)", value=ci.get("temp_f1", ""), key=f"val_t1_{cid}")
-                            _temp2 = _t2.text_input("Temperature 2 (°F)", value=ci.get("temp_f2", ""), key=f"val_t2_{cid}")
-                            _temp3 = _t3.text_input("Temperature 3 (°F)", value=ci.get("temp_f3", ""), key=f"val_t3_{cid}")
-                        else:
-                            _producto_caliente = None
-                            _temp1 = _temp2 = _temp3 = ""
-
                         # Temperature Recorder — options filtered by disabled_fields
                         _tr_opts = [o for o in _TR_OPTS if not (
                             (o == "Hardware & Installation" and "temp_recorder_hardware_fee"    in _disabled_fields) or
@@ -1043,6 +1018,31 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             )
                             _new_tr = _TR_TO_KEY[_tr_sel]
                         _tr_count = 1 if _new_tr else 0
+
+                        _temp_enabled = bool(_cl_rates.get("temperature_recording", True))
+                        if _temp_enabled:
+                            st.markdown('<p style="font-weight:600;color:#000;margin:0 0 4px 0;">Pulp Temperature</p>', unsafe_allow_html=True)
+                            _PC_OPTS   = ["None", "Producto Caliente", "Producto Congelado"]
+                            _PC_TO_KEY = {"None": None, "Producto Caliente": "caliente", "Producto Congelado": "congelado"}
+                            _PC_TO_LBL = {None: "None", "caliente": "Producto Caliente", "congelado": "Producto Congelado", True: "Producto Caliente"}
+                            _stored_pc  = ci.get("producto_caliente")
+                            _pc_default = _PC_TO_LBL.get(_stored_pc, "None")
+                            _pc_sel = st.radio(
+                                "Pulp Temperature Type",
+                                options=_PC_OPTS,
+                                index=_PC_OPTS.index(_pc_default),
+                                horizontal=True,
+                                key=f"val_pc_{cid}",
+                                label_visibility="collapsed",
+                            )
+                            _producto_caliente = _PC_TO_KEY[_pc_sel]
+                            _t1, _t2, _t3 = st.columns(3)
+                            _temp1 = _t1.text_input("Temperature 1 (°F)", value=ci.get("temp_f1", ""), key=f"val_t1_{cid}")
+                            _temp2 = _t2.text_input("Temperature 2 (°F)", value=ci.get("temp_f2", ""), key=f"val_t2_{cid}")
+                            _temp3 = _t3.text_input("Temperature 3 (°F)", value=ci.get("temp_f3", ""), key=f"val_t3_{cid}")
+                        else:
+                            _producto_caliente = None
+                            _temp1 = _temp2 = _temp3 = ""
 
                         _new_notes = st.text_area("Notes", value=ci.get("worker_notes", ""), height=80, key=f"val_notes_{cid}")
 
