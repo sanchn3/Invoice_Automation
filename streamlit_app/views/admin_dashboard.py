@@ -27,6 +27,7 @@ from utils.pdf_storage import (
     get_pdf_bytes as _get_pdf_bytes,
     fetch_pdf_bytes as _fetch_pdf_bytes,
     move_to_processed as _move_to_processed,
+    upload_pdf as _upload_pdf,
     upload_pdf_bytes as _upload_pdf_bytes,
     overwrite_provider_pdf as _overwrite_provider_pdf,
 )
@@ -444,6 +445,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             if str(_dest) in _known:
                                 continue
                             _dest.write_bytes(_uf.getvalue())
+                            try:
+                                _upload_pdf(str(_dest))
+                            except Exception as _ue:
+                                logger.warning("Storage upload failed for %s: %s", _uf.name, _ue)
                             _log_rec = dm.add_email_log({
                                 "source"        : "upload",
                                 "sender"        : "upload",

@@ -93,7 +93,9 @@ def _to_row(ci: dict, now_iso: str) -> dict:
         "reviewed"                 : reviewed,
         "paid"                     : bool(ci.get("paid")),
         "synced_at"                : now_iso,
-        "updated_at"               : now_iso,
+        # Use the invoice's own updated_at so a sync never overwrites a newer
+        # accounting edit in cold_storage_invoices with a stale local timestamp.
+        "updated_at"               : ci.get("updated_at") or now_iso,
     }
 
 
@@ -162,6 +164,55 @@ def _find_stale_local_ids(rows: list[dict]) -> set[str]:
     return blocked
 
 
+def _find_newer_remote_ids(rows: list[dict]) -> set[str]:
+    """
+    Return the set of local_ids whose cold_storage_invoices row has a newer
+    updated_at than the local copy being synced.
+
+    Prevents a stale local copy (e.g. restored after a redeploy) from
+    overwriting accounting edits that arrived after the last local update.
+    Returns an empty set on any query failure (fail open — don't block sync).
+    """
+    candidates = {
+        r["local_id"]: r.get("updated_at", "")
+        for r in rows
+        if r.get("local_id") and r.get("updated_at")
+    }
+    if not candidates:
+        return set()
+
+    in_filter = "in.(" + ",".join(candidates) + ")"
+    try:
+        resp = httpx.get(
+            f"{_base_url()}/rest/v1/{_TABLE}",
+            params={"select": "local_id,updated_at", "local_id": in_filter},
+            headers=_headers(""),
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logger.warning(
+                "_find_newer_remote_ids: query failed (HTTP %s), skipping guard",
+                resp.status_code,
+            )
+            return set()
+        remote: dict[str, str] = {r["local_id"]: r.get("updated_at", "") for r in resp.json()}
+    except Exception as exc:
+        logger.warning("_find_newer_remote_ids: %s — skipping guard", exc)
+        return set()
+
+    blocked: set[str] = set()
+    for local_id, local_ts in candidates.items():
+        remote_ts = remote.get(local_id, "")
+        if remote_ts and local_ts and remote_ts > local_ts:
+            logger.warning(
+                "STALE SYNC BLOCKED: local_id=%s local updated_at=%s < remote updated_at=%s. "
+                "Skipping to avoid overwriting a newer accounting edit.",
+                local_id, local_ts, remote_ts,
+            )
+            blocked.add(local_id)
+    return blocked
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def sync_single_invoice(ci: dict) -> None:
@@ -176,8 +227,8 @@ def sync_single_invoice(ci: dict) -> None:
     try:
         now_iso  = datetime.utcnow().isoformat() + "Z"
         row      = _to_row(ci, now_iso)
-        if _find_stale_local_ids([row]):
-            return  # error already logged inside _find_stale_local_ids
+        if _find_stale_local_ids([row]) or _find_newer_remote_ids([row]):
+            return  # errors already logged inside each guard
         endpoint = f"{_base_url()}/rest/v1/{_TABLE}?on_conflict=local_id"
         resp = httpx.post(
             endpoint,
@@ -222,17 +273,20 @@ def sync_invoices_to_supabase(dm: DataManager) -> int:
     now_iso  = datetime.utcnow().isoformat() + "Z"
     rows     = [_to_row(ci, now_iso) for ci in processed]
 
-    # Block any row whose invoice number is already owned by a different local_id
-    stale_ids = _find_stale_local_ids(rows)
-    if stale_ids:
-        rows = [r for r in rows if r["local_id"] not in stale_ids]
+    # Block rows with a duplicate invoice number or a remote row that is newer
+    stale_ids       = _find_stale_local_ids(rows)
+    newer_remote_ids = _find_newer_remote_ids(rows)
+    blocked_ids     = stale_ids | newer_remote_ids
+    if blocked_ids:
+        rows = [r for r in rows if r["local_id"] not in blocked_ids]
         logger.warning(
-            "supabase_sync: dropped %d stale-numbered invoice(s) from sync batch.",
-            len(stale_ids),
+            "supabase_sync: dropped %d invoice(s) from sync batch "
+            "(%d stale-numbered, %d newer-in-remote).",
+            len(blocked_ids), len(stale_ids), len(newer_remote_ids),
         )
 
     if not rows:
-        logger.info("supabase_sync: all rows were stale — nothing to upload.")
+        logger.info("supabase_sync: all rows were blocked — nothing to upload.")
         return 0
 
     endpoint = f"{_base_url()}/rest/v1/{_TABLE}?on_conflict=local_id"
