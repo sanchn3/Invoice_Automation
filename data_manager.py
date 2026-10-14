@@ -66,12 +66,16 @@ def _sb_upsert_record(table: str, local_id: str, record: dict) -> None:
             )
             if chk.status_code == 200 and chk.json():
                 remote_ts = chk.json()[0].get("updated_at", "")
-                if remote_ts and remote_ts > local_ts:
-                    _sb_logger.warning(
-                        "_sb_upsert_record: skipping stale write to %s/%s "
-                        "(remote %s > local %s)", table, local_id, remote_ts, local_ts,
-                    )
-                    return
+                if remote_ts:
+                    try:
+                        if _parse_ts(remote_ts) > _parse_ts(local_ts):
+                            _sb_logger.warning(
+                                "_sb_upsert_record: skipping stale write to %s/%s "
+                                "(remote %s > local %s)", table, local_id, remote_ts, local_ts,
+                            )
+                            return
+                    except ValueError:
+                        pass  # unparseable timestamp — proceed with upsert
         except Exception as exc:
             _sb_logger.debug("_sb_upsert_record conflict-check %s/%s: %s", table, local_id, exc)
     try:
@@ -220,6 +224,11 @@ _file_cache: OrderedDict[Path, tuple[float, Any]] = OrderedDict()
 
 def _now() -> str:
     return datetime.utcnow().isoformat() + "Z"
+
+
+def _parse_ts(ts: str) -> datetime:
+    """Parse an ISO-8601 UTC timestamp that may end in 'Z' or '+00:00'."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
 def _new_id() -> str:
@@ -1092,31 +1101,17 @@ class DataManager:
         """
         Allocate and return the next invoice ID for client_name.
 
-        In production (RENDER=true): atomically increments last_issued in
-        client_invoice_counters (Supabase) and formats the result.  Raises
-        RuntimeError if the counter row is missing or Supabase is unreachable —
-        never silently falls back to 2001.
-
-        In local dev: scans local client_invoices.json.  Does NOT touch the
-        Supabase counter (so test runs don't burn production numbers).
+        Always calls the allocate_invoice_number Supabase RPC — in every
+        environment.  Raises RuntimeError if the RPC fails or the counter row
+        is missing.  There is no local fallback; local dev must also have
+        Supabase credentials and a counter row.
 
         Format: "<INITIALS>_<NUMBER>" when initials exist, else "<NUMBER>".
         """
         with _lock:
-            if _IS_PRODUCTION:
-                return self._format_invoice_number(
-                    client_name, self._sb_allocate_invoice_number(client_name)
-                )
-            _sb_logger.warning(
-                "next_client_invoice_number: local dev — using file-based counter "
-                "for %r (Supabase client_invoice_counters NOT updated).",
-                client_name,
+            return self._format_invoice_number(
+                client_name, self._sb_allocate_invoice_number(client_name)
             )
-            used = self._used_invoice_numbers(client_name)
-            next_num = 2001
-            while next_num in used:
-                next_num += 1
-            return self._format_invoice_number(client_name, next_num)
 
     def peek_client_invoice_number(self, client_name: str) -> str:
         """

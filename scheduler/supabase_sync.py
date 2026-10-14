@@ -11,8 +11,13 @@ so the same invoice can be synced multiple times without creating duplicates.
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
+
+
+def _parse_ts(ts: str) -> datetime:
+    """Parse an ISO-8601 UTC timestamp that may end in 'Z' or '+00:00'."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 # Only sync to Supabase when running on Render (production).
 _IS_PRODUCTION = os.environ.get("RENDER") == "true"
@@ -203,13 +208,17 @@ def _find_newer_remote_ids(rows: list[dict]) -> set[str]:
     blocked: set[str] = set()
     for local_id, local_ts in candidates.items():
         remote_ts = remote.get(local_id, "")
-        if remote_ts and local_ts and remote_ts > local_ts:
-            logger.warning(
-                "STALE SYNC BLOCKED: local_id=%s local updated_at=%s < remote updated_at=%s. "
-                "Skipping to avoid overwriting a newer accounting edit.",
-                local_id, local_ts, remote_ts,
-            )
-            blocked.add(local_id)
+        if remote_ts and local_ts:
+            try:
+                if _parse_ts(remote_ts) > _parse_ts(local_ts):
+                    logger.warning(
+                        "STALE SYNC BLOCKED: local_id=%s local updated_at=%s < remote updated_at=%s. "
+                        "Skipping to avoid overwriting a newer accounting edit.",
+                        local_id, local_ts, remote_ts,
+                    )
+                    blocked.add(local_id)
+            except ValueError:
+                pass  # unparseable timestamp — allow the sync
     return blocked
 
 
