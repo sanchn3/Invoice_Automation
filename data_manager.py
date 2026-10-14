@@ -49,15 +49,37 @@ _CLIENT_BACKUP_LOCAL_ID = "__clients__"
 
 
 def _sb_upsert_record(table: str, local_id: str, record: dict) -> None:
-    """Upsert a single pipeline record to Supabase. Silently logs on failure."""
+    """Upsert a single pipeline record to Supabase. Silently logs on failure.
+
+    Skips the write if the remote row already has a newer updated_at, so a
+    stale local copy (e.g. after a partial restore) never overwrites fresher data.
+    """
     if not _IS_PRODUCTION or not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         return
+    local_ts = record.get("updated_at", "")
+    if local_ts:
+        try:
+            chk = httpx.get(
+                f"{_sb_url(table)}?local_id=eq.{local_id}&select=updated_at",
+                headers=_sb_headers(""),
+                timeout=5,
+            )
+            if chk.status_code == 200 and chk.json():
+                remote_ts = chk.json()[0].get("updated_at", "")
+                if remote_ts and remote_ts > local_ts:
+                    _sb_logger.warning(
+                        "_sb_upsert_record: skipping stale write to %s/%s "
+                        "(remote %s > local %s)", table, local_id, remote_ts, local_ts,
+                    )
+                    return
+        except Exception as exc:
+            _sb_logger.debug("_sb_upsert_record conflict-check %s/%s: %s", table, local_id, exc)
     try:
         resp = httpx.post(
             f"{_sb_url(table)}?on_conflict=local_id",
             headers=_sb_headers("resolution=merge-duplicates,return=minimal"),
             content=json.dumps({"local_id": local_id, "data": record,
-                                "updated_at": _now()}),
+                                "updated_at": local_ts or _now()}),
             timeout=8,
         )
         if resp.status_code not in (200, 201):
@@ -741,6 +763,7 @@ class DataManager:
             invoices = _read_json(_CLIENT_INVOICES_FILE)
             for i, inv in enumerate(invoices):
                 if inv.get("id") == id:
+                    updates["updated_at"] = _now()
                     invoices[i].update(updates)
                     _write_json(_CLIENT_INVOICES_FILE, invoices)
                     updated = invoices[i]
@@ -1003,73 +1026,58 @@ class DataManager:
 
     def _sb_allocate_invoice_number(self, client_name: str) -> int:
         """
-        Atomically increment client_invoice_counters.last_issued for client_name
-        in Supabase and return the newly allocated value.
-
-        Uses optimistic locking: reads the current last_issued, then PATCHes with
-        a WHERE last_issued=eq.<current> guard so concurrent writers don't collide.
-        Retries up to 3 times on a lost race, then raises.
-
+        Allocate the next invoice number via a single atomic Supabase RPC call.
+        The database function does UPDATE … RETURNING in one round-trip so no
+        two concurrent callers can ever receive the same number.
+        Raises RuntimeError on any failure — never falls back to a local value.
         Must be called while _lock is held.
-        Raises RuntimeError on any failure — never falls back to a local default.
+
+        Required one-time SQL migration in Supabase:
+          CREATE OR REPLACE FUNCTION allocate_invoice_number(p_client_name text)
+          RETURNS integer LANGUAGE plpgsql AS $$
+          DECLARE v_next integer;
+          BEGIN
+            UPDATE client_invoice_counters
+               SET last_issued = last_issued + 1, updated_at = now()
+             WHERE client_name = p_client_name
+             RETURNING last_issued INTO v_next;
+            IF v_next IS NULL THEN
+              RAISE EXCEPTION 'No counter row for client_name=%. '
+                'Run: INSERT INTO client_invoice_counters(client_name,last_issued) '
+                'VALUES(''%'',<current_max>) ON CONFLICT(client_name) DO NOTHING;',
+                p_client_name, p_client_name;
+            END IF;
+            RETURN v_next;
+          END; $$;
         """
         if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
             raise RuntimeError(
                 f"next_client_invoice_number: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY "
                 f"not configured — cannot allocate invoice number for {client_name!r}."
             )
-        for attempt in range(3):
-            # 1. Read current counter value
-            read_resp = httpx.get(
-                f"{_sb_url('client_invoice_counters')}"
-                f"?client_name=eq.{client_name}&select=last_issued",
+        try:
+            resp = httpx.post(
+                f"{SUPABASE_URL}/rest/v1/rpc/allocate_invoice_number",
                 headers=_sb_headers(),
+                content=json.dumps({"p_client_name": client_name}),
                 timeout=10,
             )
-            if read_resp.status_code != 200:
+        except Exception as exc:
+            raise RuntimeError(
+                f"next_client_invoice_number: request failed for {client_name!r}: {exc}"
+            ) from exc
+        if resp.status_code == 200:
+            try:
+                return int(resp.json())
+            except (ValueError, TypeError) as exc:
                 raise RuntimeError(
-                    f"next_client_invoice_number: failed to read counter for "
-                    f"{client_name!r} — HTTP {read_resp.status_code}: "
-                    f"{read_resp.text[:300]}"
-                )
-            rows = read_resp.json()
-            if not rows:
-                raise RuntimeError(
-                    f"next_client_invoice_number: no row in client_invoice_counters "
-                    f"for {client_name!r}. "
-                    f"Insert one with:\n"
-                    f"  INSERT INTO client_invoice_counters(client_name, last_issued)\n"
-                    f"  VALUES('{client_name}', <current_max_number>)\n"
-                    f"  ON CONFLICT (client_name) DO NOTHING;"
-                )
-            current = int(rows[0]["last_issued"])
-            next_num = current + 1
-
-            # 2. Conditional PATCH — only succeeds when last_issued is still <current>
-            patch_resp = httpx.patch(
-                f"{_sb_url('client_invoice_counters')}"
-                f"?client_name=eq.{client_name}&last_issued=eq.{current}",
-                headers=_sb_headers("return=representation"),
-                content=json.dumps({"last_issued": next_num, "updated_at": _now()}),
-                timeout=10,
-            )
-            if patch_resp.status_code not in (200, 204):
-                raise RuntimeError(
-                    f"next_client_invoice_number: failed to increment counter for "
-                    f"{client_name!r} — HTTP {patch_resp.status_code}: "
-                    f"{patch_resp.text[:300]}"
-                )
-            if patch_resp.json():   # non-empty → row was updated
-                return next_num
-            # Empty response means another writer incremented between our read and PATCH
-            _sb_logger.warning(
-                "next_client_invoice_number: counter for %r changed concurrently "
-                "(attempt %d/3), retrying…", client_name, attempt + 1,
-            )
+                    f"next_client_invoice_number: unexpected RPC response for "
+                    f"{client_name!r}: {resp.text[:300]}"
+                ) from exc
+        # HTTP 400 usually means RAISE EXCEPTION from the function (missing counter row)
         raise RuntimeError(
-            f"next_client_invoice_number: could not atomically allocate invoice "
-            f"number for {client_name!r} after 3 attempts (concurrent updates). "
-            "Retry the operation."
+            f"next_client_invoice_number: allocate_invoice_number RPC failed for "
+            f"{client_name!r} — HTTP {resp.status_code}: {resp.text[:300]}"
         )
 
     def _format_invoice_number(self, client_name: str, num: int) -> str:

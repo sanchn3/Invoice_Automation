@@ -74,6 +74,11 @@ def _run_parsing_pipeline(
 
     # Persist
     now = datetime.utcnow().isoformat() + "Z"
+    try:
+        from utils.pdf_storage import upload_pdf as _upload_pdf
+        _upload_pdf(pdf_path)
+    except Exception as _ue:
+        logger.warning("attachment_handler: Supabase Storage upload failed for %s: %s", pdf_path, _ue)
     provider_invoice = dm.add_provider_invoice({
         "provider_name"  : provider_name,
         "client_name"    : parsed.get("client_name", "").upper(),
