@@ -202,6 +202,7 @@ _CLIENT_INITIALS_FILE    = DATA_DIR / "client_initials.json"
 _CLIENT_RFCS_FILE        = DATA_DIR / "client_rfcs.json"
 _CLIENT_COUNTERS_FILE    = DATA_DIR / "client_invoice_counters.json"
 _BOL_RECORDS_FILE        = DATA_DIR / "bol_records.json"
+_EXPORT_BATCHES_FILE     = DATA_DIR / "export_batches.json"
 
 _lock = threading.Lock()
 
@@ -296,6 +297,7 @@ _JSON_DEFAULTS: dict[Path, Any] = {
     _CLIENT_RFCS_FILE      : _CLIENT_RFCS_DEFAULTS,
     _CLIENT_COUNTERS_FILE  : {},
     _BOL_RECORDS_FILE      : [],
+    _EXPORT_BATCHES_FILE   : [],
 }
 
 
@@ -795,6 +797,55 @@ class DataManager:
             if inv.get("provider_invoice_id") == provider_invoice_id:
                 return inv
         return None
+
+    # ─────────────────────────────────────────
+    # EXPORT BATCHES
+    # ─────────────────────────────────────────
+
+    def get_export_batches(self) -> list[dict]:
+        with _lock:
+            return _read_json(_EXPORT_BATCHES_FILE)
+
+    def add_export_batch(self, batch: dict) -> dict:
+        with _lock:
+            batches = _read_json(_EXPORT_BATCHES_FILE)
+            batches.append(batch)
+            _write_json(_EXPORT_BATCHES_FILE, batches)
+        return batch
+
+    def get_export_batch_by_id(self, batch_id: str) -> dict | None:
+        for b in self.get_export_batches():
+            if b.get("id") == batch_id:
+                return b
+        return None
+
+    def undo_export_batch(self, batch_id: str) -> None:
+        """
+        Revert all invoices in a batch to their pre-export state, then delete
+        the batch record.  Raises ValueError if the batch is not found.
+        """
+        batch = self.get_export_batch_by_id(batch_id)
+        if not batch:
+            raise ValueError(f"Export batch {batch_id!r} not found.")
+        for snap in batch.get("pre_export_snapshots", []):
+            try:
+                self.update_client_invoice(snap["invoice_id"], snap["fields"])
+            except KeyError:
+                pass  # invoice may have been deleted — skip
+            if snap.get("email_log_id"):
+                try:
+                    self.update_email_log(snap["email_log_id"], snap["email_log_fields"])
+                except KeyError:
+                    pass  # email log may be gone — skip
+        with _lock:
+            batches = [b for b in _read_json(_EXPORT_BATCHES_FILE) if b.get("id") != batch_id]
+            _write_json(_EXPORT_BATCHES_FILE, batches)
+
+    def delete_export_batch(self, batch_id: str) -> None:
+        """Remove the batch history record only — does not touch invoice state."""
+        with _lock:
+            batches = [b for b in _read_json(_EXPORT_BATCHES_FILE) if b.get("id") != batch_id]
+            _write_json(_EXPORT_BATCHES_FILE, batches)
 
     # ─────────────────────────────────────────
     # PROVIDERS

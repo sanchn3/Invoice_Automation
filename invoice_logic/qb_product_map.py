@@ -4,11 +4,15 @@ qb_product_map.py
 Single source of truth: maps every line item the charge calculator can produce
 to a QuickBooks Online product path.
 
-Table columns: internal_key | qb_name | category | sku
+Table columns: internal_key | qb_name | category | sku | qb_description
 
 get_qb_item(description, unit) returns  "Category:Product name"
 — the exact format QBO expects in the Item(Product/Service) import column.
 No spaces around the colon; both parts are stripped of whitespace.
+
+get_qb_description(description, unit) returns the QB product description string
+to use as ItemDescription in the CSV export, or "" to fall back to the line
+item description.
 
 If a new service is added to charge_calculator.py:
   1. Add a row to QB_PRODUCTS.
@@ -17,27 +21,35 @@ The export will refuse to run until every line item resolves.
 """
 
 # ── Product catalogue ─────────────────────────────────────────────────────────
-# (internal_key, qb_name, category, sku)
-QB_PRODUCTS: tuple[tuple[str, str, str, str], ...] = (
-    ("in_out_truck",               "In-Out Storage",                                "Cold Storage",            "STR-100"),
-    ("in_out_pallet",              "In-Out Storage by Pallet",                      "Cold Storage",            "STR-120"),
-    ("transfer",                   "Truck-to-Truck Transfer",                        "Handling & Labor",        "HDL-100"),
-    ("extended_storage",           "Extra Storage",                                  "Cold Storage",            "STR-110"),
-    ("quality_inspection",         "Quality Check Report",                           "Inspection & Compliance", "INS-100"),
-    ("seals",                      "Seal",                                           "Supplies & Equipment",    "SUP-150"),
-    ("american_broker_fee",        "American Broker Fee",                            "Brokerage & Customs",     "BRK-100"),
-    ("mexican_broker_fee",         "Mexican Broker Fee",                             "Brokerage & Customs",     "BRK-110"),
-    ("temp_recorder_hardware",     "Temperature Recorder Hardware and Installation", "Supplies & Equipment",    "SUP-110"),
-    ("temp_recorder_installation", "Temperature Recorder Installation",              "Supplies & Equipment",    "SUP-100"),
-    ("overtime_fee",               "Overtime",                                       "Handling & Labor",        "HDL-300"),
-    ("restack_fee",                "Restack Leaning Pallets",                        "Handling & Labor",        "HDL-140"),
+# (internal_key, qb_name, category, sku, qb_description)
+# qb_description: the description stored on the QB product/service record.
+# Leave "" to let the CSV exporter fall back to the invoice line description.
+QB_PRODUCTS: tuple[tuple[str, str, str, str, str], ...] = (
+    ("in_out_truck",               "In-Out Storage",                                "Cold Storage",            "STR-100", ""),
+    ("in_out_pallet",              "In-Out Storage by Pallet",                      "Cold Storage",            "STR-120", ""),
+    ("transfer",                   "Truck-to-Truck Transfer",                       "Handling & Labor",        "HDL-100", "TRANSBORDO"),
+    ("extended_storage",           "Extended Storage",                              "Cold Storage",            "STR-110", ""),
+    ("quality_inspection",         "Quality Check Report",                          "Inspection & Compliance", "INS-100", ""),
+    ("seals",                      "Seal",                                          "Supplies & Equipment",    "SUP-150", ""),
+    ("american_broker_fee",        "American Broker Fee",                           "Brokerage & Customs",     "BRK-100", ""),
+    ("mexican_broker_fee",         "Mexican Broker Fee",                            "Brokerage & Customs",     "BRK-110", ""),
+    ("temp_recorder_hardware",     "Temperature Recorder Hardware and Installation","Supplies & Equipment",    "SUP-110", ""),
+    ("temp_recorder_installation", "Temperature Recorder Installation",             "Supplies & Equipment",    "SUP-100", ""),
+    ("overtime_fee",               "Overtime",                                      "Handling & Labor",        "HDL-300", ""),
+    ("restack_fee",                "Restack Leaning Pallets",                       "Handling & Labor",        "HDL-140", ""),
 )
 
 # ── internal_key → "Category:Product name" ───────────────────────────────────
 # Built from QB_PRODUCTS so category is never duplicated.
 _KEY_TO_PATH: dict[str, str] = {
     key: f"{category.strip()}:{name.strip()}"
-    for key, name, category, _sku in QB_PRODUCTS
+    for key, name, category, _sku, _desc in QB_PRODUCTS
+}
+
+# ── internal_key → qb_description ────────────────────────────────────────────
+_KEY_TO_DESC: dict[str, str] = {
+    key: qb_desc
+    for key, _name, _category, _sku, qb_desc in QB_PRODUCTS
 }
 
 # ── (description, unit) → internal_key ───────────────────────────────────────
@@ -47,7 +59,8 @@ _DESCRIPTION_MAP: dict[tuple[str, str], str] = {
     ("In-Out Storage",                           "pallets"): "in_out_pallet",
     ("In-Out Storage",                           "truck")  : "in_out_truck",
     ("Transfer (Truck-to-Truck)",                "truck")  : "transfer",
-    ("Extended Storage",                         "pallet") : "extended_storage",
+    ("Extended Storage",                         "pallet")      : "extended_storage",
+    ("Extended Storage",                         "pallet-week") : "extended_storage",
     ("Quality Inspection",                       "ea")     : "quality_inspection",
     ("Seal",                                     "ea")     : "seals",
     ("American Broker Fee",                      "ea")     : "american_broker_fee",
@@ -75,3 +88,15 @@ def get_qb_item(description: str, unit: str) -> str:
         )
     # _KEY_TO_PATH is always complete if QB_PRODUCTS and _DESCRIPTION_MAP are in sync
     return _KEY_TO_PATH[internal_key]
+
+
+def get_qb_description(description: str, unit: str) -> str:
+    """
+    Return the QB product description to use as ItemDescription in the CSV export.
+    Returns "" when the product has no override, signalling the exporter to fall
+    back to the invoice line item description.
+    """
+    internal_key = _DESCRIPTION_MAP.get((description.strip(), unit.strip()))
+    if internal_key is None:
+        return ""
+    return _KEY_TO_DESC.get(internal_key, "")
