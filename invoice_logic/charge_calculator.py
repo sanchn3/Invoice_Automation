@@ -9,12 +9,10 @@ from data_manager import DataManager
 
 # Maps extra_charge keys to rate_card keys and human labels
 _EXTRA_CHARGE_MAP = {
-    "quality_inspection": ("quality_inspection_fee", "Quality Inspection"),
-    "pallet_cleaning"   : ("pallet_cleaning_fee",    "Pallet Cleaning"),
-    "re_inspection"     : ("re_inspection_fee",       "Re-Inspection"),
-    "repacking"         : ("repacking_fee",            "Repacking"),
-    "stamps"            : ("stamps_fee",               "Seal"),
-    "broker_fee"        : ("broker_fee",               "American Broker Fee"),
+    "quality_inspection" : ("quality_inspection_fee", "Quality Inspection"),
+    "stamps"             : ("stamps_fee",              "Seal"),
+    "broker_fee"         : ("broker_fee",              "American Broker Fee"),
+    "mexican_broker_fee" : ("mexican_broker_fee",      "Mexican Broker Fee"),
 }
 
 
@@ -24,24 +22,23 @@ def calculate_charges(
     pallet_count: int,
     temp_recorder: str | bool,
     extra_charges: list[str],
-    damaged_pallets: int = 0,
     hours_overtime: int = 0,
     restack_count: int = 0,
     client_name: str = "",
     temp_recorder_count: int = 1,
     seal_count: int = 1,
     broker_fee_override: float | None = None,
+    mexican_broker_fee_override: float | None = None,
 ) -> dict:
     """
     Calculate all charges for a client invoice.
 
     Parameters
     ----------
-    service_type   : "transfer" or "in_out"
-    pallet_count   : number of pallets
-    temp_recorder  : whether a temperature recorder was installed
-    extra_charges  : list of charge keys (see _EXTRA_CHARGE_MAP)
-    damaged_pallets: count of damaged pallets billed at the damaged_pallet_fee rate
+    service_type  : "transfer" or "in_out"
+    pallet_count  : number of pallets
+    temp_recorder : whether a temperature recorder was installed
+    extra_charges : list of charge keys (see _EXTRA_CHARGE_MAP)
 
     Returns
     -------
@@ -113,6 +110,8 @@ def calculate_charges(
             rate_key, label = _EXTRA_CHARGE_MAP[charge_key]
             if charge_key == "broker_fee" and broker_fee_override is not None:
                 fee = float(broker_fee_override)
+            elif charge_key == "mexican_broker_fee" and mexican_broker_fee_override is not None:
+                fee = float(mexican_broker_fee_override)
             else:
                 fee = float(rates.get(rate_key, 0))
             qty = seal_count if charge_key == "stamps" else 1
@@ -145,18 +144,6 @@ def calculate_charges(
             "unit_price" : fee,
             "total"      : round(fee * restack_count, 2),
         })
-
-    # ── Damaged Pallets ───────────────────────────────────────────────────────
-    if damaged_pallets > 0:
-        fee = float(rates.get("damaged_pallet_fee", 0))
-        if fee > 0:
-            line_items.append({
-                "description": "Damaged Pallets",
-                "quantity"   : damaged_pallets,
-                "unit"       : "pallets",
-                "unit_price" : fee,
-                "total"      : round(fee * damaged_pallets, 2),
-            })
 
     subtotal = round(sum(item["total"] for item in line_items), 2)
 

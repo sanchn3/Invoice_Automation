@@ -14,7 +14,7 @@ from pathlib import Path
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
 from invoice_logic.pdf_generator import generate_pdf as _generate_pdf
-from invoice_logic.iif_exporter import build_iif_content
+from invoice_logic.csv_exporter import build_csv_content
 
 
 def _colored_btn(container, label: str, key: str, color: str, **kwargs) -> bool:
@@ -449,10 +449,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         # All billing fields always shown in default rates
         billing_labels = {
-            "in_out"              : "In-Out Storage (per pallet)",
-            "transfer"            : "Transfer per Truck",
-            "extended_storage"    : "Extended Storage (per pallet)",
-            "damaged_pallet_fee"  : "Damaged Pallets (per pallet)",
+            "in_out"           : "In-Out Storage (per pallet)",
+            "transfer"         : "Transfer per Truck",
+            "extended_storage" : "Extended Storage (per pallet)",
         }
 
         # Non-billing labels are the same regardless of mode — reused in all loops
@@ -460,10 +459,9 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             "temp_recorder_hardware_fee"     : "Temp. Recorder — Hardware & Installation",
             "temp_recorder_installation_fee" : "Temp. Recorder — Installation Only",
             "quality_inspection_fee"         : "Quality Inspection",
-            "pallet_cleaning_fee"            : "Pallet Cleaning",
-            "repacking_fee"                  : "Repacking",
-            "re_inspection_fee"              : "Re-Inspection",
             "stamps_fee"                     : "Seals",
+            "broker_fee"                     : "American Broker Fee",
+            "mexican_broker_fee"             : "Mexican Broker Fee",
             "overtime_fee"                   : "Hours Overtime",
             "restack_fee"                    : "Restack",
             "net_days"                       : "Net Days (payment terms)",
@@ -616,15 +614,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 key="new_cr_extended_storage",
             )
 
-            _rc4, _rf4 = st.columns([1, 5], vertical_alignment="center")
-            _en_damaged = _rc4.checkbox("Damaged Pallets", value=True, key="new_cr_damaged_en", label_visibility="collapsed")
-            _new_damaged_pallet_fee = _rf4.number_input(
-                "Damaged Pallets (per pallet) ($)",
-                value=float(default_rates.get("damaged_pallet_fee", 0)),
-                min_value=0.0, step=0.25, format="%.2f",
-                key="new_cr_damaged_pallet_fee",
-            )
-
             st.caption("Truck Rates")
             _tc1, _tf1 = st.columns([1, 5], vertical_alignment="center")
             _en_cpt = _tc1.checkbox("Cost per Truck", value=True, key="new_cr_cpt_en", label_visibility="collapsed")
@@ -640,14 +629,12 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 "in_out"             : _new_in_out,
                 "transfer"           : _new_transfer,
                 "extended_storage"   : _new_extended_storage,
-                "damaged_pallet_fee" : _new_damaged_pallet_fee,
                 "cost_per_truck"     : _new_cost_per_truck,
             }
             _new_disabled: list = []
             if not _en_in_out:   _new_disabled.append("in_out")
             if not _en_transfer: _new_disabled.append("transfer")
             if not _en_extended: _new_disabled.append("extended_storage")
-            if not _en_damaged:  _new_disabled.append("damaged_pallet_fee")
             if not _en_cpt:      _new_disabled.append("cost_per_truck")
 
             st.caption("General Rates")
@@ -698,6 +685,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 help="When enabled, the American Broker Fee checkbox is pre-checked in the Admin dashboard when approving this client's invoices.",
             )
             new_client_overrides["broker_fee_enabled"] = _new_broker_fee_enabled
+
+            _new_mexican_broker_fee_enabled = st.checkbox(
+                "Mexican Broker Fee",
+                value=False,
+                key="new_cr_mexican_broker_fee_enabled",
+                help="When enabled, the Mexican Broker Fee checkbox is pre-checked in the Admin dashboard when approving this client's invoices.",
+            )
+            new_client_overrides["mexican_broker_fee_enabled"] = _new_mexican_broker_fee_enabled
 
             if _colored_btn(st, "💾 Save Client Profile", key="save_new_client", color="#198754"):
                 if not new_client_name.strip():
@@ -894,17 +889,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         help="Default: ${:.2f}".format(_def_extended),
                     )
 
-                    _def_damaged     = float(default_rates.get("damaged_pallet_fee", 0))
-                    _prc4, _prf4 = st.columns([1, 5], vertical_alignment="center")
-                    _en_cd_damaged = _prc4.checkbox("Damaged Pallets", value="damaged_pallet_fee" not in _cd_disabled, key=f"cr_{cname}_damaged_en", label_visibility="collapsed")
-                    _client_damaged = _prf4.number_input(
-                        "Damaged Pallets (per pallet) ($)" + (" ✏️" if "damaged_pallet_fee" in crates else ""),
-                        value=float(crates.get("damaged_pallet_fee", _def_damaged)),
-                        min_value=0.0, step=0.25, format="%.2f",
-                        key=f"cr_{cname}_damaged_pallet_fee",
-                        help="Default: ${:.2f}".format(_def_damaged),
-                    )
-
                     st.caption("Truck Rates")
                     _def_cpt = float(default_rates.get("cost_per_truck", 0))
                     _trc1, _trf1 = st.columns([1, 5], vertical_alignment="center")
@@ -922,14 +906,12 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         "in_out"             : _client_in_out,
                         "transfer"           : _client_transfer,
                         "extended_storage"   : _client_extended,
-                        "damaged_pallet_fee" : _client_damaged,
                         "cost_per_truck"     : _client_cpt,
                     }
                     _cd_new_disabled: list = []
                     if not _en_cd_in_out:   _cd_new_disabled.append("in_out")
                     if not _en_cd_transfer: _cd_new_disabled.append("transfer")
                     if not _en_cd_extended: _cd_new_disabled.append("extended_storage")
-                    if not _en_cd_damaged:  _cd_new_disabled.append("damaged_pallet_fee")
                     if not _en_cd_cpt:      _cd_new_disabled.append("cost_per_truck")
 
                     st.caption("General Rates")
@@ -986,6 +968,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         help="When enabled, the American Broker Fee checkbox is pre-checked in the Admin dashboard when approving this client's invoices.",
                     )
                     new_overrides["broker_fee_enabled"] = _client_broker_fee_enabled
+
+                    _client_mexican_broker_fee_enabled = st.checkbox(
+                        "Mexican Broker Fee",
+                        value=bool(crates.get("mexican_broker_fee_enabled", False)),
+                        key=f"cr_{cname}_mexican_broker_fee_enabled",
+                        help="When enabled, the Mexican Broker Fee checkbox is pre-checked in the Admin dashboard when approving this client's invoices.",
+                    )
+                    new_overrides["mexican_broker_fee_enabled"] = _client_mexican_broker_fee_enabled
 
                     # ── Buttons ───────────────────────────────────────────────
                     btn_col1, btn_col2 = st.columns(2)
@@ -1250,13 +1240,17 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         c5.write("—")
 
                 if exported:
-                    c6.download_button(
-                        "⬇ IIF",
-                        data=build_iif_content(ci),
-                        file_name=f"{qb}-export.iif",
-                        mime="text/plain",
-                        key=f"lead_proc_iif_{cid}",
-                    )
+                    try:
+                        _lead_csv = build_csv_content([ci])
+                        c6.download_button(
+                            "⬇ CSV",
+                            data=_lead_csv,
+                            file_name=f"{qb}-export.csv",
+                            mime="text/csv",
+                            key=f"lead_proc_csv_{cid}",
+                        )
+                    except ValueError:
+                        c6.caption("⚠ unmapped")
                 else:
                     c6.write("—")
 

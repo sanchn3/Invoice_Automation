@@ -102,7 +102,6 @@ def _run_parsing_pipeline(
         "temp_recorder"            : False,
         "extra_charges"            : [],
         "pallet_count"             : 0,
-        "damaged_pallets"          : 0,
         "worker_notes"             : "",
         "photo_paths"              : [],
         "line_items"               : [],

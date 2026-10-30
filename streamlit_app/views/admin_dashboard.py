@@ -324,7 +324,6 @@ def _render_extended_storage(dm: DataManager) -> None:
                 "sent_to_accounting_at"     : now_iso,
                 "service_type"              : "extended_storage",
                 "pallet_count"              : int(es_pallets),
-                "damaged_pallets"           : 0,
                 "hours_overtime"            : 0,
                 "restack_count"             : 0,
                 "extra_charges"             : [],
@@ -621,7 +620,6 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                     "temp_recorder"  : False,
                                     "extra_charges"  : [],
                                     "pallet_count"   : 0,
-                                    "damaged_pallets": 0,
                                     "worker_notes"   : "",
                                     "photo_paths"    : [],
                                     "line_items"     : [],
@@ -933,16 +931,20 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         _cbp         = bool(_cl_rates.get("charged_by_pallet", _default_cbp))
                         _fixed_pal       = int(_cl_rates.get("fixed_pallet_count", 0) or 0)
                         _disabled_fields = list(_cl_rates.get("disabled_fields", []))
-                        _stamps_in_extras     = "stamps"     in (ci.get("extra_charges") or [])
-                        _broker_fee_in_extras = "broker_fee" in (ci.get("extra_charges") or [])
-                        _show_seals  = "stamps_fee"   not in _disabled_fields
-                        _show_broker = "broker_fee"   not in _disabled_fields
-                        _show_ot     = "overtime_fee" not in _disabled_fields
-                        _show_rs     = "restack_fee"  not in _disabled_fields
+                        _stamps_in_extras         = "stamps"             in (ci.get("extra_charges") or [])
+                        _broker_fee_in_extras     = "broker_fee"         in (ci.get("extra_charges") or [])
+                        _mx_broker_fee_in_extras  = "mexican_broker_fee" in (ci.get("extra_charges") or [])
+                        _show_seals        = "stamps_fee"         not in _disabled_fields
+                        _show_broker       = "broker_fee"         not in _disabled_fields
+                        _show_mx_broker    = "mexican_broker_fee" not in _disabled_fields
+                        _show_ot           = "overtime_fee"       not in _disabled_fields
+                        _show_rs           = "restack_fee"        not in _disabled_fields
                         _seal_count = 0
                         # Default to checked based on client's rate card setting for new invoices
-                        _broker_fee_default = _broker_fee_in_extras if ci.get("extra_charges") else bool(_cl_rates.get("broker_fee_enabled", False))
-                        _broker_fee = False
+                        _broker_fee_default    = _broker_fee_in_extras    if ci.get("extra_charges") else bool(_cl_rates.get("broker_fee_enabled", False))
+                        _mx_broker_fee_default = _mx_broker_fee_in_extras if ci.get("extra_charges") else bool(_cl_rates.get("mexican_broker_fee_enabled", False))
+                        _broker_fee    = False
+                        _mx_broker_fee = False
                         if _show_seals and _show_broker:
                             _seal_col, _broker_col = st.columns([1, 1])
                             _seal_count = _seal_col.number_input(
@@ -968,20 +970,31 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         if _broker_fee and _show_broker:
                             _broker_fee_amount = st.number_input(
                                 "American Broker Fee ($)",
-                                value=float(ci.get("broker_fee_amount") or _rate_card.get("broker_fee", 0)),
+                                value=float(ci.get("broker_fee_amount") or _cl_rates.get("broker_fee", 0)),
                                 min_value=0.0, step=0.25, format="%.2f",
                                 key=f"val_broker_amount_{cid}",
+                            )
+                        _mx_broker_fee_amount = 0.0
+                        if _show_mx_broker:
+                            _mx_broker_fee = st.checkbox(
+                                "Mexican Broker Fee", value=_mx_broker_fee_default, key=f"val_mx_broker_{cid}",
+                            )
+                        if _mx_broker_fee and _show_mx_broker:
+                            _mx_broker_fee_amount = st.number_input(
+                                "Mexican Broker Fee ($)",
+                                value=float(ci.get("mexican_broker_fee_amount") or _cl_rates.get("mexican_broker_fee", 0)),
+                                min_value=0.0, step=0.25, format="%.2f",
+                                key=f"val_mx_broker_amount_{cid}",
                             )
                         if _cbp and svc != "transfer":
                             _pal_default = _fixed_pal if _fixed_pal > 0 else int(ci.get("pallet_count", 1) or 1)
                             _pal_label   = f"Total Pallets (fixed: {_fixed_pal})" if _fixed_pal > 0 else "Total Pallets"
-                            _pcol_specs  = [1] * (2 + int(_show_ot) + int(_show_rs))
+                            _pcol_specs  = [1] * (1 + int(_show_ot) + int(_show_rs))
                             _pcols = st.columns(_pcol_specs)
                             _pal = _pcols[0].number_input(_pal_label, min_value=1, step=1, value=_pal_default, key=f"val_pal_{cid}")
-                            _dmg = _pcols[1].number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
                             _hours_overtime = 0
                             _restack_count  = 0
-                            _pi = 2
+                            _pi = 1
                             if _show_ot:
                                 _hours_overtime = _pcols[_pi].number_input("Hours Overtime", min_value=0, step=1, value=int(ci.get("hours_overtime", 0) or 0), key=f"val_ot_{cid}")
                                 _pi += 1
@@ -991,23 +1004,25 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             if not _cbp:
                                 st.info("Billing is per truck — no pallet count required.")
                             _pal = 1
-                            _pcol_specs = [1] * (1 + int(_show_ot) + int(_show_rs))
-                            _pcols = st.columns(_pcol_specs)
-                            _dmg = _pcols[0].number_input("Damaged Pallets", min_value=0, step=1, value=int(ci.get("damaged_pallets", 0) or 0), key=f"val_dmg_{cid}")
                             _hours_overtime = 0
                             _restack_count  = 0
-                            _pi = 1
-                            if _show_ot:
-                                _hours_overtime = _pcols[_pi].number_input("Hours Overtime", min_value=0, step=1, value=int(ci.get("hours_overtime", 0) or 0), key=f"val_ot_{cid}")
-                                _pi += 1
-                            if _show_rs:
-                                _restack_count = _pcols[_pi].number_input("Restack", min_value=0, step=1, value=int(ci.get("restack_count", 0) or 0), key=f"val_rs_{cid}")
+                            if _show_ot or _show_rs:
+                                _pcol_specs = [1] * (int(_show_ot) + int(_show_rs))
+                                _pcols = st.columns(_pcol_specs)
+                                _pi = 0
+                                if _show_ot:
+                                    _hours_overtime = _pcols[_pi].number_input("Hours Overtime", min_value=0, step=1, value=int(ci.get("hours_overtime", 0) or 0), key=f"val_ot_{cid}")
+                                    _pi += 1
+                                if _show_rs:
+                                    _restack_count = _pcols[_pi].number_input("Restack", min_value=0, step=1, value=int(ci.get("restack_count", 0) or 0), key=f"val_rs_{cid}")
 
                         _new_extras: list[str] = []
                         if _seal_count > 0:
                             _new_extras.append("stamps")
                         if _broker_fee:
                             _new_extras.append("broker_fee")
+                        if _mx_broker_fee:
+                            _new_extras.append("mexican_broker_fee")
 
                         # Temperature Recorder — options filtered by disabled_fields
                         _tr_opts = [o for o in _TR_OPTS if not (
@@ -1092,28 +1107,28 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 pallet_count=int(_pal),
                                 temp_recorder=_new_tr,
                                 extra_charges=_new_extras,
-                                damaged_pallets=int(_dmg),
                                 hours_overtime=int(_hours_overtime),
                                 restack_count=int(_restack_count),
                                 client_name=ci.get("client_name", ""),
                                 temp_recorder_count=int(_tr_count),
                                 seal_count=int(_seal_count),
                                 broker_fee_override=_broker_fee_amount if _broker_fee else None,
+                                mexican_broker_fee_override=_mx_broker_fee_amount if _mx_broker_fee else None,
                             )
                             client_rates = dm.get_rates_for_client(ci.get("client_name", ""))
                             billing_addr = dm.get_client_address(ci.get("client_name", ""))
                             billing_rfc  = dm.get_client_rfc(ci.get("client_name", ""))
                             dm.update_client_invoice(cid, {
-                                "quickbooks_invoice_number": inv_id,
-                                "service_type"        : svc,
-                                "pallet_count"        : int(_pal),
-                                "damaged_pallets"     : int(_dmg),
-                                "hours_overtime"      : int(_hours_overtime),
-                                "restack_count"       : int(_restack_count),
-                                "extra_charges"       : _new_extras,
-                                "seal_count"          : int(_seal_count),
-                                "broker_fee_amount"   : _broker_fee_amount,
-                                "temp_recorder"       : _new_tr,
+                                "quickbooks_invoice_number"  : inv_id,
+                                "service_type"               : svc,
+                                "pallet_count"               : int(_pal),
+                                "hours_overtime"             : int(_hours_overtime),
+                                "restack_count"              : int(_restack_count),
+                                "extra_charges"              : _new_extras,
+                                "seal_count"                 : int(_seal_count),
+                                "broker_fee_amount"          : _broker_fee_amount,
+                                "mexican_broker_fee_amount"  : _mx_broker_fee_amount,
+                                "temp_recorder"              : _new_tr,
                                 "temp_recorder_count" : int(_tr_count),
                                 "producto_caliente"   : _producto_caliente,
                                 "temp_f1"             : _temp1.strip(),

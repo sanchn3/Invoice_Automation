@@ -236,19 +236,16 @@ def _new_id() -> str:
 
 
 _RATE_CARD_DEFAULTS: dict = {
-    "charged_by_pallet"          : True,
-    "in_out"                     : 12.0,
-    "transfer"                   : 14.0,
-    "cost_per_truck"             : 0.0,
-    "temp_recorder_hardware_fee" : 1.0,
+    "charged_by_pallet"             : True,
+    "in_out"                        : 12.0,
+    "transfer"                      : 14.0,
+    "cost_per_truck"                : 0.0,
+    "temp_recorder_hardware_fee"    : 1.0,
     "temp_recorder_installation_fee": 2.0,
-    "quality_inspection_fee"     : 4.0,
-    "pallet_cleaning_fee"        : 8.0,
-    "broken_pallet_fee"          : 25.0,
-    "repacking_fee"              : 23.0,
-    "re_inspection_fee"          : 3.0,
-    "broker_fee"                 : 16.0,
-    "net_days"                   : 30,
+    "quality_inspection_fee"        : 4.0,
+    "broker_fee"                    : 16.0,
+    "mexican_broker_fee"            : 0.0,
+    "net_days"                      : 30,
 }
 
 _CLIENT_RATES_DEFAULTS: dict = {
@@ -260,10 +257,8 @@ _CLIENT_RATES_DEFAULTS: dict = {
         "temp_recorder_hardware_fee"    : 25.0,
         "temp_recorder_installation_fee": 15.0,
         "quality_inspection_fee"        : 4.0,
-        "pallet_cleaning_fee"           : 8.0,
-        "repacking_fee"                 : 23.0,
-        "re_inspection_fee"             : 3.0,
         "broker_fee"                    : 0.0,
+        "mexican_broker_fee"            : 0.0,
         "stamps_fee"                    : 5.0,
         "overtime_fee"                  : 100.0,
         "restack_fee"                   : 40.0,

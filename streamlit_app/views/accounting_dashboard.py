@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
-from invoice_logic.iif_exporter import generate_iif, build_iif_content
+from invoice_logic.csv_exporter import generate_csv, build_csv_content
 from invoice_logic.pdf_generator import generate_pdf
 from scheduler.supabase_sync import patch_invoice_paid, sync_single_invoice as _sync_inv
 from utils.pdf_storage import (
@@ -306,17 +306,17 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         st.subheader("Export to QuickBooks")
 
         # ── Pending download banner (persists after export until dismissed) ────
-        _iif_result = st.session_state.get("qb_export_result")
-        if _iif_result:
-            st.success(f"IIF generated — {_iif_result['count']} invoice(s) exported.")
-            for _iif_file in _iif_result.get("files", []):
-                st.download_button(
-                    label    =f"⬇ Download {_iif_file['qb_num']}.iif",
-                    data     =_iif_file["content"],
-                    file_name=_iif_file["filename"],
-                    mime     ="text/plain",
-                    key      =f"iif_dl_{_iif_file['qb_num']}",
-                )
+        _csv_result = st.session_state.get("qb_export_result")
+        if _csv_result:
+            _r = _csv_result["result"]
+            st.success(f"CSV generated — {_csv_result['count']} invoice(s) exported.")
+            st.download_button(
+                label    =f"⬇ Download {_r['filename']}",
+                data     =_r["content"],
+                file_name=_r["filename"],
+                mime     ="text/csv",
+                key      ="csv_dl_export",
+            )
             if st.button("✓ Dismiss", key="iif_dismiss", width="stretch"):
                 del st.session_state["qb_export_result"]
                 st.rerun()
@@ -383,14 +383,14 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
             if selected_ids:
                 if st.button(
-                    f"Export {len(selected_ids)} invoice(s) to IIF",
+                    f"Export {len(selected_ids)} invoice(s) to CSV",
                     type="primary",
                 ):
                     try:
-                        iif_files = generate_iif(selected_ids, dm)
+                        csv_result = generate_csv(selected_ids, dm)
                         st.session_state["qb_export_result"] = {
-                            "files": iif_files,
-                            "count": len(selected_ids),
+                            "result": csv_result,
+                            "count" : len(selected_ids),
                         }
                         st.rerun()
                     except ValueError as e:
@@ -660,15 +660,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     c5.write("❌")
 
                 if exported:
-                    _prov_iif = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
-                    _ci_iif   = {**ci, "provider_invoice_number": _prov_iif.get("invoice_number", "")}
-                    c6.download_button(
-                        "✅ IIF",
-                        data=build_iif_content(_ci_iif),
-                        file_name=f"{qb}-export.iif",
-                        mime="text/plain",
-                        key=f"proc_iif_{cid}",
-                    )
+                    _prov_csv = prov_by_id.get(ci.get("provider_invoice_id", ""), {})
+                    _ci_csv   = {**ci, "provider_invoice_number": _prov_csv.get("invoice_number", "")}
+                    try:
+                        _csv_bytes = build_csv_content([_ci_csv])
+                        c6.download_button(
+                            "✅ CSV",
+                            data=_csv_bytes,
+                            file_name=f"{qb}-export.csv",
+                            mime="text/csv",
+                            key=f"proc_csv_{cid}",
+                        )
+                    except ValueError:
+                        c6.caption("⚠ unmapped item")
                 else:
                     c6.write("❌")
                 c7.write("✅" if emailed  else "❌")
