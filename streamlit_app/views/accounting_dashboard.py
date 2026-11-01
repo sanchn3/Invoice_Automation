@@ -17,8 +17,16 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from config import EXPORTS_DIR
+from config import EXPORTS_DIR, QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI, QBO_ENVIRONMENT
 from data_manager import DataManager
+
+try:
+    from integrations.qbo_auth import QBOAuth
+    from integrations.qbo_client import QBOClient
+    from integrations.qbo_ar_excel import build_ar_aging_xlsx, has_data, xlsx_filename
+    _QBO_AVAILABLE = True
+except ImportError:
+    _QBO_AVAILABLE = False
 from alerting.alert_manager import AlertManager
 from invoice_logic.csv_exporter import generate_csv, build_csv_content
 from invoice_logic.pdf_generator import generate_pdf
@@ -44,8 +52,12 @@ def _build_eml(to_addr: str, subject: str, body: str, attachments: list[tuple[st
     del msg["Date"]
     del msg["Message-ID"]
     msg.attach(MIMEText(body, "plain"))
-    for filename, pdf_bytes in attachments:
-        part = MIMEApplication(pdf_bytes, _subtype="pdf")
+    for filename, file_bytes in attachments:
+        if filename.lower().endswith(".xlsx"):
+            _subtype = "vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        else:
+            _subtype = "pdf"
+        part = MIMEApplication(file_bytes, _subtype=_subtype)
         part.add_header("Content-Disposition", "attachment", filename=filename)
         msg.attach(part)
     return msg.as_bytes()
@@ -128,6 +140,52 @@ def _colored_button(container, label: str, key: str, color: str, **kwargs) -> bo
     return container.button(label, key=key, **kwargs)
 
 
+def _do_ar_fetch(cname: str, client_email: str | None, dm, qbo_client) -> None:
+    """
+    Fetch the A/R Aging Detail for `cname` from QBO and store the result in
+    st.session_state so the .eml builder can pick it up.
+
+    Sets one of:
+      st.session_state[f"ar_aging_{cname}"]            = (filename, xlsx_bytes)
+      st.session_state[f"ar_aging_error_{cname}"]      = error-code string
+      st.session_state[f"ar_aging_candidates_{cname}"] = list of QB customer dicts
+    """
+    ar_key      = f"ar_aging_{cname}"
+    err_key     = f"ar_aging_error_{cname}"
+    cand_key    = f"ar_aging_candidates_{cname}"
+    try:
+        # 1. Resolve QBO customer ID (cached → search → picker)
+        qb_id = dm.get_qb_customer_id(cname)
+        if not qb_id:
+            candidates = qbo_client.find_customer_candidates(cname, client_email)
+            if len(candidates) == 0:
+                st.session_state[err_key] = "no_match"
+                return
+            elif len(candidates) > 1:
+                st.session_state[cand_key] = candidates
+                return
+            else:
+                qb_id = candidates[0]["Id"]
+                dm.set_qb_customer_id(cname, qb_id)
+
+        # 2. Pull the report
+        report = qbo_client.get_ar_aging_detail(qb_id)
+        if not has_data(report):
+            st.session_state[err_key] = "no_data"
+            return
+
+        # 3. Build xlsx and cache it
+        xlsx_bytes = build_ar_aging_xlsx(report, cname)
+        fname      = xlsx_filename(cname)
+        st.session_state[ar_key] = (fname, xlsx_bytes)
+
+    except RuntimeError:
+        st.session_state[err_key] = "not_connected"
+    except Exception as _e:
+        logger.exception("A/R Aging fetch failed for %s", cname)
+        st.session_state[err_key] = str(_e)
+
+
 def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     st.title("🧾 Accounting")
 
@@ -135,6 +193,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     client_invoices   = dm.get_client_invoices()
     provider_invoices = dm.get_provider_invoices()
     prov_by_id        = {pi["id"]: pi for pi in provider_invoices}
+
+    # QuickBooks Online integration (optional — only active when credentials are set)
+    _qbo_auth   = None
+    _qbo_client = None
+    if _QBO_AVAILABLE and QBO_CLIENT_ID and QBO_CLIENT_SECRET:
+        _qbo_auth   = QBOAuth(QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI, dm)
+        _qbo_client = QBOClient(_qbo_auth, sandbox=(QBO_ENVIRONMENT != "production"))
 
     tab_qb, tab_email, tab_processed = st.tabs([
         "📤 Export",
@@ -656,6 +721,26 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     # TAB 3 — EMAIL CLIENTS
     # ──────────────────────────────────────────────────────────────────────────
     with tab_email:
+        # ── QBO OAuth callback (Intuit redirects here with ?code=...&realmId=...) ──
+        if _qbo_auth is not None:
+            _qbo_code  = st.query_params.get("code", "")
+            _qbo_realm = st.query_params.get("realmId", "")
+            if _qbo_code and st.query_params.get("state") == "qbo_connect":
+                try:
+                    _qbo_auth.exchange_code(_qbo_code, _qbo_realm)
+                    st.query_params.clear()
+                    st.success("✅ QuickBooks connected! A/R Aging reports will now attach automatically.")
+                except Exception as _qe:
+                    st.error(f"QuickBooks connection failed: {_qe}")
+
+        # ── Connect banner (shown only when credentials exist but not yet authorized) ──
+        if _qbo_auth is not None and not _qbo_auth.is_connected():
+            _auth_url = _qbo_auth.get_authorization_url()
+            st.info(
+                "📊 Connect QuickBooks to automatically attach A/R Aging reports to client emails.  "
+                f"[Connect QuickBooks ↗]({_auth_url})"
+            )
+
         st.subheader("Email Clients")
 
         # Only show invoices not yet emailed
@@ -714,6 +799,41 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             st.session_state[prep_key] = True
                             st.rerun()
                     else:
+                        # ── A/R Aging: auto-fetch on first open ───────────────
+                        _ar_key   = f"ar_aging_{cname}"
+                        _ar_err   = f"ar_aging_error_{cname}"
+                        _ar_cands = f"ar_aging_candidates_{cname}"
+
+                        if (
+                            _qbo_client is not None
+                            and _ar_key   not in st.session_state
+                            and _ar_err   not in st.session_state
+                            and _ar_cands not in st.session_state
+                        ):
+                            with st.spinner("📊 Fetching A/R Aging from QuickBooks…"):
+                                _do_ar_fetch(cname, client_email, dm, _qbo_client)
+
+                        # Customer disambiguation picker (shown when >1 QB match)
+                        _candidates = st.session_state.get(_ar_cands, [])
+                        if _candidates:
+                            st.warning(
+                                f"Multiple QuickBooks customers match **{cname}**. "
+                                "Select the correct one:"
+                            )
+                            _opts = {
+                                f"{c.get('DisplayName') or c.get('CompanyName', '?')}  (ID {c['Id']})": c["Id"]
+                                for c in _candidates
+                            }
+                            _sel = st.selectbox(
+                                "QuickBooks customer",
+                                list(_opts.keys()),
+                                key=f"ar_qb_sel_{cname}",
+                            )
+                            if st.button("✅ Use this customer", key=f"ar_qb_confirm_{cname}", type="primary"):
+                                dm.set_qb_customer_id(cname, _opts[_sel])
+                                st.session_state.pop(_ar_cands, None)
+                                st.rerun()
+
                         # Draft email
                         total_sum = sum(ci.get("total", 0) for ci in invoices)
                         inv_lines = "\n".join(
@@ -753,6 +873,19 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             height=180,
                             key=f"email_body_{cname}",
                         )
+                        # ── A/R Aging attachment status ───────────────────────
+                        if not st.session_state.get(_ar_cands):
+                            _ar_error_val = st.session_state.get(_ar_err)
+                            if _ar_error_val == "no_match":
+                                st.caption(f"ℹ️ No QuickBooks customer matched **{cname}** — aging not attached.")
+                            elif _ar_error_val == "no_data":
+                                st.caption(f"ℹ️ **{cname}** has no open invoices in QuickBooks.")
+                            elif _ar_error_val and _ar_error_val != "not_connected":
+                                st.warning(f"⚠️ A/R Aging: {_ar_error_val}")
+                            elif st.session_state.get(_ar_key):
+                                _ar_fname, _ = st.session_state[_ar_key]
+                                st.caption(f"📊 A/R Aging attached: **{_ar_fname}**")
+
                         # Build .eml with all invoice PDFs attached
                         # Use the stored generated PDF (same source as admin's Sent to Accounting download)
                         _eml_attachments = []
@@ -764,6 +897,10 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 f"{_qb}.pdf",
                                 _stored if _stored else _cached_pdf(*_pdf_args(_ci, _pe)),
                             ))
+                        # Append A/R Aging xlsx if successfully fetched
+                        _ar_xlsx = st.session_state.get(_ar_key)
+                        if _ar_xlsx:
+                            _eml_attachments.append(_ar_xlsx)
                         _eml_bytes = _build_eml(
                             st.session_state.get(f"email_to_{cname}",   client_email or ""),
                             st.session_state.get(f"email_subj_{cname}", default_subject),
@@ -793,14 +930,16 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                 _ci_updated = dm.get_client_invoice_by_id(ci["id"])
                                 if _ci_updated:
                                     threading.Thread(target=_sync_inv, args=(_ci_updated,), daemon=True).start()
-                            st.session_state.pop(prep_key, None)
+                            for _k in (prep_key, _ar_key, _ar_err, _ar_cands):
+                                st.session_state.pop(_k, None)
                             st.rerun()
                         if mc2.button(
                             "✗ Cancel",
                             key=f"cancel_email_{cname}",
                             width="stretch",
                         ):
-                            st.session_state.pop(prep_key, None)
+                            for _k in (prep_key, _ar_key, _ar_err, _ar_cands):
+                                st.session_state.pop(_k, None)
                             st.rerun()
 
     # ──────────────────────────────────────────────────────────────────────────

@@ -30,6 +30,15 @@ LOGS_DIR    = BASE_DIR / "logs"
 for _dir in [DATA_DIR, PDFS_DIR, BOLS_DIR, PHOTOS_DIR, EXPORTS_DIR, LOGS_DIR]:
     _dir.mkdir(exist_ok=True)
 
+# QuickBooks Online
+QBO_CLIENT_ID     = os.getenv("QBO_CLIENT_ID", "")
+QBO_CLIENT_SECRET = os.getenv("QBO_CLIENT_SECRET", "")
+# Redirect URI must match exactly what is registered in your Intuit Developer app.
+# Local dev: http://localhost:8501   Production: your Render app URL
+QBO_REDIRECT_URI  = os.getenv("QBO_REDIRECT_URI", "http://localhost:8501")
+# "sandbox" uses sandbox-quickbooks.api.intuit.com; anything else uses production
+QBO_ENVIRONMENT   = os.getenv("QBO_ENVIRONMENT", "sandbox")
+
 # Claude model (override via CLAUDE_MODEL env var if needed)
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 

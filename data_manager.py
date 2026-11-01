@@ -203,6 +203,8 @@ _CLIENT_RFCS_FILE        = DATA_DIR / "client_rfcs.json"
 _CLIENT_COUNTERS_FILE    = DATA_DIR / "client_invoice_counters.json"
 _BOL_RECORDS_FILE        = DATA_DIR / "bol_records.json"
 _EXPORT_BATCHES_FILE     = DATA_DIR / "export_batches.json"
+_QBO_TOKENS_FILE         = DATA_DIR / "qbo_tokens.json"
+_QBO_CUSTOMER_IDS_FILE   = DATA_DIR / "client_qb_ids.json"
 
 _lock = threading.Lock()
 
@@ -298,6 +300,8 @@ _JSON_DEFAULTS: dict[Path, Any] = {
     _CLIENT_COUNTERS_FILE  : {},
     _BOL_RECORDS_FILE      : [],
     _EXPORT_BATCHES_FILE   : [],
+    _QBO_TOKENS_FILE       : {},
+    _QBO_CUSTOMER_IDS_FILE : {},
 }
 
 
@@ -846,6 +850,36 @@ class DataManager:
         with _lock:
             batches = [b for b in _read_json(_EXPORT_BATCHES_FILE) if b.get("id") != batch_id]
             _write_json(_EXPORT_BATCHES_FILE, batches)
+
+    # ─────────────────────────────────────────
+    # QUICKBOOKS ONLINE TOKENS
+    # ─────────────────────────────────────────
+
+    def get_qbo_tokens(self) -> dict:
+        """Return the stored QBO OAuth tokens dict, or {} if not connected."""
+        with _lock:
+            return _read_json(_QBO_TOKENS_FILE)
+
+    def set_qbo_tokens(self, tokens: dict) -> None:
+        """Persist QBO OAuth tokens (access_token, refresh_token, realm_id, expires_at)."""
+        with _lock:
+            _write_json(_QBO_TOKENS_FILE, tokens)
+
+    # ─────────────────────────────────────────
+    # QUICKBOOKS CUSTOMER ID CACHE
+    # ─────────────────────────────────────────
+
+    def get_qb_customer_id(self, client_name: str) -> str | None:
+        """Return the cached QBO Customer Id for this client, or None."""
+        with _lock:
+            return _read_json(_QBO_CUSTOMER_IDS_FILE).get(client_name)
+
+    def set_qb_customer_id(self, client_name: str, qb_id: str) -> None:
+        """Persist the QBO Customer Id for this client so future lookups skip the search."""
+        with _lock:
+            ids = _read_json(_QBO_CUSTOMER_IDS_FILE)
+            ids[client_name] = qb_id
+            _write_json(_QBO_CUSTOMER_IDS_FILE, ids)
 
     # ─────────────────────────────────────────
     # PROVIDERS
