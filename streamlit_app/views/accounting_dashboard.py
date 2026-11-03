@@ -235,23 +235,35 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
         else:
             # ── Filter row ─────────────────────────────────────────────────
-            _client_opts = ["All"] + sorted(
+            _client_opts = sorted(
                 {ci.get("client_name", "") for ci in all_pipeline} - {""}
             )
             _fc1, _fc2, _fc3, _fc4 = st.columns([1.4, 1.2, 1.2, 2.2])
-            _f_client = _fc1.selectbox("Client", _client_opts, key="qb_f_client")
-            _f_from   = _fc2.date_input("From", value=None, key="qb_f_from")
-            _f_to     = _fc3.date_input("To",   value=None, key="qb_f_to")
-            _f_sort   = _fc4.selectbox("Sort", ["Date (newest first)", "Review first"], key="qb_f_sort")
+            _f_clients = _fc1.multiselect("Client", _client_opts, key="qb_f_client", placeholder="All clients")
+            _f_from    = _fc2.date_input("From", value=None, key="qb_f_from")
+            _f_to      = _fc3.date_input("To",   value=None, key="qb_f_to")
+            _f_sort    = _fc4.selectbox(
+                "Sort",
+                ["Date (newest first)", "Invoice # (oldest first)", "Review first"],
+                key="qb_f_sort",
+            )
 
             _filtered = all_pipeline
-            if _f_client != "All":
-                _filtered = [ci for ci in _filtered if ci.get("client_name") == _f_client]
+            if _f_clients:
+                _filtered = [ci for ci in _filtered if ci.get("client_name") in _f_clients]
             if _f_from:
                 _filtered = [ci for ci in _filtered if ci.get("invoice_date", "") >= str(_f_from)]
             if _f_to:
                 _filtered = [ci for ci in _filtered if ci.get("invoice_date", "") <= str(_f_to)]
-            if _f_sort == "Review first":
+            if _f_sort == "Invoice # (oldest first)":
+                def _inv_num_key(ci):
+                    val = ci.get("quickbooks_invoice_number", "")
+                    try:
+                        return int(val)
+                    except (ValueError, TypeError):
+                        return val
+                _filtered = sorted(_filtered, key=_inv_num_key)
+            elif _f_sort == "Review first":
                 _filtered = sorted(_filtered, key=lambda ci: 0 if ci["id"] in _review_ids else 1)
 
             if not all_pipeline:

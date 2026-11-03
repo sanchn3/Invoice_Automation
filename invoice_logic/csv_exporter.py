@@ -234,7 +234,10 @@ def generate_csv(
         if ci and ci.get("provider_invoice_id"):
             pi = dm.get_provider_invoice_by_id(ci["provider_invoice_id"])
             if pi and pi.get("email_intake_id"):
-                dm.update_email_log(pi["email_intake_id"], {"status": "exported_to_qb"})
+                try:
+                    dm.update_email_log(pi["email_intake_id"], {"status": "exported_to_qb"})
+                except KeyError:
+                    pass  # email log may be gone — skip
 
     # Record the export batch (includes CSV content for re-download even if file is lost)
     batch_id = str(uuid.uuid4())
