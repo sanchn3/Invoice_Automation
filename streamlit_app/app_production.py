@@ -67,6 +67,19 @@ def get_alert_manager() -> AlertManager:
     return AlertManager()
 
 
+# ── QBO Disconnect (no login required — Intuit App Center may redirect here) ──
+if st.query_params.get("qbo_disconnect") == "1":
+    st.query_params.clear()
+    try:
+        get_dm().set_qbo_tokens({})
+    except Exception:
+        pass
+    st.title("QuickBooks Disconnected")
+    st.success("INCO Invoice Automation has been disconnected from QuickBooks.")
+    st.link_button("Return to Staff Portal", "/")
+    st.stop()
+
+
 # ── Login form ────────────────────────────────────────────────────────────────
 
 if not auth.is_authenticated():
@@ -96,6 +109,29 @@ if not auth.is_authenticated():
 
 dm            = get_dm()
 alert_manager = get_alert_manager()
+
+# ── QBO Connect entry point (login required) ───────────────────────────────────
+if st.query_params.get("qbo_connect") == "1":
+    st.query_params.clear()
+    _cur_role = auth.current_role()
+    if _cur_role not in ("accounting", "admin"):
+        st.warning("QuickBooks connection is only available to accounting users.")
+        st.stop()
+    try:
+        from config import QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI
+        from integrations.qbo_auth import QBOAuth
+        if QBO_CLIENT_ID and QBO_CLIENT_SECRET:
+            _qauth = QBOAuth(QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI, dm)
+            _qurl  = _qauth.get_authorization_url()
+            st.title("Connect QuickBooks")
+            st.info("Click below to authorize INCO Invoice Automation with QuickBooks Online.")
+            st.link_button("Connect to QuickBooks", _qurl, type="primary")
+        else:
+            st.error("QuickBooks credentials are not configured on this server.")
+    except ImportError:
+        st.error("QuickBooks integration is unavailable.")
+    st.stop()
+
 
 role     = auth.current_role()
 username = st.session_state.get("_auth_username", "")

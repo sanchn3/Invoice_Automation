@@ -25,4 +25,12 @@ services:
         sync: false
       - key: SECRET_KEY
         sync: false
+      - key: QBO_CLIENT_ID
+        sync: false
+      - key: QBO_CLIENT_SECRET
+        sync: false
+      - key: QBO_REDIRECT_URI
+        sync: false
+      - key: QBO_ENVIRONMENT
+        sync: false
 
