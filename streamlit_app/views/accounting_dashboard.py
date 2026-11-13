@@ -9,7 +9,7 @@ import threading
 import streamlit as st
 import pandas as pd
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -17,7 +17,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from config import EXPORTS_DIR
+from config import (
+    EXPORTS_DIR,
+    QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI,
+    QBO_ENVIRONMENT, QBO_DEPOSIT_ACCOUNT_ID, QBO_DEPOSIT_ACCOUNT,
+)
 from data_manager import DataManager
 from alerting.alert_manager import AlertManager
 from invoice_logic.csv_exporter import generate_csv, build_csv_content
@@ -31,6 +35,26 @@ try:
     from streamlit_pdf_viewer import pdf_viewer
 except ImportError:
     pdf_viewer = None
+
+try:
+    from integrations.qbo_auth import QBOAuth, QBOAuthError
+    from integrations.qbo_client import QBOClient
+    from integrations.qbo_invoices import (
+        validate_for_qbo, find_by_doc_number,
+        create_invoice as _qbo_create_invoice,
+        get_open_invoices,
+    )
+    from integrations.qbo_payments import (
+        get_payment_methods,
+        create_payment as _qbo_create_payment,
+        delete_payment as _qbo_delete_payment,
+        get_invoice_balance,
+    )
+    from integrations.qbo_sync import sync_balances
+    from integrations.qbo_terms import get_term_ref
+    _QBO_AVAILABLE = True
+except ImportError:
+    _QBO_AVAILABLE = False
 
 
 def _build_eml(to_addr: str, subject: str, body: str, attachments: list[tuple[str, bytes]]) -> bytes:
@@ -142,6 +166,30 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         "📁 Processed Invoices",
     ])
 
+    # ── QBO auth + client (shared across all tabs) ────────────────────────────
+    _qbo_auth   = None
+    _qbo_client = None
+    _qbo_auth_error = None
+    if _QBO_AVAILABLE and QBO_CLIENT_ID:
+        _qbo_auth = QBOAuth(QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI, dm)
+        if _qbo_auth.is_connected():
+            try:
+                _qbo_auth.get_valid_token()   # validates / auto-refreshes
+                _qbo_client = QBOClient(
+                    _qbo_auth,
+                    sandbox=(QBO_ENVIRONMENT != "production"),
+                    dm=dm,
+                )
+            except QBOAuthError as _e:
+                _qbo_auth_error = str(_e)
+            except Exception as _e:
+                logger.warning("QBO client init failed: %s", _e)
+    if _qbo_auth_error:
+        st.warning(
+            f"⚠ QuickBooks connection lost: {_qbo_auth_error}  "
+            "Re-connect at [/?qbo_connect=1](/?qbo_connect=1)."
+        )
+
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 1 — EXPORT TO QUICKBOOKS  (Review + Export merged)
     # ──────────────────────────────────────────────────────────────────────────
@@ -231,28 +279,231 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 with _cancel_col:
                     if st.button("✗ Cancel", key="qb_cancel_preview", width="stretch"):
                         st.session_state.pop("qb_export_preview", None)
+                        st.session_state.pop("qb_qbo_state", None)
                         st.rerun()
+
+                # ── QBO API creation path ──────────────────────────────────────
+                if _qbo_client:
+                    st.markdown("---")
+                    _qbo_st   = st.session_state.get("qb_qbo_state") or {}
+                    _qbo_step = _qbo_st.get("step", "")
+                    _qbo_ids  = _qbo_st.get("ids", list(_preview["ids"]))
+
+                    if _qbo_step == "done":
+                        for _m in _qbo_st.get("messages", []):
+                            if _m.startswith("✅"):
+                                st.success(_m)
+                            else:
+                                st.error(_m)
+                        if st.button("OK", key="qb_qbo_done_ok"):
+                            st.session_state.pop("qb_qbo_state", None)
+                            st.rerun()
+
+                    elif _qbo_step == "pick":
+                        _pick_cname = _qbo_st["pick_client"]
+                        _pick_cands = _qbo_st["candidates"]
+                        _pick_rest  = _qbo_st.get("remaining", [])
+                        st.info(
+                            f"Multiple QuickBooks customers found for **{_pick_cname}**. "
+                            "Select the correct one:"
+                        )
+                        _pick_opts = {
+                            f"{c.get('DisplayName', '?')}  (Id: {c['Id']})": c["Id"]
+                            for c in _pick_cands
+                        }
+                        _sel = st.selectbox(
+                            "Customer", list(_pick_opts.keys()),
+                            key=f"qb_cust_pick_{_pick_cname}",
+                        )
+                        _pk1, _pk2 = st.columns(2)
+                        if _pk1.button(
+                            "Use this customer ▸", key="qb_pick_confirm",
+                            type="primary", width="stretch",
+                        ):
+                            dm.set_qb_customer_id(_pick_cname, _pick_opts[_sel])
+                            if _pick_rest:
+                                _nxt = _pick_rest[0]
+                                st.session_state["qb_qbo_state"] = {
+                                    **_qbo_st,
+                                    "step"       : "pick",
+                                    "pick_client": _nxt["client"],
+                                    "candidates" : _nxt["candidates"],
+                                    "remaining"  : _pick_rest[1:],
+                                }
+                            else:
+                                st.session_state["qb_qbo_state"] = {
+                                    **_qbo_st, "step": "ready",
+                                }
+                            st.rerun()
+                        if _pk2.button("✗ Cancel", key="qb_pick_cancel", width="stretch"):
+                            st.session_state.pop("qb_qbo_state", None)
+                            st.rerun()
+
+                    elif _qbo_step == "ready":
+                        st.success("✅ All customers resolved. Ready to create in QuickBooks.")
+                        _rc1, _rc2 = st.columns([3, 1])
+                        if _rc1.button(
+                            "✅ Confirm — Create in QuickBooks",
+                            key="qb_qbo_confirm", type="primary", width="stretch",
+                        ):
+                            _msgs: list[str] = []
+                            for _iid in _qbo_ids:
+                                _inv = dm.get_client_invoice_by_id(_iid)
+                                if not _inv:
+                                    continue
+                                _cn      = _inv.get("client_name", "")
+                                _cust_id = dm.get_qb_customer_id(_cn) or ""
+                                _doc     = _inv.get("quickbooks_invoice_number", "")
+                                try:
+                                    _errs = validate_for_qbo(_inv, dm)
+                                    if _errs:
+                                        _msgs.append(f"✗ QB #{_doc}: {_errs[0]}")
+                                        continue
+                                    _existing = find_by_doc_number(_qbo_client, _doc)
+                                    if _existing:
+                                        dm.update_client_invoice(_iid, {
+                                            "qbo_invoice_id"    : _existing["Id"],
+                                            "qbo_sync_token"    : _existing.get("SyncToken", "0"),
+                                            "quickbooks_exported": True,
+                                            "ready_to_email"    : True,
+                                        })
+                                        _msgs.append(
+                                            f"✅ QB #{_doc} already in QuickBooks — linked."
+                                        )
+                                    else:
+                                        _term = get_term_ref(
+                                            _qbo_client,
+                                            int(_inv.get("net_days", 30)),
+                                            dm,
+                                        )
+                                        _qinv = _qbo_create_invoice(
+                                            _qbo_client, _inv, _cust_id, _term, dm
+                                        )
+                                        dm.update_client_invoice(_iid, {
+                                            "qbo_invoice_id"    : _qinv["Id"],
+                                            "qbo_sync_token"    : _qinv.get("SyncToken", "0"),
+                                            "quickbooks_exported": True,
+                                            "ready_to_email"    : True,
+                                        })
+                                        _msgs.append(
+                                            f"✅ QB #{_doc} created in QuickBooks"
+                                            f" (Id: {_qinv['Id']})."
+                                        )
+                                        _ci_up = dm.get_client_invoice_by_id(_iid)
+                                        if _ci_up:
+                                            threading.Thread(
+                                                target=_sync_inv, args=(_ci_up,), daemon=True,
+                                            ).start()
+                                except QBOAuthError as _e:
+                                    _msgs.append(f"✗ QB #{_doc}: Auth error — {_e}")
+                                except Exception as _e:
+                                    _msgs.append(f"✗ QB #{_doc}: {_e}")
+                            st.session_state["qb_qbo_state"] = {
+                                "step": "done", "messages": _msgs,
+                            }
+                            st.session_state.pop("qb_export_preview", None)
+                            st.rerun()
+                        if _rc2.button("✗ Cancel", key="qb_qbo_cancel_ready", width="stretch"):
+                            st.session_state.pop("qb_qbo_state", None)
+                            st.rerun()
+
+                    else:
+                        # Initial: show Create button
+                        if st.button(
+                            "Create in QB & Move to Email ▸",
+                            key="qb_qbo_start", type="primary", width="stretch",
+                        ):
+                            _picks_needed: list[dict] = []
+                            _miss_clients: list[str]  = []
+                            _seen_clients: set[str]   = set()
+                            for _iid in _preview["ids"]:
+                                _inv = dm.get_client_invoice_by_id(_iid)
+                                if not _inv:
+                                    continue
+                                _cn = _inv.get("client_name", "")
+                                if _cn in _seen_clients:
+                                    continue
+                                _seen_clients.add(_cn)
+                                if dm.get_qb_customer_id(_cn):
+                                    continue  # already cached
+                                try:
+                                    _email  = dm.get_client_email(_cn)
+                                    _cands  = _qbo_client.find_customer_candidates(
+                                        _cn, _email
+                                    )
+                                    if len(_cands) == 1:
+                                        dm.set_qb_customer_id(_cn, _cands[0]["Id"])
+                                    elif len(_cands) > 1:
+                                        _picks_needed.append({
+                                            "client"    : _cn,
+                                            "candidates": _cands,
+                                        })
+                                    else:
+                                        _miss_clients.append(_cn)
+                                except QBOAuthError:
+                                    raise
+                                except Exception as _e:
+                                    _miss_clients.append(f"{_cn} ({_e})")
+                            if _miss_clients:
+                                st.session_state["qb_qbo_state"] = {
+                                    "step"    : "done",
+                                    "ids"     : list(_preview["ids"]),
+                                    "messages": [
+                                        f"✗ No QuickBooks customer found for: "
+                                        f"{', '.join(_miss_clients)}. "
+                                        "Add the customer in QuickBooks first."
+                                    ],
+                                }
+                            elif _picks_needed:
+                                st.session_state["qb_qbo_state"] = {
+                                    "step"       : "pick",
+                                    "ids"        : list(_preview["ids"]),
+                                    "pick_client": _picks_needed[0]["client"],
+                                    "candidates" : _picks_needed[0]["candidates"],
+                                    "remaining"  : _picks_needed[1:],
+                                }
+                            else:
+                                st.session_state["qb_qbo_state"] = {
+                                    "step": "ready",
+                                    "ids" : list(_preview["ids"]),
+                                }
+                            st.rerun()
+                        st.caption(
+                            "Creates invoices directly in QuickBooks via API, "
+                            "then moves them to Email."
+                        )
 
         else:
             # ── Filter row ─────────────────────────────────────────────────
-            _client_opts = ["All"] + sorted(
+            _client_names = sorted(
                 {ci.get("client_name", "") for ci in all_pipeline} - {""}
             )
             _fc1, _fc2, _fc3, _fc4 = st.columns([1.4, 1.2, 1.2, 2.2])
-            _f_client = _fc1.selectbox("Client", _client_opts, key="qb_f_client")
+            _f_clients = _fc1.multiselect(
+                "Client", _client_names, placeholder="All clients", key="qb_f_clients"
+            )
             _f_from   = _fc2.date_input("From", value=None, key="qb_f_from")
             _f_to     = _fc3.date_input("To",   value=None, key="qb_f_to")
-            _f_sort   = _fc4.selectbox("Sort", ["Date (newest first)", "Review first"], key="qb_f_sort")
+            _f_sort   = _fc4.selectbox(
+                "Sort",
+                ["Date (newest first)", "Review first", "Invoice # (oldest first)"],
+                key="qb_f_sort",
+            )
 
             _filtered = all_pipeline
-            if _f_client != "All":
-                _filtered = [ci for ci in _filtered if ci.get("client_name") == _f_client]
+            if _f_clients:
+                _filtered = [ci for ci in _filtered if ci.get("client_name") in _f_clients]
             if _f_from:
                 _filtered = [ci for ci in _filtered if ci.get("invoice_date", "") >= str(_f_from)]
             if _f_to:
                 _filtered = [ci for ci in _filtered if ci.get("invoice_date", "") <= str(_f_to)]
             if _f_sort == "Review first":
                 _filtered = sorted(_filtered, key=lambda ci: 0 if ci["id"] in _review_ids else 1)
+            elif _f_sort == "Invoice # (oldest first)":
+                _filtered = sorted(
+                    _filtered,
+                    key=lambda ci: ci.get("quickbooks_invoice_number") or "",
+                )
 
             if not all_pipeline:
                 st.info("No invoices awaiting review or export.")
@@ -737,6 +988,38 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                             f"Please do not hesitate to contact us if you have any questions.\n\n"
                             f"Best regards,\nINCO Group, Inc."
                         )
+                        # Append open-invoice statement from QBO if connected
+                        if _qbo_client:
+                            _qb_cust_id = dm.get_qb_customer_id(cname)
+                            if _qb_cust_id:
+                                try:
+                                    _open_invs = get_open_invoices(_qbo_client, _qb_cust_id)
+                                    if _open_invs:
+                                        _stmt_lines = "\n".join(
+                                            f"  • Invoice #{inv.get('DocNumber', '—')}"
+                                            f"  Due {inv.get('DueDate', '—')}"
+                                            f"  Balance: ${inv.get('Balance', 0):,.2f}"
+                                            + (
+                                                f"  ({inv.get('days_overdue', 0)}d overdue)"
+                                                if inv.get("days_overdue", 0) > 0 else ""
+                                            )
+                                            for inv in _open_invs
+                                        )
+                                        _total_open = sum(
+                                            inv.get("Balance", 0) for inv in _open_invs
+                                        )
+                                        default_body += (
+                                            f"\n\n---\n"
+                                            f"Statement of Account — Open Invoices:\n"
+                                            f"{_stmt_lines}\n\n"
+                                            f"Total Balance Due: ${_total_open:,.2f}"
+                                        )
+                                except QBOAuthError:
+                                    pass
+                                except Exception as _qe:
+                                    logger.warning(
+                                        "Could not fetch open invoices for email: %s", _qe
+                                    )
                         st.text_input(
                             "To",
                             value=client_email or "",
@@ -809,9 +1092,33 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
     with tab_processed:
         st.subheader("Processed Invoices")
 
+        # QBO balance sync (throttled to once per 3 min; force via button)
+        if _qbo_client:
+            _ref_col, _ = st.columns([1, 5])
+            if _ref_col.button("🔄 Refresh from QB", key="proc_qbo_refresh"):
+                try:
+                    if hasattr(sync_balances, "_last_sync_ts"):
+                        del sync_balances._last_sync_ts
+                    _n_qbo = sync_balances(dm, _qbo_client, max_age_seconds=0)
+                    if _n_qbo:
+                        st.success(f"Updated {_n_qbo} balance(s) from QuickBooks.")
+                except QBOAuthError as _e:
+                    st.error(f"QuickBooks auth error: {_e}")
+                except Exception as _e:
+                    st.error(f"Refresh failed: {_e}")
+            else:
+                try:
+                    _n_auto = sync_balances(dm, _qbo_client, max_age_seconds=180)
+                    if _n_auto:
+                        st.rerun()
+                except Exception:
+                    pass
+
+        # Re-fetch after potential sync update
+        _proc_src = dm.get_client_invoices()
         processed = sorted(
             [
-                ci for ci in client_invoices
+                ci for ci in _proc_src
                 if (
                     ci.get("ready_for_export")
                     or ci.get("ready_to_email")
@@ -904,10 +1211,179 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                     c6.write("❌")
                 c7.write("✅" if emailed  else "❌")
 
-                if c8.button("Mark Paid", key=f"paid_{cid}", width="stretch"):
-                    dm.update_client_invoice(cid, {"paid": True})
-                    try:
-                        patch_invoice_paid(cid)
-                    except Exception as _e:
-                        st.warning(f"Local record updated, but Supabase sync failed: {_e}")
-                    st.rerun()
+                _has_qbo_pmt  = bool(ci.get("qbo_invoice_id")) and (_qbo_client is not None)
+                _pay_form_key = f"pay_form_{cid}"
+                _qbal         = ci.get("qbo_balance")
+                _part_paid    = float(ci.get("paid_partial_amount") or 0)
+
+                if _has_qbo_pmt:
+                    _btn_lbl = "💰 Payment"
+                    if _qbal is not None and _qbal > 0:
+                        _btn_lbl += f" (${_qbal:,.2f})"
+                    elif _part_paid:
+                        _btn_lbl += f" (${_part_paid:,.2f} paid)"
+                    if c8.button(_btn_lbl, key=f"paid_{cid}", width="stretch"):
+                        st.session_state[_pay_form_key] = not st.session_state.get(
+                            _pay_form_key, False
+                        )
+                        st.rerun()
+                else:
+                    if c8.button("Mark Paid", key=f"paid_{cid}", width="stretch"):
+                        dm.update_client_invoice(cid, {"paid": True})
+                        try:
+                            patch_invoice_paid(cid)
+                        except Exception as _e:
+                            st.warning(
+                                f"Local record updated, but Supabase sync failed: {_e}"
+                            )
+                        st.rerun()
+
+                if _has_qbo_pmt and st.session_state.get(_pay_form_key):
+                    with st.container(border=True):
+                        st.markdown("**Record Payment in QuickBooks**")
+                        _pf1, _pf2 = st.columns(2)
+                        _default_amt = (
+                            float(_qbal) if (_qbal is not None and _qbal > 0)
+                            else float(ci.get("total", 0))
+                        )
+                        _pay_date = _pf1.date_input(
+                            "Payment Date", value=date.today(), key=f"pay_date_{cid}"
+                        )
+                        _pay_amt = _pf2.number_input(
+                            "Amount ($)",
+                            value=round(_default_amt, 2),
+                            min_value=0.01,
+                            step=0.01,
+                            key=f"pay_amt_{cid}",
+                        )
+                        _pf3, _pf4 = st.columns(2)
+                        try:
+                            _pay_methods = get_payment_methods(_qbo_client, dm)
+                        except Exception:
+                            _pay_methods = []
+                        _method_ref = None
+                        if _pay_methods:
+                            _meth_opts = {m["name"]: m["value"] for m in _pay_methods}
+                            _msel = _pf3.selectbox(
+                                "Payment Method",
+                                list(_meth_opts.keys()),
+                                key=f"pay_method_{cid}",
+                            )
+                            _method_ref = {"value": _meth_opts[_msel], "name": _msel}
+                        else:
+                            _pf3.caption("No payment methods")
+                        _pay_ref = _pf4.text_input(
+                            "Check # / Reference", key=f"pay_ref_{cid}"
+                        )
+
+                        _pb1, _pb2 = st.columns(2)
+                        if _pb1.button(
+                            "💰 Record Payment",
+                            key=f"pay_submit_{cid}",
+                            type="primary",
+                            width="stretch",
+                        ):
+                            _qb_cust_id = dm.get_qb_customer_id(ci.get("client_name", ""))
+                            if not _qb_cust_id:
+                                st.error(
+                                    "No QuickBooks customer ID on file. "
+                                    "Export this invoice via the QB API path first."
+                                )
+                            else:
+                                try:
+                                    _dep_ref = _qbo_client.get_deposit_account_ref(
+                                        QBO_DEPOSIT_ACCOUNT_ID, QBO_DEPOSIT_ACCOUNT
+                                    )
+                                    _pmt = _qbo_create_payment(
+                                        _qbo_client,
+                                        qbo_invoice_id=ci["qbo_invoice_id"],
+                                        customer_id   =_qb_cust_id,
+                                        amount        =float(_pay_amt),
+                                        txn_date      =_pay_date.isoformat(),
+                                        method_ref    =_method_ref,
+                                        payment_ref   =_pay_ref,
+                                        deposit_ref   =_dep_ref,
+                                    )
+                                    _new_bal = get_invoice_balance(
+                                        _qbo_client, ci["qbo_invoice_id"]
+                                    )
+                                    _is_fully_paid = _new_bal <= 0
+                                    dm.update_client_invoice(cid, {
+                                        "qbo_payment_id"     : _pmt["Id"],
+                                        "qbo_sync_token"     : _pmt.get("SyncToken", "0"),
+                                        "payment_date"       : _pay_date.isoformat(),
+                                        "payment_method"     : (_method_ref or {}).get("name", ""),
+                                        "payment_ref"        : _pay_ref,
+                                        "qbo_balance"        : _new_bal,
+                                        "paid_partial_amount": float(_pay_amt),
+                                        "paid"               : _is_fully_paid,
+                                    })
+                                    try:
+                                        patch_invoice_paid(cid, extra_fields={
+                                            "qbo_payment_id"     : _pmt["Id"],
+                                            "payment_date"       : _pay_date.isoformat(),
+                                            "payment_method"     : (_method_ref or {}).get("name", ""),
+                                            "payment_ref"        : _pay_ref,
+                                            "qbo_balance"        : _new_bal,
+                                            "paid_partial_amount": float(_pay_amt),
+                                        })
+                                    except Exception as _se:
+                                        st.warning(
+                                            f"Payment recorded, but Supabase sync failed: {_se}"
+                                        )
+                                    st.session_state.pop(_pay_form_key, None)
+                                    st.rerun()
+                                except QBOAuthError as _e:
+                                    st.error(f"QuickBooks auth error: {_e}")
+                                except Exception as _e:
+                                    st.error(f"Payment failed: {_e}")
+
+                        if _pb2.button("✗ Cancel", key=f"pay_cancel_{cid}", width="stretch"):
+                            st.session_state.pop(_pay_form_key, None)
+                            st.rerun()
+
+                        # Undo: only if this app created the QBO payment
+                        if ci.get("qbo_payment_id"):
+                            st.markdown("---")
+                            _undo_key = f"pay_undo_conf_{cid}"
+                            if st.session_state.get(_undo_key):
+                                st.warning("Void this payment in QuickBooks?")
+                                _u1, _u2 = st.columns(2)
+                                if _u1.button(
+                                    "✅ Yes, void",
+                                    key=f"pay_undo_yes_{cid}",
+                                    type="primary",
+                                    width="stretch",
+                                ):
+                                    try:
+                                        _qbo_delete_payment(
+                                            _qbo_client,
+                                            ci["qbo_payment_id"],
+                                            ci.get("qbo_sync_token", "0"),
+                                        )
+                                        dm.update_client_invoice(cid, {
+                                            "qbo_payment_id"     : None,
+                                            "paid"               : False,
+                                            "qbo_balance"        : None,
+                                            "paid_partial_amount": 0,
+                                            "payment_date"       : "",
+                                            "payment_method"     : "",
+                                            "payment_ref"        : "",
+                                        })
+                                        st.session_state.pop(_undo_key, None)
+                                        st.session_state.pop(_pay_form_key, None)
+                                        st.rerun()
+                                    except Exception as _e:
+                                        st.error(f"Undo failed: {_e}")
+                                if _u2.button(
+                                    "✗ Cancel", key=f"pay_undo_no_{cid}", width="stretch"
+                                ):
+                                    st.session_state.pop(_undo_key, None)
+                                    st.rerun()
+                            else:
+                                if _colored_button(
+                                    st, "↩ Undo Payment in QB",
+                                    f"pay_undo_{cid}", "#dc3545",
+                                ):
+                                    st.session_state[_undo_key] = True
+                                    st.rerun()

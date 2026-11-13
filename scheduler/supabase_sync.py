@@ -319,12 +319,20 @@ def sync_invoices_to_supabase(dm: DataManager) -> int:
     return total_upserted
 
 
-def patch_invoice_paid(local_id: str) -> None:
+def patch_invoice_paid(local_id: str, extra_fields: dict | None = None) -> None:
     _fix_dns()
-    """Immediately mark a single invoice as paid in cold_storage_invoices."""
+    """
+    Mark a single invoice as paid in Supabase.
+
+    extra_fields may include QBO payment fields:
+        qbo_payment_id, payment_date, payment_method, payment_ref,
+        qbo_balance, paid_partial_amount
+    """
     endpoint = f"{_base_url()}/rest/v1/{_TABLE}?local_id=eq.{local_id}"
     now_iso  = datetime.utcnow().isoformat() + "Z"
     payload  = {"paid": True, "updated_at": now_iso}
+    if extra_fields:
+        payload.update(extra_fields)
     with httpx.Client(timeout=15) as client:
         resp = client.patch(
             endpoint,
