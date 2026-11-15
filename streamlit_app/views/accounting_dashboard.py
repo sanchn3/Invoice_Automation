@@ -191,7 +191,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
         if _qbo_auth:
             st.link_button(
                 "Reconnect to QuickBooks",
-                _qbo_auth.get_authorization_url(),
+                _qbo_auth.get_authorization_url(extra_state=st.query_params.get("s", "")),
                 type="primary",
             )
     elif _qbo_auth and not _qbo_client:
@@ -200,7 +200,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             st.info("QuickBooks is not connected.")
             st.link_button(
                 "Connect to QuickBooks",
-                _qbo_auth.get_authorization_url(),
+                _qbo_auth.get_authorization_url(extra_state=st.query_params.get("s", "")),
                 type="primary",
             )
 

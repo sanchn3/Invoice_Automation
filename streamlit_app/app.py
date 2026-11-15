@@ -127,9 +127,12 @@ if st.query_params.get("qbo_disconnect") == "1":
 
 
 # ── QBO OAuth callback (no login required — Intuit redirects here with code) ──
-if st.query_params.get("state") == "qbo_connect" and st.query_params.get("code"):
+_cb_raw_state = st.query_params.get("state", "")
+if _cb_raw_state.startswith("qbo_connect") and st.query_params.get("code"):
     _qbo_code     = st.query_params.get("code")
     _qbo_realm_id = st.query_params.get("realmId", "")
+    # state may be "qbo_connect" or "qbo_connect~SESSION_TOKEN"
+    _qbo_ret_tok  = _cb_raw_state.split("~", 1)[1] if "~" in _cb_raw_state else ""
     try:
         from config import QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI
         from integrations.qbo_auth import QBOAuth
@@ -137,7 +140,8 @@ if st.query_params.get("state") == "qbo_connect" and st.query_params.get("code")
         _cb_auth.exchange_code(_qbo_code, _qbo_realm_id)
         st.title("QuickBooks Connected ✅")
         st.success("INCO Invoice Automation is now connected to QuickBooks Online.")
-        st.link_button("Go to Staff Portal", "https://incogrp.com/staff-login", type="primary")
+        _ret_url = f"/?s={_qbo_ret_tok}" if _qbo_ret_tok else "https://incogrp.com/staff-login"
+        st.link_button("Go to Accounting Dashboard", _ret_url, type="primary")
     except Exception as _cb_e:
         st.title("QuickBooks Connection Failed")
         st.error(f"Could not connect to QuickBooks: {_cb_e}")

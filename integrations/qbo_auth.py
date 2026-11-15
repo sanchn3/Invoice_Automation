@@ -57,14 +57,15 @@ class QBOAuth:
 
     # ── Public interface ──────────────────────────────────────────────────────
 
-    def get_authorization_url(self) -> str:
+    def get_authorization_url(self, extra_state: str = "") -> str:
         """Return the Intuit OAuth page URL to open in the browser."""
+        state = f"qbo_connect~{extra_state}" if extra_state else "qbo_connect"
         params = {
             "client_id"    : self._id,
             "scope"        : _SCOPE,
             "redirect_uri" : self._uri,
             "response_type": "code",
-            "state"        : "qbo_connect",
+            "state"        : state,
         }
         return f"{_AUTH_ENDPOINT}?{urllib.parse.urlencode(params)}"
 
