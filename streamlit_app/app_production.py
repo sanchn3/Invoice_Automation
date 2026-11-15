@@ -81,6 +81,7 @@ if st.query_params.get("qbo_disconnect") == "1":
 
 
 # ── QBO OAuth callback (no login required — Intuit redirects here with code) ──
+print(f"[QBO_CB] query_params={dict(st.query_params)}", flush=True)
 if st.query_params.get("state") == "qbo_connect" and st.query_params.get("code"):
     _qbo_code     = st.query_params.get("code")
     _qbo_realm_id = st.query_params.get("realmId", "")
