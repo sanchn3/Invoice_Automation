@@ -732,6 +732,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                         st.rerun()
                                     if rfe_clicked:
                                         dm.update_client_invoice(_cid, {"ready_for_export": True})
+                                        st.session_state[f"acc_exp_{_cid}"] = True  # auto-select for export
                                         _ci_updated = dm.get_client_invoice_by_id(_cid)
                                         if _ci_updated:
                                             threading.Thread(target=_sync_inv, args=(_ci_updated,), daemon=True).start()
