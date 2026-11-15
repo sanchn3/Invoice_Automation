@@ -797,6 +797,7 @@ class DataManager:
             invoices = [inv for inv in invoices if inv.get("id") != id]
             _write_json(_CLIENT_INVOICES_FILE, invoices)
         _fire_and_forget(_sb_delete_record, _SB_CI_TABLE, id)
+        _fire_and_forget(_sb_delete_record, "cold_storage_invoices", id)
 
     def get_client_invoice_by_provider_invoice_id(self, provider_invoice_id: str) -> dict | None:
         for inv in self.get_client_invoices():

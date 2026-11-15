@@ -1176,13 +1176,13 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
             st.caption(f"{len(filtered)} of {len(processed)} invoice(s)")
 
-            h1, h2, h3, h4, h5, h6 = st.columns([1.2, 1.8, 1, 1, 1.2, 1.2])
+            h1, h2, h3, h4, h5, h6, h7 = st.columns([1.2, 1.8, 1, 1, 1.2, 1.2, 0.4])
             h1.markdown("**Invoice #**")
             h2.markdown("**Client**")
             h3.markdown("**Date**")
             h4.markdown("**Due Date**")
             h5.markdown("**PDF**")
-            h6.markdown("**IIF**")
+            h6.markdown("**Export**")
             st.divider()
 
             for ci in filtered:
@@ -1209,7 +1209,7 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 )
                 exported = bool(ci.get("quickbooks_exported"))
 
-                c1, c2, c3, c4, c5, c6 = st.columns([1.2, 1.8, 1, 1, 1.2, 1.2])
+                c1, c2, c3, c4, c5, c6, c7 = st.columns([1.2, 1.8, 1, 1, 1.2, 1.2, 0.4])
                 c1.write(f"QB #{qb}")
                 c2.write(ci.get("client_name", "—"))
                 c3.write(ci.get("invoice_date", "—"))
@@ -1253,6 +1253,30 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         c6.caption("⚠ unmapped")
                 else:
                     c6.write("—")
+
+                _del_key = f"lead_del_conf_{cid}"
+                if c7.button("🗑", key=f"lead_del_{cid}", help="Delete invoice"):
+                    st.session_state[_del_key] = True
+                    st.rerun()
+
+                if st.session_state.get(_del_key):
+                    _qbo_warn = ci.get("qbo_invoice_id")
+                    st.warning(
+                        f"Delete **QB #{qb}** ({ci.get('client_name', '')}) permanently? "
+                        "This removes it from local storage and Supabase."
+                        + (" ⚠ This invoice exists in QuickBooks — delete it there manually." if _qbo_warn else "")
+                    )
+                    _dc1, _dc2 = st.columns(2)
+                    if _dc1.button("✅ Yes, delete", key=f"lead_del_yes_{cid}", type="primary", width="stretch"):
+                        _prov_id = ci.get("provider_invoice_id", "")
+                        if _prov_id:
+                            dm.delete_provider_invoice(_prov_id)
+                        dm.delete_client_invoice(cid)
+                        st.session_state.pop(_del_key, None)
+                        st.rerun()
+                    if _dc2.button("✗ Cancel", key=f"lead_del_no_{cid}", width="stretch"):
+                        st.session_state.pop(_del_key, None)
+                        st.rerun()
 
                 # ── Lifecycle tracker ─────────────────────────────────────────
                 st.markdown(_lifecycle_html(ci), unsafe_allow_html=True)
