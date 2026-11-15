@@ -113,6 +113,19 @@ def _verify_sso_token(token: str) -> dict | None:
         return None
 
 
+def _verify_oauth_return_token(token: str) -> dict | None:
+    """Verify the signed return token embedded in the QBO OAuth state (10 min window)."""
+    from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+    _secret = os.environ.get("SECRET_KEY", "")
+    if not _secret:
+        return None
+    try:
+        data = URLSafeTimedSerializer(_secret).loads(token, max_age=600)
+        return data if isinstance(data, dict) and data.get("role") else None
+    except (BadSignature, SignatureExpired):
+        return None
+
+
 # ── QBO Disconnect (no login required — Intuit App Center may redirect here) ──
 if st.query_params.get("qbo_disconnect") == "1":
     st.query_params.clear()
@@ -131,8 +144,18 @@ _cb_raw_state = st.query_params.get("state", "")
 if _cb_raw_state.startswith("qbo_connect") and st.query_params.get("code"):
     _qbo_code     = st.query_params.get("code")
     _qbo_realm_id = st.query_params.get("realmId", "")
-    # state may be "qbo_connect" or "qbo_connect~SESSION_TOKEN"
-    _qbo_ret_tok  = _cb_raw_state.split("~", 1)[1] if "~" in _cb_raw_state else ""
+    # state is "qbo_connect" or "qbo_connect~SIGNED_USER_DATA"
+    _qbo_ret_signed = _cb_raw_state.split("~", 1)[1] if "~" in _cb_raw_state else ""
+    # Build return URL — verify signed token and create a fresh session
+    _ret_url = "https://incogrp.com/staff-login"
+    if _qbo_ret_signed:
+        _ret_data = _verify_oauth_return_token(_qbo_ret_signed)
+        if _ret_data:
+            _ROLE_MAP = {"administrator": "admin"}
+            _r = _ROLE_MAP.get(_ret_data["role"], _ret_data["role"])
+            _u = _ret_data.get("username", _r)
+            _new_tok = _create_session(_r, _u)
+            _ret_url = f"/?s={_new_tok}"
     try:
         from config import QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI
         from integrations.qbo_auth import QBOAuth
@@ -140,8 +163,8 @@ if _cb_raw_state.startswith("qbo_connect") and st.query_params.get("code"):
         _cb_auth.exchange_code(_qbo_code, _qbo_realm_id)
         st.title("QuickBooks Connected ✅")
         st.success("INCO Invoice Automation is now connected to QuickBooks Online.")
-        _ret_url = f"/?s={_qbo_ret_tok}" if _qbo_ret_tok else "https://incogrp.com/staff-login"
-        st.link_button("Go to Accounting Dashboard", _ret_url, type="primary")
+        st.html(f'<script>window.top.location.replace("{_ret_url}");</script>')
+        st.markdown(f'Redirecting… <a href="{_ret_url}" target="_top">click here if not redirected</a>', unsafe_allow_html=True)
     except Exception as _cb_e:
         st.title("QuickBooks Connection Failed")
         st.error(f"Could not connect to QuickBooks: {_cb_e}")

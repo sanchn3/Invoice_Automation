@@ -186,12 +186,29 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 _qbo_auth_error = str(_e)
             except Exception as _e:
                 logger.warning("QBO client init failed: %s", _e)
+
+    # Build a signed return token so the OAuth callback can restore the session
+    # even if the server restarted between login and callback.
+    _qbo_return_state = st.query_params.get("s", "")
+    try:
+        import os as _os
+        from streamlit_app import auth as _auth
+        from itsdangerous import URLSafeTimedSerializer as _USTS
+        _secret = _os.environ.get("SECRET_KEY", "")
+        if _secret and _auth.current_role():
+            _qbo_return_state = _USTS(_secret).dumps({
+                "role"    : _auth.current_role(),
+                "username": st.session_state.get("_auth_username", ""),
+            })
+    except Exception:
+        pass  # fall back to raw session UUID
+
     if _qbo_auth_error:
         st.warning(f"⚠ QuickBooks connection lost: {_qbo_auth_error}")
         if _qbo_auth:
             st.link_button(
                 "Reconnect to QuickBooks",
-                _qbo_auth.get_authorization_url(extra_state=st.query_params.get("s", "")),
+                _qbo_auth.get_authorization_url(extra_state=_qbo_return_state),
                 type="primary",
             )
     elif _qbo_auth and not _qbo_client:
@@ -200,9 +217,11 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             st.info("QuickBooks is not connected.")
             st.link_button(
                 "Connect to QuickBooks",
-                _qbo_auth.get_authorization_url(extra_state=st.query_params.get("s", "")),
+                _qbo_auth.get_authorization_url(extra_state=_qbo_return_state),
                 type="primary",
             )
+    elif _qbo_client:
+        st.success("✅ Connected to QuickBooks Online")
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 1 — EXPORT TO QUICKBOOKS  (Review + Export merged)
