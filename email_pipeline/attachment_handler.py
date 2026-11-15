@@ -8,7 +8,6 @@ import logging
 from datetime import datetime
 
 from data_manager import DataManager
-from parsing.pdf_parser import parse_pdf
 from alerting.alert_manager import AlertManager
 
 logger = logging.getLogger(__name__)
@@ -41,10 +40,7 @@ def _run_parsing_pipeline(
         provider_profile = provider.get("parser_profile")
         provider_name    = provider.get("name", sender_domain)
 
-    parsed = parse_pdf(pdf_path, provider_profile, dm)
-    if parsed is None:
-        logger.info("pdfplumber parse returned no data for %s — proceeding with empty fields", pdf_path)
-        parsed = {}
+    parsed = {}
 
     if parsed.get("provider_name"):
         provider_name = parsed["provider_name"]

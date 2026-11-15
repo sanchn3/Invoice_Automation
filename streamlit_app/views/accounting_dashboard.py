@@ -4,8 +4,10 @@ accounting_dashboard.py
 Accounting dashboard: Invoice Review, Import to QuickBooks, and Email Clients.
 """
 
+import io
 import logging
 import threading
+import zipfile
 import streamlit as st
 import pandas as pd
 from collections import defaultdict
@@ -931,11 +933,32 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                 client_email = dm.get_client_email(cname)
 
                 with st.container(border=True):
-                    st.markdown(f"**{cname}** — {len(invoices)} invoice(s)")
+                    _hdr_l, _hdr_r = st.columns([3, 1])
+                    _hdr_l.markdown(f"**{cname}** — {len(invoices)} invoice(s)")
                     if client_email:
-                        st.caption(f"📧 {client_email}")
+                        _hdr_l.caption(f"📧 {client_email}")
                     else:
-                        st.caption("⚠️ No email on file — add one in Lead → Rate Card")
+                        _hdr_l.caption("⚠️ No email on file — add one in Lead → Rate Card")
+
+                    # Zip all PDFs for this client into one download
+                    with _hdr_r:
+                        _zip_buf = io.BytesIO()
+                        with zipfile.ZipFile(_zip_buf, "w", zipfile.ZIP_DEFLATED) as _zf:
+                            for _ci_z in invoices:
+                                _qb_z = _ci_z.get("quickbooks_invoice_number", "invoice")
+                                _pe_z = prov_by_id.get(_ci_z.get("provider_invoice_id", ""), {})
+                                _stored_z = _cached_stored_invoice_pdf(f"{_qb_z}-invoice.pdf")
+                                _zf.writestr(
+                                    f"{_qb_z}-invoice.pdf",
+                                    _stored_z if _stored_z else _cached_pdf(*_pdf_args(_ci_z, _pe_z)),
+                                )
+                        st.download_button(
+                            "⬇ All PDFs",
+                            data     =_zip_buf.getvalue(),
+                            file_name=f"{cname}_invoices.zip",
+                            mime     ="application/zip",
+                            key      =f"dl_all_pdfs_{cname}",
+                        )
 
                     # Invoice rows
                     for ci in invoices:
@@ -945,10 +968,11 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                         ic1.write(f"QB #{qb}")
                         ic2.write(ci.get("invoice_date", "—"))
                         ic3.write(f"${ci.get('total', 0):,.2f}")
+                        _stored_e = _cached_stored_invoice_pdf(f"{qb}-invoice.pdf")
                         ic4.download_button(
                             "⬇ PDF",
-                            _cached_pdf(*_pdf_args(ci, prov_e)),
-                            f"{qb}-{datetime.now().strftime('%y')}.pdf",
+                            _stored_e if _stored_e else _cached_pdf(*_pdf_args(ci, prov_e)),
+                            f"{qb}-invoice.pdf",
                             mime="application/pdf",
                             key=f"acc_emaildl_{ci['id']}",
                         )
