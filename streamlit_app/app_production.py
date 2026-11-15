@@ -80,6 +80,42 @@ if st.query_params.get("qbo_disconnect") == "1":
     st.stop()
 
 
+# ── QBO OAuth callback (no login required — Intuit redirects here with code) ──
+if st.query_params.get("state") == "qbo_connect" and st.query_params.get("code"):
+    _qbo_code     = st.query_params.get("code")
+    _qbo_realm_id = st.query_params.get("realmId", "")
+    st.query_params.clear()
+    try:
+        from config import QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI
+        from integrations.qbo_auth import QBOAuth
+        _cb_auth = QBOAuth(QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI, get_dm())
+        _cb_auth.exchange_code(_qbo_code, _qbo_realm_id)
+        st.title("QuickBooks Connected ✅")
+        st.success("INCO Invoice Automation is now connected to QuickBooks Online.")
+        st.link_button("Go to Accounting Dashboard", "/", type="primary")
+    except Exception as _cb_e:
+        st.error(f"QuickBooks connection failed: {_cb_e}")
+    st.stop()
+
+
+# ── QBO Connect (no login required — link button to Intuit auth page) ─────────
+if st.query_params.get("qbo_connect") == "1":
+    st.query_params.clear()
+    try:
+        from config import QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI
+        from integrations.qbo_auth import QBOAuth
+        if QBO_CLIENT_ID and QBO_CLIENT_SECRET:
+            _qauth = QBOAuth(QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI, get_dm())
+            st.title("Connect QuickBooks")
+            st.info("Click below to authorize INCO Invoice Automation with QuickBooks Online.")
+            st.link_button("Connect to QuickBooks", _qauth.get_authorization_url(), type="primary")
+        else:
+            st.error("QuickBooks credentials are not configured on this server.")
+    except ImportError:
+        st.error("QuickBooks integration is unavailable.")
+    st.stop()
+
+
 # ── Login form ────────────────────────────────────────────────────────────────
 
 if not auth.is_authenticated():
@@ -109,29 +145,6 @@ if not auth.is_authenticated():
 
 dm            = get_dm()
 alert_manager = get_alert_manager()
-
-# ── QBO Connect entry point (login required) ───────────────────────────────────
-if st.query_params.get("qbo_connect") == "1":
-    st.query_params.clear()
-    _cur_role = auth.current_role()
-    if _cur_role not in ("accounting", "admin"):
-        st.warning("QuickBooks connection is only available to accounting users.")
-        st.stop()
-    try:
-        from config import QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI
-        from integrations.qbo_auth import QBOAuth
-        if QBO_CLIENT_ID and QBO_CLIENT_SECRET:
-            _qauth = QBOAuth(QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI, dm)
-            _qurl  = _qauth.get_authorization_url()
-            st.title("Connect QuickBooks")
-            st.info("Click below to authorize INCO Invoice Automation with QuickBooks Online.")
-            st.link_button("Connect to QuickBooks", _qurl, type="primary")
-        else:
-            st.error("QuickBooks credentials are not configured on this server.")
-    except ImportError:
-        st.error("QuickBooks integration is unavailable.")
-    st.stop()
-
 
 role     = auth.current_role()
 username = st.session_state.get("_auth_username", "")

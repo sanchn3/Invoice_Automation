@@ -187,10 +187,22 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
             except Exception as _e:
                 logger.warning("QBO client init failed: %s", _e)
     if _qbo_auth_error:
-        st.warning(
-            f"⚠ QuickBooks connection lost: {_qbo_auth_error}  "
-            "Re-connect at [/?qbo_connect=1](/?qbo_connect=1)."
-        )
+        st.warning(f"⚠ QuickBooks connection lost: {_qbo_auth_error}")
+        if _qbo_auth:
+            st.link_button(
+                "Reconnect to QuickBooks",
+                _qbo_auth.get_authorization_url(),
+                type="primary",
+            )
+    elif _qbo_auth and not _qbo_client:
+        # Connected never or credentials missing — show connect button
+        if QBO_CLIENT_ID:
+            st.info("QuickBooks is not connected.")
+            st.link_button(
+                "Connect to QuickBooks",
+                _qbo_auth.get_authorization_url(),
+                type="primary",
+            )
 
     # ──────────────────────────────────────────────────────────────────────────
     # TAB 1 — EXPORT TO QUICKBOOKS  (Review + Export merged)
