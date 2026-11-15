@@ -137,7 +137,7 @@ if st.query_params.get("state") == "qbo_connect" and st.query_params.get("code")
         _cb_auth.exchange_code(_qbo_code, _qbo_realm_id)
         st.title("QuickBooks Connected ✅")
         st.success("INCO Invoice Automation is now connected to QuickBooks Online.")
-        st.link_button("Go to Accounting Dashboard", "/", type="primary")
+        st.link_button("Go to Staff Portal", "https://incogrp.com/staff-login", type="primary")
     except Exception as _cb_e:
         st.title("QuickBooks Connection Failed")
         st.error(f"Could not connect to QuickBooks: {_cb_e}")
