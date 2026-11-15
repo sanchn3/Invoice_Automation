@@ -820,10 +820,15 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
                                     for _li in _i.get("line_items", [])
                                     if float(_li.get("unit_price", 0)) == 0.0
                                 ]
+                                _qb_nums_str = "-".join(
+                                    i.get("quickbooks_invoice_number", "")
+                                    for i in _enriched_prev
+                                    if i.get("quickbooks_invoice_number")
+                                ) or "inv"
                                 st.session_state["qb_export_preview"] = {
                                     "ids"      : _selected_ids,
                                     "content"  : _content,
-                                    "filename" : f"QB_export_{_ts_prev}_{len(_selected_ids)}inv.csv",
+                                    "filename" : f"QB_export_{_qb_nums_str}_{_ts_prev}.csv",
                                     "timestamp": _ts_prev,
                                     "warnings" : _warnings,
                                 }
