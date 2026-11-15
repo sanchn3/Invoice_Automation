@@ -65,8 +65,12 @@ def get_dm() -> DataManager:
 def get_alert_manager() -> AlertManager:
     return AlertManager()
 
-# ── Server-side session store (survives page refreshes via URL token) ─────────
-# Token lives in ?s=TOKEN in the URL, which persists across browser refreshes.
+# ── Session helpers — signed tokens that survive server restarts ───────────────
+# Token lives in ?s=TOKEN in the URL.
+# When SECRET_KEY is set (production) the token is a signed payload containing
+# role + username, so it remains valid across Render deploys/restarts.
+# Falls back to an in-memory UUID store for local dev (no SECRET_KEY).
+
 @st.cache_resource
 def _session_store() -> dict:
     return {}
@@ -76,6 +80,11 @@ _IS_PRODUCTION = os.environ.get("RENDER") == "true"
 
 
 def _create_session(role: str, username: str) -> str:
+    from itsdangerous import URLSafeTimedSerializer
+    secret = os.environ.get("SECRET_KEY", "")
+    if secret:
+        return URLSafeTimedSerializer(secret).dumps({"role": role, "username": username})
+    # Local dev fallback — in-memory UUID
     token = str(uuid.uuid4())
     _session_store()[token] = {
         "role"    : role,
@@ -86,6 +95,18 @@ def _create_session(role: str, username: str) -> str:
 
 
 def _get_session(token: str) -> dict | None:
+    from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+    secret = os.environ.get("SECRET_KEY", "")
+    if secret:
+        try:
+            data = URLSafeTimedSerializer(secret).loads(
+                token, max_age=_SESSION_TTL_HOURS * 3600
+            )
+            if isinstance(data, dict) and data.get("role"):
+                return data
+        except (BadSignature, SignatureExpired):
+            pass
+    # Local dev / legacy UUID token fallback
     store = _session_store()
     sess  = store.get(token)
     if not sess:
@@ -97,7 +118,7 @@ def _get_session(token: str) -> dict | None:
 
 
 def _delete_session(token: str) -> None:
-    _session_store().pop(token, None)
+    _session_store().pop(token, None)  # no-op for signed tokens; clears UUID tokens
 
 
 def _verify_sso_token(token: str) -> dict | None:
