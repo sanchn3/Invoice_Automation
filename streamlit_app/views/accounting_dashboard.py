@@ -295,20 +295,35 @@ def render(dm: DataManager, alert_manager: AlertManager | None = None) -> None:
 
                 _dl_col, _cancel_col = st.columns([3, 1])
                 with _dl_col:
-                    st.download_button(
-                        label    =f"⬇ Confirm & Download  {_preview['filename']}",
-                        data     =_preview["content"],
-                        file_name=_preview["filename"],
-                        mime     ="text/csv",
-                        on_click =_do_export,
-                        type     ="primary",
-                        width    ="stretch",
-                        key      ="qb_confirm_dl",
-                    )
-                    st.caption(
-                        "Invoices are marked exported when you click. "
-                        "Use Undo in Export History if the download or QuickBooks import fails."
-                    )
+                    if _qbo_client:
+                        # QBO connected — CSV is a backup only; don't mark as exported
+                        st.download_button(
+                            label    =f"⬇ Download CSV (backup)",
+                            data     =_preview["content"],
+                            file_name=_preview["filename"],
+                            mime     ="text/csv",
+                            width    ="stretch",
+                            key      ="qb_confirm_dl",
+                        )
+                        st.caption(
+                            "Optional reference copy. "
+                            "Use **Create in QB** below to export to QuickBooks."
+                        )
+                    else:
+                        st.download_button(
+                            label    =f"⬇ Confirm & Download  {_preview['filename']}",
+                            data     =_preview["content"],
+                            file_name=_preview["filename"],
+                            mime     ="text/csv",
+                            on_click =_do_export,
+                            type     ="primary",
+                            width    ="stretch",
+                            key      ="qb_confirm_dl",
+                        )
+                        st.caption(
+                            "Invoices are marked exported when you click. "
+                            "Use Undo in Export History if the download or QuickBooks import fails."
+                        )
                 with _cancel_col:
                     if st.button("✗ Cancel", key="qb_cancel_preview", width="stretch"):
                         st.session_state.pop("qb_export_preview", None)
