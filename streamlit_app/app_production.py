@@ -84,17 +84,30 @@ if st.query_params.get("qbo_disconnect") == "1":
 if st.query_params.get("state") == "qbo_connect" and st.query_params.get("code"):
     _qbo_code     = st.query_params.get("code")
     _qbo_realm_id = st.query_params.get("realmId", "")
-    st.query_params.clear()
     try:
         from config import QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI
         from integrations.qbo_auth import QBOAuth
         _cb_auth = QBOAuth(QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI, get_dm())
         _cb_auth.exchange_code(_qbo_code, _qbo_realm_id)
-        st.title("QuickBooks Connected ✅")
-        st.success("INCO Invoice Automation is now connected to QuickBooks Online.")
-        st.link_button("Go to Accounting Dashboard", "/", type="primary")
+        st.session_state["_qbo_just_connected"] = True
     except Exception as _cb_e:
-        st.error(f"QuickBooks connection failed: {_cb_e}")
+        st.session_state["_qbo_connect_error"] = str(_cb_e)
+    st.query_params.clear()   # triggers rerun; result is in session_state
+    st.stop()
+
+# Show result after the rerun caused by st.query_params.clear()
+if st.session_state.get("_qbo_just_connected"):
+    del st.session_state["_qbo_just_connected"]
+    st.title("QuickBooks Connected ✅")
+    st.success("INCO Invoice Automation is now connected to QuickBooks Online.")
+    st.link_button("Go to Accounting Dashboard", "/", type="primary")
+    st.stop()
+
+if st.session_state.get("_qbo_connect_error"):
+    _cb_err = st.session_state.pop("_qbo_connect_error")
+    st.title("QuickBooks Connection Failed")
+    st.error(f"Could not connect to QuickBooks: {_cb_err}")
+    st.link_button("Try Again", "/?qbo_connect=1")
     st.stop()
 
 
